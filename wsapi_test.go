@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -252,6 +253,129 @@ func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 	if disconnected {
 		t.Fatal("heartbeat emitted disconnect after listening channel was closed")
 	}
+}
+
+func TestRequestGuildMembersUsesSingleGuildID(t *testing.T) {
+	writes := captureRequestGuildMembersWrites(t, 1, func(session *Session) error {
+		return session.RequestGuildMembers("guild", "", 0, "nonce", false)
+	})
+
+	if writes[0].Op != 8 {
+		t.Fatalf("op = %d, want 8", writes[0].Op)
+	}
+	if writes[0].Data.GuildID != "guild" {
+		t.Fatalf("guild_id = %q, want guild", writes[0].Data.GuildID)
+	}
+	if writes[0].Data.Query == nil || *writes[0].Data.Query != "" {
+		t.Fatalf("query = %v, want empty string", writes[0].Data.Query)
+	}
+}
+
+func TestRequestGuildMembersListUsesSingleGuildID(t *testing.T) {
+	writes := captureRequestGuildMembersWrites(t, 1, func(session *Session) error {
+		return session.RequestGuildMembersList("guild", []string{"user"}, 1, "nonce", false)
+	})
+
+	if writes[0].Data.GuildID != "guild" {
+		t.Fatalf("guild_id = %q, want guild", writes[0].Data.GuildID)
+	}
+	if len(writes[0].Data.UserIDs) != 1 || writes[0].Data.UserIDs[0] != "user" {
+		t.Fatalf("user_ids = %v, want [user]", writes[0].Data.UserIDs)
+	}
+}
+
+func TestRequestGuildMembersBatchSendsOnePayloadPerGuild(t *testing.T) {
+	writes := captureRequestGuildMembersWrites(t, 2, func(session *Session) error {
+		return session.RequestGuildMembersBatch([]string{"guild-1", "guild-2"}, "a", 100, "nonce", false)
+	})
+
+	for i, guildID := range []string{"guild-1", "guild-2"} {
+		if writes[i].Data.GuildID != guildID {
+			t.Fatalf("write %d guild_id = %q, want %s", i, writes[i].Data.GuildID, guildID)
+		}
+	}
+}
+
+func TestRequestGuildMembersBatchListSendsOnePayloadPerGuild(t *testing.T) {
+	writes := captureRequestGuildMembersWrites(t, 2, func(session *Session) error {
+		return session.RequestGuildMembersBatchList([]string{"guild-1", "guild-2"}, []string{"user"}, 1, "nonce", false)
+	})
+
+	for i, guildID := range []string{"guild-1", "guild-2"} {
+		if writes[i].Data.GuildID != guildID {
+			t.Fatalf("write %d guild_id = %q, want %s", i, writes[i].Data.GuildID, guildID)
+		}
+		if len(writes[i].Data.UserIDs) != 1 || writes[i].Data.UserIDs[0] != "user" {
+			t.Fatalf("write %d user_ids = %v, want [user]", i, writes[i].Data.UserIDs)
+		}
+	}
+}
+
+type requestGuildMembersWrite struct {
+	Op   int `json:"op"`
+	Data struct {
+		GuildID string   `json:"guild_id"`
+		Query   *string  `json:"query,omitempty"`
+		UserIDs []string `json:"user_ids,omitempty"`
+		Limit   int      `json:"limit"`
+		Nonce   string   `json:"nonce,omitempty"`
+	} `json:"d"`
+}
+
+func captureRequestGuildMembersWrites(t *testing.T, count int, call func(*Session) error) []requestGuildMembersWrite {
+	t.Helper()
+
+	messages := make(chan []byte, count)
+	readErr := make(chan error, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			readErr <- err
+			return
+		}
+		defer conn.Close()
+
+		for i := 0; i < count; i++ {
+			if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				readErr <- err
+				return
+			}
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				readErr <- err
+				return
+			}
+			messages <- message
+		}
+		readErr <- nil
+	}))
+	t.Cleanup(server.Close)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{wsConn: conn, sequence: new(int64)}
+	if err := call(session); err != nil {
+		t.Fatalf("call returned error: %v", err)
+	}
+
+	if err := <-readErr; err != nil {
+		t.Fatalf("ReadMessage returned error: %v", err)
+	}
+
+	writes := make([]requestGuildMembersWrite, count)
+	for i := 0; i < count; i++ {
+		message := <-messages
+		if err := json.Unmarshal(message, &writes[i]); err != nil {
+			t.Fatalf("message %d = %s, unmarshal error: %v", i, message, err)
+		}
+	}
+
+	return writes
 }
 
 func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {

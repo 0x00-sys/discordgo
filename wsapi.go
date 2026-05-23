@@ -564,8 +564,7 @@ func (s *Session) UpdateStatusComplex(usd UpdateStatusData) (err error) {
 }
 
 type requestGuildMembersData struct {
-	// TODO: Deprecated. Use string instead of []string
-	GuildIDs  []string  `json:"guild_id"`
+	GuildID   string    `json:"guild_id"`
 	Query     *string   `json:"query,omitempty"`
 	UserIDs   *[]string `json:"user_ids,omitempty"`
 	Limit     int       `json:"limit"`
@@ -586,7 +585,14 @@ type requestGuildMembersOp struct {
 // nonce     : Nonce to identify the Guild Members Chunk response
 // presences : Whether to request presences of guild members
 func (s *Session) RequestGuildMembers(guildID, query string, limit int, nonce string, presences bool) error {
-	return s.RequestGuildMembersBatch([]string{guildID}, query, limit, nonce, presences)
+	data := requestGuildMembersData{
+		GuildID:   guildID,
+		Query:     &query,
+		Limit:     limit,
+		Nonce:     nonce,
+		Presences: presences,
+	}
+	return s.requestGuildMembers(data)
 }
 
 // RequestGuildMembersList requests guild members from the gateway
@@ -597,7 +603,14 @@ func (s *Session) RequestGuildMembers(guildID, query string, limit int, nonce st
 // nonce     : Nonce to identify the Guild Members Chunk response
 // presences : Whether to request presences of guild members
 func (s *Session) RequestGuildMembersList(guildID string, userIDs []string, limit int, nonce string, presences bool) error {
-	return s.RequestGuildMembersBatchList([]string{guildID}, userIDs, limit, nonce, presences)
+	data := requestGuildMembersData{
+		GuildID:   guildID,
+		UserIDs:   &userIDs,
+		Limit:     limit,
+		Nonce:     nonce,
+		Presences: presences,
+	}
+	return s.requestGuildMembers(data)
 }
 
 // RequestGuildMembersBatch requests guild members from the gateway
@@ -610,14 +623,19 @@ func (s *Session) RequestGuildMembersList(guildID string, userIDs []string, limi
 //
 // NOTE: this function is deprecated, please use RequestGuildMembers instead
 func (s *Session) RequestGuildMembersBatch(guildIDs []string, query string, limit int, nonce string, presences bool) (err error) {
-	data := requestGuildMembersData{
-		GuildIDs:  guildIDs,
-		Query:     &query,
-		Limit:     limit,
-		Nonce:     nonce,
-		Presences: presences,
+	// Discord only accepts one guild_id per opcode 8 request.
+	for _, guildID := range guildIDs {
+		data := requestGuildMembersData{
+			GuildID:   guildID,
+			Query:     &query,
+			Limit:     limit,
+			Nonce:     nonce,
+			Presences: presences,
+		}
+		if err = s.requestGuildMembers(data); err != nil {
+			return
+		}
 	}
-	err = s.requestGuildMembers(data)
 	return
 }
 
@@ -631,14 +649,19 @@ func (s *Session) RequestGuildMembersBatch(guildIDs []string, query string, limi
 //
 // NOTE: this function is deprecated, please use RequestGuildMembersList instead
 func (s *Session) RequestGuildMembersBatchList(guildIDs []string, userIDs []string, limit int, nonce string, presences bool) (err error) {
-	data := requestGuildMembersData{
-		GuildIDs:  guildIDs,
-		UserIDs:   &userIDs,
-		Limit:     limit,
-		Nonce:     nonce,
-		Presences: presences,
+	// Discord only accepts one guild_id per opcode 8 request.
+	for _, guildID := range guildIDs {
+		data := requestGuildMembersData{
+			GuildID:   guildID,
+			UserIDs:   &userIDs,
+			Limit:     limit,
+			Nonce:     nonce,
+			Presences: presences,
+		}
+		if err = s.requestGuildMembers(data); err != nil {
+			return
+		}
 	}
-	err = s.requestGuildMembers(data)
 	return
 }
 
