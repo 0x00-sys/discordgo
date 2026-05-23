@@ -51,6 +51,10 @@ func NewRatelimiter() *RateLimiter {
 
 // GetBucket retrieves or creates a bucket
 func (r *RateLimiter) GetBucket(key string) *Bucket {
+	return r.getBucket(key, r.global)
+}
+
+func (r *RateLimiter) getBucket(key string, global *int64) *Bucket {
 	r.Lock()
 	defer r.Unlock()
 
@@ -65,7 +69,7 @@ func (r *RateLimiter) GetBucket(key string) *Bucket {
 	b := &Bucket{
 		Remaining: 1,
 		Key:       key,
-		global:    r.global,
+		global:    global,
 	}
 	b.touch(now)
 
@@ -135,6 +139,15 @@ func (r *RateLimiter) LockBucket(bucketID string) *Bucket {
 // LockBucketContext locks until a request can be made or ctx is canceled.
 func (r *RateLimiter) LockBucketContext(ctx context.Context, bucketID string) (*Bucket, error) {
 	return r.LockBucketObjectContext(ctx, r.GetBucket(bucketID))
+}
+
+func (r *RateLimiter) lockBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
+	globalReset := r.global
+	if !useGlobalRateLimit {
+		globalReset = new(int64)
+	}
+
+	return r.LockBucketObjectContext(ctx, r.getBucket(bucketID, globalReset))
 }
 
 func (r *RateLimiter) lockEphemeralBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
