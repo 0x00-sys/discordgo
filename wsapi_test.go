@@ -188,7 +188,7 @@ func TestOpenSendsHeartbeatsBeforeReady(t *testing.T) {
 	}
 }
 
-func TestOpenReturnsOnUnexpectedDispatchDuringOpen(t *testing.T) {
+func TestOpenReturnsOnUnexpectedDispatchDuringIdentify(t *testing.T) {
 	server := newGatewayOpenTestServer(t, []byte(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"guild","user":{"id":"user"},"status":"online","activities":[],"client_status":{}}}`))
 	session, err := newGatewayOpenTestSession(server, "Bot test")
 	if err != nil {
@@ -208,6 +208,41 @@ func TestOpenReturnsOnUnexpectedDispatchDuringOpen(t *testing.T) {
 	}
 	if called {
 		t.Fatal("unexpected dispatch handler was called during Open")
+	}
+}
+
+func TestOpenAllowsDispatchReplayBeforeResumed(t *testing.T) {
+	server := newGatewayOpenTestServer(t,
+		[]byte(`{"op":0,"s":43,"t":"MESSAGE_CREATE","d":{"id":"message","channel_id":"channel","guild_id":"guild","content":"hello","timestamp":"2026-01-01T00:00:00.000000+00:00","edited_timestamp":null,"tts":false,"mention_everyone":false,"mentions":[],"mention_roles":[],"attachments":[],"embeds":[],"pinned":false,"type":0,"author":{"id":"user","username":"user","discriminator":"0001","bot":false}}}`),
+		[]byte(`{"op":0,"s":44,"t":"RESUMED","d":{}}`),
+	)
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.ShouldReconnectOnError = false
+	session.SyncEvents = true
+	session.sessionID = "old-session"
+	session.resumeGatewayURL = session.gateway
+	atomic.StoreInt64(session.sequence, 42)
+
+	called := false
+	session.AddHandler(func(s *Session, m *MessageCreate) {
+		s.RLock()
+		s.RUnlock()
+		called = true
+	})
+
+	if err = openWithTimeout(t, session); err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer session.Close()
+
+	if !called {
+		t.Fatal("replayed dispatch handler was not called")
+	}
+	if sequence := atomic.LoadInt64(session.sequence); sequence != 44 {
+		t.Fatalf("sequence = %d, want 44", sequence)
 	}
 }
 
