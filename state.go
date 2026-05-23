@@ -699,11 +699,17 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 
 // ThreadMemberUpdate sets or updates member data for the current user.
 func (s *State) ThreadMemberUpdate(mu *ThreadMemberUpdate) error {
-	thread, err := s.Channel(mu.ID)
-	if err != nil {
-		return err
+	if s == nil {
+		return ErrNilState
 	}
 
+	s.Lock()
+	defer s.Unlock()
+
+	thread, ok := s.channelMap[mu.ID]
+	if !ok {
+		return ErrStateNotFound
+	}
 	thread.Member = mu.ThreadMember
 	return nil
 }
