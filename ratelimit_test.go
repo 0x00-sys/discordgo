@@ -198,6 +198,54 @@ func TestWebhookMessageEditUsesMessageRouteBucket(t *testing.T) {
 	}
 }
 
+func TestInteractionRespondUsesTokenlessBucket(t *testing.T) {
+	session := newTestInteractionSession(t)
+
+	err := session.InteractionRespond(&Interaction{
+		ID:    "interaction",
+		Token: "secret-token",
+	}, &InteractionResponse{
+		Type: InteractionResponsePong,
+	})
+	if err != nil {
+		t.Fatalf("InteractionRespond returned error: %v", err)
+	}
+
+	want := interactionResponseBucketID("interaction")
+	if _, ok := session.Ratelimiter.buckets[want]; !ok {
+		t.Fatalf("bucket %q was not created", want)
+	}
+	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
+}
+
+func TestInteractionResponseDeleteUsesMessageRouteBucket(t *testing.T) {
+	session := newTestInteractionSession(t)
+
+	err := session.InteractionResponseDelete(&Interaction{
+		AppID: "application",
+		Token: "secret-token",
+	})
+	if err != nil {
+		t.Fatalf("InteractionResponseDelete returned error: %v", err)
+	}
+
+	want := interactionResponseActionsBucketID("application")
+	if _, ok := session.Ratelimiter.buckets[want]; !ok {
+		t.Fatalf("bucket %q was not created", want)
+	}
+	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
+}
+
+func assertRateLimitBucketsDoNotContain(t *testing.T, session *Session, value string) {
+	t.Helper()
+
+	for key := range session.Ratelimiter.buckets {
+		if strings.Contains(key, value) {
+			t.Fatalf("bucket %q includes %q", key, value)
+		}
+	}
+}
+
 func newTestWebhookSession(t *testing.T) *Session {
 	t.Helper()
 
@@ -212,6 +260,32 @@ func newTestWebhookSession(t *testing.T) *Session {
 	oldEndpointWebhooks := EndpointWebhooks
 	EndpointWebhooks = server.URL + "/webhooks/"
 	t.Cleanup(func() {
+		EndpointWebhooks = oldEndpointWebhooks
+	})
+
+	return &Session{
+		Client:                 server.Client(),
+		MaxRestRetries:         0,
+		Ratelimiter:            NewRatelimiter(),
+		UserAgent:              "DiscordGo test",
+		ShouldRetryOnRateLimit: true,
+	}
+}
+
+func newTestInteractionSession(t *testing.T) *Session {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointAPI := EndpointAPI
+	oldEndpointWebhooks := EndpointWebhooks
+	EndpointAPI = server.URL + "/"
+	EndpointWebhooks = server.URL + "/webhooks/"
+	t.Cleanup(func() {
+		EndpointAPI = oldEndpointAPI
 		EndpointWebhooks = oldEndpointWebhooks
 	})
 
