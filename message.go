@@ -182,6 +182,18 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	return err
 }
 
+// MarshalJSON is a helper function to marshal the Message.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type message Message
+	return json.Marshal(struct {
+		message
+		Components []MessageComponent `json:"components,omitempty"`
+	}{
+		message:    message(m),
+		Components: m.Components,
+	})
+}
+
 // GetCustomEmojis pulls out all the custom (Non-unicode) emojis from a message and returns a Slice of the Emoji struct.
 func (m *Message) GetCustomEmojis() []*Emoji {
 	var toReturn []*Emoji

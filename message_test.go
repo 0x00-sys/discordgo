@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -107,5 +108,53 @@ func TestMessageReference_DefaultTypeIsDefault(t *testing.T) {
 	r := MessageReference{}
 	if r.Type != MessageReferenceTypeDefault {
 		t.Error("Default message type should be MessageReferenceTypeDefault")
+	}
+}
+
+func TestMessageMarshalJSONIncludesComponents(t *testing.T) {
+	m := &Message{
+		ID:        "811736565172011001",
+		ChannelID: "811736565172011003",
+		Components: []MessageComponent{
+			ActionsRow{
+				Components: []MessageComponent{
+					Button{
+						Label:    "Open",
+						Style:    PrimaryButton,
+						CustomID: "open-ticket",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var unmarshaled Message
+	if err = json.Unmarshal(data, &unmarshaled); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if len(unmarshaled.Components) != 1 {
+		t.Fatalf("Components len = %d, want 1", len(unmarshaled.Components))
+	}
+
+	row, ok := unmarshaled.Components[0].(*ActionsRow)
+	if !ok {
+		t.Fatalf("Component type = %T, want *ActionsRow", unmarshaled.Components[0])
+	}
+	if len(row.Components) != 1 {
+		t.Fatalf("row.Components len = %d, want 1", len(row.Components))
+	}
+
+	button, ok := row.Components[0].(*Button)
+	if !ok {
+		t.Fatalf("row component type = %T, want *Button", row.Components[0])
+	}
+	if button.CustomID != "open-ticket" {
+		t.Fatalf("button.CustomID = %q, want open-ticket", button.CustomID)
 	}
 }
