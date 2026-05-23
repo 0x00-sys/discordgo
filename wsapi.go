@@ -63,6 +63,7 @@ func (s *Session) Open() error {
 	}
 
 	sequence := atomic.LoadInt64(s.sequence)
+	resuming := s.sessionID != "" || sequence != 0
 
 	var gateway string
 	// Get the gateway to use for the Websocket connection
@@ -124,7 +125,7 @@ func (s *Session) Open() error {
 		}
 		return err
 	}
-	err = s.openGatewayControlEvent(mt, m, 10)
+	err = s.openGatewayControlEvent(mt, m, 10, false)
 	if err != nil {
 		return err
 	}
@@ -198,7 +199,7 @@ func (s *Session) Open() error {
 	go s.heartbeat(s.wsConn, s.listening, h.HeartbeatInterval)
 
 	s.Unlock()
-	e, err = s.waitForGatewayReady(s.wsConn)
+	e, err = s.waitForGatewayReady(s.wsConn, resuming)
 	s.Lock()
 	if err != nil {
 		return err
@@ -236,7 +237,7 @@ func (s *Session) Open() error {
 	return nil
 }
 
-func (s *Session) waitForGatewayReady(wsConn *websocket.Conn) (*Event, error) {
+func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchReplay bool) (*Event, error) {
 	for {
 		mt, m, err := wsConn.ReadMessage()
 		if err != nil {
@@ -247,7 +248,7 @@ func (s *Session) waitForGatewayReady(wsConn *websocket.Conn) (*Event, error) {
 		}
 
 		s.Lock()
-		err = s.openGatewayControlEvent(mt, m, 0, "READY", "RESUMED")
+		err = s.openGatewayControlEvent(mt, m, 0, allowDispatchReplay, "READY", "RESUMED")
 		s.Unlock()
 		if err != nil {
 			return nil, err
@@ -263,7 +264,7 @@ func (s *Session) waitForGatewayReady(wsConn *websocket.Conn) (*Event, error) {
 	}
 }
 
-func (s *Session) openGatewayControlEvent(messageType int, message []byte, expectedOperation int, expectedEventTypes ...string) error {
+func (s *Session) openGatewayControlEvent(messageType int, message []byte, expectedOperation int, allowDispatchBeforeExpected bool, expectedEventTypes ...string) error {
 	e, err := peekGatewayEvent(messageType, message)
 	if err != nil || e == nil {
 		return nil
@@ -296,6 +297,9 @@ func (s *Session) openGatewayControlEvent(messageType int, message []byte, expec
 			if e.Type == expected {
 				return nil
 			}
+		}
+		if allowDispatchBeforeExpected {
+			return nil
 		}
 		return fmt.Errorf("received %s event during open", e.Type)
 	}
