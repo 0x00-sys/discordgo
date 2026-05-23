@@ -190,6 +190,31 @@ func TestOpenConnectHandlerCanUseSessionLock(t *testing.T) {
 	}
 }
 
+func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
+	var attempts int32
+	server := newGatewayCloseAfterIdentifyTestServer(t, 4014, &attempts)
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("reconnect did not stop after terminal gateway close")
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("gateway connection attempts = %d, want 1", got)
+	}
+}
+
 func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +404,32 @@ func newGatewayOpenTestServer(t *testing.T, startupPacket []byte) *httptest.Serv
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
+	}))
+
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newGatewayCloseAfterIdentifyTestServer(t *testing.T, closeCode int, attempts *int32) *httptest.Server {
+	t.Helper()
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(attempts, 1)
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":1000}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, ""), time.Now().Add(time.Second))
 	}))
 
 	t.Cleanup(server.Close)
