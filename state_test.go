@@ -3,6 +3,7 @@ package discordgo
 import (
 	"errors"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -328,6 +329,54 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	if member.User.Username != "new" {
 		t.Fatalf("cached member username = %q, want %q", member.User.Username, "new")
 	}
+}
+
+func TestVoiceStateUsesStateLock(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		VoiceStates: []*VoiceState{
+			{
+				GuildID:   "guild",
+				ChannelID: "channel",
+				UserID:    "user",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			update := &VoiceStateUpdate{
+				VoiceState: &VoiceState{
+					GuildID:   "guild",
+					ChannelID: "channel-" + strconv.Itoa(i),
+					UserID:    "user",
+				},
+			}
+			if err := state.voiceStateUpdate(update); err != nil {
+				t.Errorf("voiceStateUpdate returned error: %v", err)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			if _, err := state.VoiceState("guild", "user"); err != nil {
+				t.Errorf("VoiceState returned error: %v", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
 }
 
 func TestThreadMemberUpdateUsesStateLock(t *testing.T) {
