@@ -232,22 +232,25 @@ func TestWebhookMessageEditUsesMessageRouteBucket(t *testing.T) {
 	}
 }
 
-func TestInteractionRespondUsesTokenlessBucket(t *testing.T) {
+func TestInteractionRespondUsesEphemeralBucket(t *testing.T) {
 	session := newTestInteractionSession(t)
+	atomic.StoreInt64(session.Ratelimiter.global, time.Now().Add(time.Hour).UnixNano())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 
 	err := session.InteractionRespond(&Interaction{
 		ID:    "interaction",
 		Token: "secret-token",
 	}, &InteractionResponse{
 		Type: InteractionResponsePong,
-	})
+	}, WithContext(ctx))
 	if err != nil {
 		t.Fatalf("InteractionRespond returned error: %v", err)
 	}
 
-	want := interactionResponseBucketID("interaction")
-	if _, ok := session.Ratelimiter.buckets[want]; !ok {
-		t.Fatalf("bucket %q was not created", want)
+	if len(session.Ratelimiter.buckets) != 0 {
+		t.Fatalf("bucket count = %d, want 0", len(session.Ratelimiter.buckets))
 	}
 	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
 }

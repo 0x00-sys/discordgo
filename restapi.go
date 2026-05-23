@@ -212,6 +212,18 @@ func (s *Session) RequestWithBucketID(method, urlStr string, data interface{}, b
 	return s.RequestRaw(method, urlStr, "application/json", body, bucketID, 0, options...)
 }
 
+func (s *Session) requestWithEphemeralBucketID(method, urlStr string, data interface{}, bucketID string, useGlobalRateLimit bool, options ...RequestOption) (response []byte, err error) {
+	var body []byte
+	if data != nil {
+		body, err = Marshal(data)
+		if err != nil {
+			return
+		}
+	}
+
+	return s.requestRawWithEphemeralBucket(method, urlStr, "application/json", body, bucketID, 0, useGlobalRateLimit, options...)
+}
+
 // RequestRaw makes a (GET/POST/...) Requests to Discord REST API.
 // Preferably use the other Request* methods but this lets you send JSON directly if that's what you have.
 // Sequence is the sequence number, if it fails with a 502 it will
@@ -227,6 +239,24 @@ func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucke
 	}
 
 	bucket, err := s.Ratelimiter.LockBucketContext(cfg.Request.Context(), bucketID)
+	if err != nil {
+		return
+	}
+
+	return s.requestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, cfg, options...)
+}
+
+func (s *Session) requestRawWithEphemeralBucket(method, urlStr, contentType string, b []byte, bucketID string, sequence int, useGlobalRateLimit bool, options ...RequestOption) (response []byte, err error) {
+	if bucketID == "" {
+		bucketID = strings.SplitN(urlStr, "?", 2)[0]
+	}
+
+	cfg, err := s.requestConfig(method, urlStr, contentType, b, options...)
+	if err != nil {
+		return
+	}
+
+	bucket, err := s.Ratelimiter.lockEphemeralBucketContext(cfg.Request.Context(), bucketID, useGlobalRateLimit)
 	if err != nil {
 		return
 	}
@@ -3452,11 +3482,11 @@ func (s *Session) InteractionRespond(interaction *Interaction, resp *Interaction
 			return err
 		}
 
-		_, err = s.RequestRaw("POST", endpoint, contentType, body, bucketID, 0, options...)
+		_, err = s.requestRawWithEphemeralBucket("POST", endpoint, contentType, body, bucketID, 0, false, options...)
 		return err
 	}
 
-	_, err := s.RequestWithBucketID("POST", endpoint, *resp, bucketID, options...)
+	_, err := s.requestWithEphemeralBucketID("POST", endpoint, *resp, bucketID, false, options...)
 	return err
 }
 
