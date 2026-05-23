@@ -197,6 +197,50 @@ func TestSessionCloseWithLockedWSMutex(t *testing.T) {
 	}, done)
 }
 
+func TestGatewayWriteDoesNotBlockCloseWithLockedWSMutex(t *testing.T) {
+	server := newCloseFrameTestServer(t)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{
+		LogLevel:  -1,
+		wsConn:    conn,
+		listening: make(chan interface{}),
+		sequence:  new(int64),
+	}
+
+	session.wsMutex.Lock()
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- session.GatewayWriteStruct(struct {
+			Op int `json:"op"`
+		}{Op: 3})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- session.Close()
+	}()
+
+	requireCloseDoneWhileWSMutexLocked(t, func() {
+		session.wsMutex.Unlock()
+	}, closeDone)
+
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("GatewayWriteStruct did not return after close")
+	}
+}
+
 func TestOpenSendsHeartbeatsBeforeReady(t *testing.T) {
 	heartbeatRead := make(chan struct{}, 1)
 	server := newGatewayOpenAfterHeartbeatTestServer(t, heartbeatRead)

@@ -635,17 +635,7 @@ func (s *Session) UpdateStatusComplex(usd UpdateStatusData) (err error) {
 		usd.Activities = make([]*Activity, 0)
 	}
 
-	s.RLock()
-	defer s.RUnlock()
-	if s.wsConn == nil {
-		return ErrWSNotFound
-	}
-
-	s.wsMutex.Lock()
-	err = s.wsConn.WriteJSON(updateStatusOp{3, usd})
-	s.wsMutex.Unlock()
-
-	return
+	return s.gatewayWriteJSON(updateStatusOp{3, usd})
 }
 
 type requestGuildMembersData struct {
@@ -752,14 +742,19 @@ func (s *Session) RequestGuildMembersBatchList(guildIDs []string, userIDs []stri
 
 // GatewayWriteStruct allows for sending raw gateway structs over the gateway.
 func (s *Session) GatewayWriteStruct(data interface{}) (err error) {
+	return s.gatewayWriteJSON(data)
+}
+
+func (s *Session) gatewayWriteJSON(data interface{}) (err error) {
 	s.RLock()
-	defer s.RUnlock()
-	if s.wsConn == nil {
+	wsConn := s.wsConn
+	s.RUnlock()
+	if wsConn == nil {
 		return ErrWSNotFound
 	}
 
 	s.wsMutex.Lock()
-	err = s.wsConn.WriteJSON(data)
+	err = wsConn.WriteJSON(data)
 	s.wsMutex.Unlock()
 
 	return err
@@ -768,17 +763,7 @@ func (s *Session) GatewayWriteStruct(data interface{}) (err error) {
 func (s *Session) requestGuildMembers(data requestGuildMembersData) (err error) {
 	s.log(LogInformational, "called")
 
-	s.RLock()
-	defer s.RUnlock()
-	if s.wsConn == nil {
-		return ErrWSNotFound
-	}
-
-	s.wsMutex.Lock()
-	err = s.wsConn.WriteJSON(requestGuildMembersOp{8, data})
-	s.wsMutex.Unlock()
-
-	return
+	return s.gatewayWriteJSON(requestGuildMembersOp{8, data})
 }
 
 // onEvent is the "event handler" for all messages received on the
@@ -829,15 +814,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	if e.Operation == 1 {
 		s.log(LogInformational, "sending heartbeat in response to Op1")
 
-		s.RLock()
-		if s.wsConn == nil {
-			s.RUnlock()
-			return e, ErrWSNotFound
-		}
-		s.wsMutex.Lock()
-		err = s.wsConn.WriteJSON(heartbeatOp{1, atomic.LoadInt64(s.sequence)})
-		s.wsMutex.Unlock()
-		s.RUnlock()
+		err = s.gatewayWriteJSON(heartbeatOp{1, atomic.LoadInt64(s.sequence)})
 		if err != nil {
 			s.log(LogError, "error sending heartbeat in response to Op1")
 			return e, err
@@ -991,10 +968,10 @@ type voiceChannelJoinOp struct {
 
 // ChannelVoiceJoin joins the session user to a voice channel.
 //
-//    gID     : Guild ID of the channel to join.
-//    cID     : Channel ID of the channel to join.
-//    mute    : If true, you will be set to muted upon joining.
-//    deaf    : If true, you will be set to deafened upon joining.
+//	gID     : Guild ID of the channel to join.
+//	cID     : Channel ID of the channel to join.
+//	mute    : If true, you will be set to muted upon joining.
+//	deaf    : If true, you will be set to deafened upon joining.
 func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *VoiceConnection, err error) {
 
 	s.log(LogInformational, "called")
@@ -1038,10 +1015,10 @@ func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *Voi
 //
 // This should only be used when the VoiceServerUpdate will be intercepted and used elsewhere.
 //
-//    gID     : Guild ID of the channel to join.
-//    cID     : Channel ID of the channel to join, leave empty to disconnect.
-//    mute    : If true, you will be set to muted upon joining.
-//    deaf    : If true, you will be set to deafened upon joining.
+//	gID     : Guild ID of the channel to join.
+//	cID     : Channel ID of the channel to join, leave empty to disconnect.
+//	mute    : If true, you will be set to muted upon joining.
+//	deaf    : If true, you will be set to deafened upon joining.
 func (s *Session) ChannelVoiceJoinManual(gID, cID string, mute, deaf bool) (err error) {
 
 	s.log(LogInformational, "called")
@@ -1055,15 +1032,7 @@ func (s *Session) ChannelVoiceJoinManual(gID, cID string, mute, deaf bool) (err 
 
 	// Send the request to Discord that we want to join the voice channel
 	data := voiceChannelJoinOp{4, voiceChannelJoinData{&gID, channelID, mute, deaf}}
-	s.RLock()
-	defer s.RUnlock()
-	if s.wsConn == nil {
-		return ErrWSNotFound
-	}
-	s.wsMutex.Lock()
-	err = s.wsConn.WriteJSON(data)
-	s.wsMutex.Unlock()
-	return
+	return s.gatewayWriteJSON(data)
 }
 
 // onVoiceStateUpdate handles Voice State Update events on the data websocket.
