@@ -161,6 +161,10 @@ func (b *Bucket) setReset(reset time.Time) {
 	atomic.StoreInt64(&b.resetAt, reset.UnixNano())
 }
 
+func (b *Bucket) setGlobalReset(reset time.Time) {
+	atomic.StoreInt64(b.global, reset.UnixNano())
+}
+
 func (b *Bucket) touch(now time.Time) {
 	atomic.StoreInt64(&b.lastUsed, now.UnixNano())
 }
@@ -211,7 +215,7 @@ func (b *Bucket) Release(headers http.Header) error {
 
 		// Lock either this single bucket or all buckets
 		if global != "" {
-			atomic.StoreInt64(b.global, resetAt.UnixNano())
+			b.setGlobalReset(resetAt)
 		} else {
 			b.reset = resetAt
 			b.setReset(resetAt)

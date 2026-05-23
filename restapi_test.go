@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -452,6 +453,41 @@ func TestRateLimitEventRedactsWebhookToken(t *testing.T) {
 	}
 	if !strings.Contains(gotURL, redactedURLValue) {
 		t.Fatalf("RateLimit event URL = %q, want redacted token", gotURL)
+	}
+}
+
+func TestRequestWithLockedBucketGlobalRateLimitSetsGlobalReset(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header: http.Header{
+				"Retry-After":       []string{"1"},
+				"X-RateLimit-Scope": []string{"global"},
+			},
+			Body:    io.NopCloser(strings.NewReader(`{"message":"You are being rate limited.","retry_after":1,"global":true}`)),
+			Request: r,
+		}, nil
+	})
+
+	before := time.Now()
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RateLimitError", err)
+	}
+	if !rateLimitErr.Global {
+		t.Fatal("RateLimitError.Global = false, want true")
+	}
+
+	reset := time.Unix(0, atomic.LoadInt64(session.Ratelimiter.global))
+	if !reset.After(before) {
+		t.Fatalf("global reset = %v, want after %v", reset, before)
 	}
 }
 
