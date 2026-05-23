@@ -214,6 +214,9 @@ func (v *VoiceConnection) Close() {
 
 		v.wsConn = nil
 	}
+
+	v.OpusSend = nil
+	v.OpusRecv = nil
 }
 
 // AddHandler adds a Handler for VoiceSpeakingUpdate events.
