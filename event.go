@@ -168,19 +168,29 @@ func (s *Session) handle(t string, i interface{}) {
 
 	for _, eh := range handlers {
 		if s.SyncEvents {
-			eh.eventHandler.Handle(s, i)
+			s.callEventHandler(eh, i)
 		} else {
-			go eh.eventHandler.Handle(s, i)
+			go s.callEventHandler(eh, i)
 		}
 	}
 
 	for _, eh := range onceHandlers {
 		if s.SyncEvents {
-			eh.eventHandler.Handle(s, i)
+			s.callEventHandler(eh, i)
 		} else {
-			go eh.eventHandler.Handle(s, i)
+			go s.callEventHandler(eh, i)
 		}
 	}
+}
+
+func (s *Session) callEventHandler(eh *eventHandlerInstance, i interface{}) {
+	defer func() {
+		if err := recover(); err != nil {
+			s.log(LogError, "panic in %s handler, %v", eh.eventHandler.Type(), err)
+		}
+	}()
+
+	eh.eventHandler.Handle(s, i)
 }
 
 func (s *Session) eventHandlers(t string) (handlers, onceHandlers []*eventHandlerInstance) {
