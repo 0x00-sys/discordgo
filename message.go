@@ -182,7 +182,20 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	for i, v := range v.RawComponents {
 		m.Components[i] = v.MessageComponent
 	}
+	linkMessageInteractionMemberUser(m)
 	return err
+}
+
+func linkMessageInteractionMemberUser(m *Message) {
+	if m == nil || m.Interaction == nil || m.Interaction.Member == nil {
+		return
+	}
+	if m.Interaction.Member.User == nil {
+		m.Interaction.Member.User = m.Interaction.User
+	}
+	if m.Interaction.Member.GuildID == "" {
+		m.Interaction.Member.GuildID = m.GuildID
+	}
 }
 
 // MarshalJSON is a helper function to marshal the Message.
