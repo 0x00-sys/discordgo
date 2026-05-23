@@ -575,6 +575,8 @@ type voiceUDPOp struct {
 	Data voiceUDPD `json:"d"`
 }
 
+var voiceUDPReadTimeout = 5 * time.Second
+
 // udpOpen opens a UDP connection to the voice server and completes the
 // initial required handshake.  This connection is left open in the session
 // and can be used to send or receive audio.  This should only be called
@@ -632,7 +634,16 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	// of the response.  This should be our public IP and PORT as Discord
 	// saw us.
 	rb := make([]byte, 74)
+	err = v.udpConn.SetReadDeadline(time.Now().Add(voiceUDPReadTimeout))
+	if err != nil {
+		v.log(LogWarning, "udp read deadline error, %s, %s", addr.String(), err)
+		return
+	}
+
 	rlen, _, err := v.udpConn.ReadFromUDP(rb)
+	if deadlineErr := v.udpConn.SetReadDeadline(time.Time{}); deadlineErr != nil && err == nil {
+		err = deadlineErr
+	}
 	if err != nil {
 		v.log(LogWarning, "udp read error, %s, %s", addr.String(), err)
 		return
