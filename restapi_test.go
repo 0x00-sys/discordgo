@@ -456,6 +456,93 @@ func TestRateLimitEventRedactsWebhookToken(t *testing.T) {
 	}
 }
 
+func TestRequestRawBucketWaitRespectsContext(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		t.Fatal("HTTP transport should not be called after context deadline")
+		return nil, nil
+	})
+
+	bucket := session.Ratelimiter.GetBucket(EndpointGateway)
+	bucket.Lock()
+	bucket.Remaining = 0
+	bucket.reset = time.Now().Add(10 * time.Second)
+	bucket.setReset(bucket.reset)
+	bucket.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RequestWithBucketID() error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("RequestWithBucketID() slept for %v after context deadline", elapsed)
+	}
+	if called {
+		t.Fatal("HTTP transport was called after context deadline")
+	}
+	if active := atomic.LoadInt32(&bucket.activeRequests); active != 0 {
+		t.Fatalf("activeRequests = %d, want 0", active)
+	}
+}
+
+func TestRequestWithLockedBucketClosesRateLimitBodyBeforeRetry(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstBody := &closeNotifyReadCloser{
+		reader: strings.NewReader(`{"message":"rate limited","retry_after":0.001,"global":false}`),
+		closed: make(chan struct{}),
+	}
+	attempts := 0
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Status:     "429 Too Many Requests",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       firstBody,
+				Request:    r,
+			}, nil
+		}
+
+		select {
+		case <-firstBody.closed:
+		case <-time.After(time.Second):
+			t.Fatal("rate-limit response body was not closed before retry")
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway)
+	if err != nil {
+		t.Fatalf("RequestWithBucketID() returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestRequestWithLockedBucketGlobalRateLimitSetsGlobalReset(t *testing.T) {
 	session, err := New("")
 	if err != nil {
@@ -679,4 +766,18 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type closeNotifyReadCloser struct {
+	reader *strings.Reader
+	closed chan struct{}
+}
+
+func (r *closeNotifyReadCloser) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r *closeNotifyReadCloser) Close() error {
+	close(r.closed)
+	return nil
 }

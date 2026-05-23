@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"strconv"
@@ -123,21 +124,50 @@ func (r *RateLimiter) GetWaitTime(b *Bucket, minRemaining int) time.Duration {
 
 // LockBucket Locks until a request can be made
 func (r *RateLimiter) LockBucket(bucketID string) *Bucket {
-	return r.LockBucketObject(r.GetBucket(bucketID))
+	b, _ := r.LockBucketContext(context.Background(), bucketID)
+	return b
+}
+
+// LockBucketContext locks until a request can be made or ctx is canceled.
+func (r *RateLimiter) LockBucketContext(ctx context.Context, bucketID string) (*Bucket, error) {
+	return r.LockBucketObjectContext(ctx, r.GetBucket(bucketID))
 }
 
 // LockBucketObject Locks an already resolved bucket until a request can be made
 func (r *RateLimiter) LockBucketObject(b *Bucket) *Bucket {
+	b, _ = r.LockBucketObjectContext(context.Background(), b)
+	return b
+}
+
+// LockBucketObjectContext locks an already resolved bucket until a request can be made or ctx is canceled.
+func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*Bucket, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	atomic.AddInt32(&b.activeRequests, 1)
 	b.touch(time.Now())
 	b.Lock()
 
+	if err := ctx.Err(); err != nil {
+		atomic.AddInt32(&b.activeRequests, -1)
+		b.Unlock()
+		return nil, err
+	}
+
 	if wait := r.GetWaitTime(b, 1); wait > 0 {
-		time.Sleep(wait)
+		if err := sleepWithContext(ctx, wait); err != nil {
+			atomic.AddInt32(&b.activeRequests, -1)
+			b.Unlock()
+			return nil, err
+		}
 	}
 
 	b.Remaining--
-	return b
+	return b, nil
 }
 
 // Bucket represents a ratelimit bucket, each bucket gets ratelimited individually (-global ratelimits)
