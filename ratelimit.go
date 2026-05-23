@@ -150,7 +150,10 @@ func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*
 
 	atomic.AddInt32(&b.activeRequests, 1)
 	b.touch(time.Now())
-	b.Lock()
+	if err := lockMutexWithContext(ctx, &b.Mutex); err != nil {
+		atomic.AddInt32(&b.activeRequests, -1)
+		return nil, err
+	}
 
 	if err := ctx.Err(); err != nil {
 		atomic.AddInt32(&b.activeRequests, -1)
@@ -168,6 +171,30 @@ func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*
 
 	b.Remaining--
 	return b, nil
+}
+
+func lockMutexWithContext(ctx context.Context, m *sync.Mutex) error {
+	if ctx.Done() == nil {
+		m.Lock()
+		return nil
+	}
+
+	locked := make(chan struct{}, 1)
+	go func() {
+		m.Lock()
+		locked <- struct{}{}
+	}()
+
+	select {
+	case <-locked:
+		return nil
+	case <-ctx.Done():
+		go func() {
+			<-locked
+			m.Unlock()
+		}()
+		return ctx.Err()
+	}
 }
 
 // Bucket represents a ratelimit bucket, each bucket gets ratelimited individually (-global ratelimits)

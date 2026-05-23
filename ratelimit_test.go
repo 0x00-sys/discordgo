@@ -1,11 +1,14 @@
 package discordgo
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -152,6 +155,37 @@ func TestRatelimitDoesNotCleanBucketsBeforeReset(t *testing.T) {
 	if _, ok := rl.buckets["/channels/limited/messages"]; !ok {
 		t.Fatal("limited bucket was unexpectedly removed before reset")
 	}
+}
+
+func TestLockBucketObjectContextRespectsContextWhileWaitingForLock(t *testing.T) {
+	rl := NewRatelimiter()
+	bucket := rl.GetBucket("/channels/99/messages")
+	bucket.Lock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := rl.LockBucketObjectContext(ctx, bucket)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("LockBucketObjectContext error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		bucket.Unlock()
+		t.Fatal("LockBucketObjectContext did not return after context deadline")
+	}
+
+	if active := atomic.LoadInt32(&bucket.activeRequests); active != 0 {
+		t.Fatalf("activeRequests = %d, want 0", active)
+	}
+
+	bucket.Unlock()
 }
 
 func TestWebhookExecuteUsesStableTokenBucket(t *testing.T) {
