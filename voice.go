@@ -443,8 +443,13 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
+		v.RLock()
+		wsConn := v.wsConn
+		closeChan := v.close
+		v.RUnlock()
+
 		// Start the voice websocket heartbeat to keep the connection alive
-		go v.wsHeartbeat(v.wsConn, v.close, v.op2.HeartbeatInterval)
+		go v.wsHeartbeat(wsConn, closeChan, v.op2.HeartbeatInterval)
 		// TODO monitor a chan/bool to verify this was successful
 
 		// Start the UDP connection
@@ -457,18 +462,28 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		// Start the opusSender.
 		// TODO: Should we allow 48000/960 values to be user defined?
 		// answer: no, 48k is required as per discord documentaiton and 960 is the most optimal frame size (based on testing)
+		v.Lock()
 		if v.OpusSend == nil {
 			v.OpusSend = make(chan []byte, 2)
 		}
-		go v.opusSender(v.udpConn, v.close, v.OpusSend, 48000, 960)
+		udpConn := v.udpConn
+		closeChan = v.close
+		opusSend := v.OpusSend
+		deaf := v.deaf
 
-		// Start the opusReceiver
-		if !v.deaf {
+		if !deaf {
 			if v.OpusRecv == nil {
 				v.OpusRecv = make(chan *Packet, 2)
 			}
+		}
+		opusRecv := v.OpusRecv
+		v.Unlock()
 
-			go v.opusReceiver(v.udpConn, v.close, v.OpusRecv)
+		go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
+
+		// Start the opusReceiver
+		if !deaf {
+			go v.opusReceiver(udpConn, closeChan, opusRecv)
 		}
 
 		return
