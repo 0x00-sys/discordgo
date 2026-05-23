@@ -225,6 +225,7 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 		messageType, message, err := wsConn.ReadMessage()
 
 		if err != nil {
+			readErr := err
 
 			// Detect if we have been closed manually. If a Close() has already
 			// happened, the websocket we are listening on will be different to
@@ -235,12 +236,17 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 			if sameConnection {
 
-				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, err)
+				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, readErr)
 				// There has been an error reading, close the websocket so that
 				// OnDisconnect event is emitted.
 				err := s.Close()
 				if err != nil {
 					s.log(LogWarning, "error closing session connection, %s", err)
+				}
+
+				if !shouldReconnectOnGatewayClose(readErr) {
+					s.log(LogInformational, "not reconnecting after terminal gateway close, %s", readErr)
+					return
 				}
 
 				s.log(LogInformational, "calling reconnect() now")
@@ -260,6 +266,10 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 		}
 	}
+}
+
+func shouldReconnectOnGatewayClose(err error) bool {
+	return !websocket.IsCloseError(err, 4004, 4010, 4011, 4012, 4013, 4014)
 }
 
 type heartbeatOp struct {
