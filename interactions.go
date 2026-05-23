@@ -376,6 +376,20 @@ type ApplicationCommandInteractionDataResolved struct {
 	Attachments map[string]*MessageAttachment `json:"attachments"`
 }
 
+// UnmarshalJSON is a helper function to attach resolved users to partial members.
+func (r *ApplicationCommandInteractionDataResolved) UnmarshalJSON(data []byte) error {
+	type applicationCommandInteractionDataResolved ApplicationCommandInteractionDataResolved
+	var v applicationCommandInteractionDataResolved
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	*r = ApplicationCommandInteractionDataResolved(v)
+	linkResolvedMemberUsers(r.Users, r.Members)
+
+	return nil
+}
+
 // Type returns the type of interaction data.
 func (ApplicationCommandInteractionData) Type() InteractionType {
 	return InteractionApplicationCommand
@@ -398,6 +412,31 @@ type ComponentInteractionDataResolved struct {
 	Roles       map[string]*Role              `json:"roles"`
 	Channels    map[string]*Channel           `json:"channels"`
 	Attachments map[string]*MessageAttachment `json:"attachments"`
+}
+
+// UnmarshalJSON is a helper function to attach resolved users to partial members.
+func (r *ComponentInteractionDataResolved) UnmarshalJSON(data []byte) error {
+	type componentInteractionDataResolved ComponentInteractionDataResolved
+	var v componentInteractionDataResolved
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	*r = ComponentInteractionDataResolved(v)
+	linkResolvedMemberUsers(r.Users, r.Members)
+
+	return nil
+}
+
+func linkResolvedMemberUsers(users map[string]*User, members map[string]*Member) {
+	for id, member := range members {
+		if member == nil || member.User != nil {
+			continue
+		}
+		if user := users[id]; user != nil {
+			member.User = user
+		}
+	}
 }
 
 // Type returns the type of interaction data.

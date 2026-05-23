@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"io/ioutil"
 	"net/http/httptest"
 	"strconv"
@@ -89,4 +90,70 @@ func TestVerifyInteraction(t *testing.T) {
 			t.Error("expected false, got true")
 		}
 	})
+}
+
+func TestApplicationCommandResolvedMembersLinkUsers(t *testing.T) {
+	data := []byte(`{
+		"users": {
+			"100": {
+				"id": "100",
+				"username": "user",
+				"discriminator": "0001"
+			}
+		},
+		"members": {
+			"100": {
+				"roles": ["200"]
+			}
+		}
+	}`)
+
+	var resolved ApplicationCommandInteractionDataResolved
+	if err := json.Unmarshal(data, &resolved); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	member := resolved.Members["100"]
+	if member == nil {
+		t.Fatal("resolved member was not set")
+	}
+	if member.User != resolved.Users["100"] {
+		t.Fatalf("member user was not linked to resolved user")
+	}
+	if mention := member.Mention(); mention != "<@!100>" {
+		t.Fatalf("Mention = %q, want %q", mention, "<@!100>")
+	}
+}
+
+func TestComponentResolvedMembersLinkUsers(t *testing.T) {
+	data := []byte(`{
+		"users": {
+			"100": {
+				"id": "100",
+				"username": "user",
+				"discriminator": "0001"
+			}
+		},
+		"members": {
+			"100": {
+				"roles": ["200"]
+			}
+		}
+	}`)
+
+	var resolved ComponentInteractionDataResolved
+	if err := json.Unmarshal(data, &resolved); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	member := resolved.Members["100"]
+	if member == nil {
+		t.Fatal("resolved member was not set")
+	}
+	if member.User != resolved.Users["100"] {
+		t.Fatalf("member user was not linked to resolved user")
+	}
+	if mention := member.Mention(); mention != "<@!100>" {
+		t.Fatalf("Mention = %q, want %q", mention, "<@!100>")
+	}
 }
