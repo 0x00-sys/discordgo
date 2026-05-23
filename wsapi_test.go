@@ -230,6 +230,7 @@ func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 
 func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 	heartbeatRead := make(chan struct{}, 1)
+
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -292,6 +293,69 @@ func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 
 	close(stop)
 	<-done
+}
+
+func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
+	closeCode := make(chan int, 1)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		conn.SetCloseHandler(func(code int, text string) error {
+			closeCode <- code
+			return nil
+		})
+
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	listening := make(chan interface{})
+	session := &Session{
+		ShouldReconnectOnError: false,
+		sequence:               new(int64),
+		wsConn:                 conn,
+		listening:              listening,
+	}
+	session.LastHeartbeatAck = time.Now().Add(-time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		session.heartbeat(conn, listening, 1)
+		close(done)
+	}()
+
+	select {
+	case code := <-closeCode:
+		if code != websocket.CloseServiceRestart {
+			t.Fatalf("close code = %d, want %d", code, websocket.CloseServiceRestart)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive heartbeat close frame")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("heartbeat did not return")
+	}
 }
 
 func newGatewayOpenTestServer(t *testing.T, startupPacket []byte) *httptest.Server {

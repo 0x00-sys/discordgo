@@ -319,9 +319,14 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 			if sameConnection {
 
 				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, readErr)
+				closeCode := websocket.CloseNormalClosure
+				if shouldReconnectOnGatewayClose(readErr) {
+					closeCode = websocket.CloseServiceRestart
+				}
+
 				// There has been an error reading, close the websocket so that
 				// OnDisconnect event is emitted.
-				err := s.Close()
+				err := s.CloseWithCode(closeCode)
 				if err != nil {
 					s.log(LogWarning, "error closing session connection, %s", err)
 				}
@@ -416,7 +421,7 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			} else {
 				s.log(LogError, "haven't gotten a heartbeat ACK in %v, triggering a reconnection", time.Now().UTC().Sub(last))
 			}
-			s.Close()
+			s.CloseWithCode(websocket.CloseServiceRestart)
 			s.reconnect()
 			return
 		}
