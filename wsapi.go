@@ -596,7 +596,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		return e, err
 	}
 
-	s.log(LogDebug, "Op: %d, Seq: %d, Type: %s, Data: %s\n\n", e.Operation, e.Sequence, e.Type, string(e.RawData))
+	s.log(LogDebug, "Op: %d, Seq: %d, Type: %s, Data: %s\n\n", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData))
 
 	// Ping request.
 	// Must respond with a heartbeat packet within 5 seconds
@@ -662,7 +662,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	if e.Operation != 0 {
 		// But we probably should be doing something with them.
 		// TEMP
-		s.log(LogWarning, "unknown Op: %d, Seq: %d, Type: %s, Data: %s, message: %s", e.Operation, e.Sequence, e.Type, string(e.RawData), string(message))
+		s.log(LogWarning, "unknown Op: %d, Seq: %d, Type: %s, Data: %s, message: %s", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData), redactedGatewayData(message))
 		return e, nil
 	}
 
@@ -687,13 +687,55 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		// Either way, READY events must fire, even with errors.
 		s.handleEvent(e.Type, e.Struct)
 	} else {
-		s.log(LogWarning, "unknown event: Op: %d, Seq: %d, Type: %s, Data: %s", e.Operation, e.Sequence, e.Type, string(e.RawData))
+		s.log(LogWarning, "unknown event: Op: %d, Seq: %d, Type: %s, Data: %s", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData))
 	}
 
 	// For legacy reasons, we send the raw event also, this could be useful for handling unknown events.
 	s.handleEvent(eventEventType, e)
 
 	return e, nil
+}
+
+func redactedGatewayData(data []byte) string {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return string(data)
+	}
+
+	redactGatewayValue(v)
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(data)
+	}
+
+	return string(b)
+}
+
+func redactGatewayValue(v interface{}) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		for k, nested := range value {
+			if isGatewaySecretKey(k) {
+				value[k] = "[REDACTED]"
+				continue
+			}
+			redactGatewayValue(nested)
+		}
+	case []interface{}:
+		for _, nested := range value {
+			redactGatewayValue(nested)
+		}
+	}
+}
+
+func isGatewaySecretKey(key string) bool {
+	switch key {
+	case "token", "access_token", "refresh_token":
+		return true
+	}
+
+	return false
 }
 
 // ------------------------------------------------------------------------------------------------
