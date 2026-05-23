@@ -138,6 +138,58 @@ func TestOpenReturnsOnUnexpectedDispatchDuringOpen(t *testing.T) {
 	}
 }
 
+func TestOpenReadyHandlerCanUseSessionLock(t *testing.T) {
+	server := newGatewayOpenTestServer(t, []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`))
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.ShouldReconnectOnError = false
+	session.SyncEvents = true
+
+	called := false
+	session.AddHandler(func(s *Session, r *Ready) {
+		s.RLock()
+		s.RUnlock()
+		called = true
+	})
+
+	if err = openWithTimeout(t, session); err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer session.Close()
+
+	if !called {
+		t.Fatal("READY handler was not called")
+	}
+}
+
+func TestOpenConnectHandlerCanUseSessionLock(t *testing.T) {
+	server := newGatewayOpenTestServer(t, []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`))
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.ShouldReconnectOnError = false
+	session.SyncEvents = true
+
+	called := false
+	session.AddHandler(func(s *Session, c *Connect) {
+		s.RLock()
+		s.RUnlock()
+		called = true
+	})
+
+	if err = openWithTimeout(t, session); err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer session.Close()
+
+	if !called {
+		t.Fatal("Connect handler was not called")
+	}
+}
+
 func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

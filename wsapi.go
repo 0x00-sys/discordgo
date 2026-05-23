@@ -104,8 +104,10 @@ func (s *Session) Open() error {
 		// when exiting with an error :)  Maybe someone has a better
 		// way :)
 		if err != nil {
-			s.wsConn.Close()
-			s.wsConn = nil
+			if s.wsConn != nil {
+				s.wsConn.Close()
+				s.wsConn = nil
+			}
 		}
 	}()
 
@@ -189,8 +191,14 @@ func (s *Session) Open() error {
 	if err != nil {
 		return err
 	}
+	s.Unlock()
 	e, err = s.onEvent(mt, m)
+	s.Lock()
 	if err != nil {
+		return err
+	}
+	if s.wsConn == nil {
+		err = ErrWSNotFound
 		return err
 	}
 	if e.Type != `READY` && e.Type != `RESUMED` {
@@ -200,7 +208,13 @@ func (s *Session) Open() error {
 	s.log(LogInformational, "First Packet:\n%#v\n", e)
 
 	s.log(LogInformational, "We are now connected to Discord, emitting connect event")
+	s.Unlock()
 	s.handleEvent(connectEventType, &Connect{})
+	s.Lock()
+	if s.wsConn == nil {
+		err = ErrWSNotFound
+		return err
+	}
 
 	// A VoiceConnections map is a hard requirement for Voice.
 	// XXX: can this be moved to when opening a voice connection?
