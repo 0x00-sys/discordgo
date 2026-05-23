@@ -16,6 +16,8 @@ import (
 // InteractionDeadline is the time allowed to respond to an interaction.
 const InteractionDeadline = time.Second * 3
 
+const maxInteractionVerificationBodySize = 1 << 20
+
 // ApplicationCommandType represents the type of application command.
 type ApplicationCommandType uint8
 
@@ -655,8 +657,11 @@ func VerifyInteraction(r *http.Request, key ed25519.PublicKey) bool {
 	}()
 
 	// copy body into buffers
-	_, err = io.Copy(&msg, io.TeeReader(r.Body, &body))
+	n, err := io.Copy(&msg, io.TeeReader(io.LimitReader(r.Body, maxInteractionVerificationBodySize+1), &body))
 	if err != nil {
+		return false
+	}
+	if n > maxInteractionVerificationBodySize {
 		return false
 	}
 
