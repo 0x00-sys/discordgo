@@ -326,6 +326,9 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 			rl.Message = strings.TrimSpace(string(response))
 			rl.RetryAfter = retryAfter
 		}
+		if rl.Global || strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
+			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
+		}
 
 		if cfg.ShouldRetryOnRateLimit {
 			url := redactedURL(urlStr)
