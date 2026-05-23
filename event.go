@@ -219,6 +219,10 @@ func setGuildIds(g *Guild) {
 		c.GuildID = g.ID
 	}
 
+	for _, t := range g.Threads {
+		t.GuildID = g.ID
+	}
+
 	for _, m := range g.Members {
 		m.GuildID = g.ID
 	}
