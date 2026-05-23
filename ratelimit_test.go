@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -229,6 +230,129 @@ func TestWebhookMessageEditUsesMessageRouteBucket(t *testing.T) {
 	}
 	if _, ok := session.Ratelimiter.buckets[EndpointWebhookToken("", "")]; ok {
 		t.Fatalf("shared placeholder bucket %q was created", EndpointWebhookToken("", ""))
+	}
+}
+
+func TestWebhookTokenEndpointsBypassBotGlobalRateLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session, RequestOption) error
+	}{
+		{
+			name: "get webhook with token",
+			call: func(s *Session, opt RequestOption) error {
+				_, err := s.WebhookWithToken("webhook", "token", opt)
+				return err
+			},
+		},
+		{
+			name: "edit webhook with token",
+			call: func(s *Session, opt RequestOption) error {
+				_, err := s.WebhookEditWithToken("webhook", "token", "name", "", opt)
+				return err
+			},
+		},
+		{
+			name: "delete webhook with token",
+			call: func(s *Session, opt RequestOption) error {
+				_, err := s.WebhookDeleteWithToken("webhook", "token", opt)
+				return err
+			},
+		},
+		{
+			name: "execute webhook",
+			call: func(s *Session, opt RequestOption) error {
+				_, err := s.WebhookExecute("webhook", "token", false, &WebhookParams{
+					Content: "hello",
+				}, opt)
+				return err
+			},
+		},
+		{
+			name: "execute webhook in thread",
+			call: func(s *Session, opt RequestOption) error {
+				_, err := s.WebhookThreadExecute("webhook", "token", false, "thread", &WebhookParams{
+					Content: "hello",
+				}, opt)
+				return err
+			},
+		},
+		{
+			name: "get webhook message",
+			call: func(s *Session, opt RequestOption) error {
+				_, err := s.WebhookMessage("webhook", "token", "message", opt)
+				return err
+			},
+		},
+		{
+			name: "edit webhook message",
+			call: func(s *Session, opt RequestOption) error {
+				content := "edited"
+				_, err := s.WebhookMessageEdit("webhook", "token", "message", &WebhookEdit{
+					Content: &content,
+				}, opt)
+				return err
+			},
+		},
+		{
+			name: "delete webhook message",
+			call: func(s *Session, opt RequestOption) error {
+				return s.WebhookMessageDelete("webhook", "token", "message", opt)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := newTestWebhookSession(t)
+			session.Token = "Bot secret"
+			atomic.StoreInt64(session.Ratelimiter.global, time.Now().Add(time.Hour).UnixNano())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			if err := tt.call(session, WithContext(ctx)); err != nil {
+				t.Fatalf("%s returned error: %v", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestWebhookTokenGlobalRateLimitDoesNotSetBotGlobal(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header: http.Header{
+				"Content-Type":            []string{"application/json"},
+				"Retry-After":             []string{"60"},
+				"X-RateLimit-Global":      []string{"true"},
+				"X-RateLimit-Reset-After": []string{"60"},
+			},
+			Body:    io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":60,"global":true}`)),
+			Request: r,
+		}, nil
+	})
+
+	_, err = session.WebhookExecute("webhook", "token", false, &WebhookParams{
+		Content: "hello",
+	}, WithRetryOnRatelimit(false))
+	if err == nil {
+		t.Fatal("WebhookExecute returned nil error, want rate limit error")
+	}
+
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("WebhookExecute returned error %T, want *RateLimitError", err)
+	}
+
+	if global := atomic.LoadInt64(session.Ratelimiter.global); global != 0 {
+		t.Fatalf("bot global reset = %d, want 0", global)
 	}
 }
 

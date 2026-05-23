@@ -193,6 +193,158 @@ func TestWebhookDeleteWithTokenAllowsNoContent(t *testing.T) {
 	}
 }
 
+func TestWebhookTokenEndpointsOmitAuthorization(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session) error
+		body string
+	}{
+		{
+			name: "get webhook with token",
+			call: func(s *Session) error {
+				_, err := s.WebhookWithToken("webhook", "token")
+				return err
+			},
+			body: `{"id":"webhook","type":1}`,
+		},
+		{
+			name: "execute webhook",
+			call: func(s *Session) error {
+				_, err := s.WebhookExecute("webhook", "token", false, &WebhookParams{Content: "hello"})
+				return err
+			},
+			body: ``,
+		},
+		{
+			name: "get webhook message",
+			call: func(s *Session) error {
+				_, err := s.WebhookMessage("webhook", "token", "message")
+				return err
+			},
+			body: `{"id":"message","channel_id":"channel"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+
+			called := false
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				if got := r.Header.Get("Authorization"); got != "" {
+					t.Fatalf("Authorization header = %q, want empty", got)
+				}
+
+				statusCode := http.StatusOK
+				status := "200 OK"
+				if tt.body == "" {
+					statusCode = http.StatusNoContent
+					status = "204 No Content"
+				}
+
+				return &http.Response{
+					StatusCode: statusCode,
+					Status:     status,
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			if err := tt.call(session); err != nil {
+				t.Fatalf("%s returned error: %v", tt.name, err)
+			}
+			if !called {
+				t.Fatal("HTTP transport was not called")
+			}
+		})
+	}
+}
+
+func TestInteractionTokenEndpointsOmitAuthorization(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session) error
+	}{
+		{
+			name: "initial response",
+			call: func(s *Session) error {
+				return s.InteractionRespond(&Interaction{ID: "interaction", Token: "token"}, &InteractionResponse{Type: InteractionResponsePong})
+			},
+		},
+		{
+			name: "followup message",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageCreate(&Interaction{AppID: "application", Token: "token"}, false, &WebhookParams{Content: "hello"})
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+
+			called := false
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				if got := r.Header.Get("Authorization"); got != "" {
+					t.Fatalf("Authorization header = %q, want empty", got)
+				}
+
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Status:     "204 No Content",
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    r,
+				}, nil
+			})
+
+			if err := tt.call(session); err != nil {
+				t.Fatalf("%s returned error: %v", tt.name, err)
+			}
+			if !called {
+				t.Fatal("HTTP transport was not called")
+			}
+		})
+	}
+}
+
+func TestAuthenticatedWebhookEndpointKeepsAuthorization(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	called := false
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if got := r.Header.Get("Authorization"); got != "Bot secret" {
+			t.Fatalf("Authorization header = %q, want Bot secret", got)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":"webhook","type":1}`)),
+			Request:    r,
+		}, nil
+	})
+
+	if _, err := session.Webhook("webhook"); err != nil {
+		t.Fatalf("Webhook returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("HTTP transport was not called")
+	}
+}
+
 func TestPermissionAllIncludesCurrentPermissionFlags(t *testing.T) {
 	tests := []struct {
 		name       string

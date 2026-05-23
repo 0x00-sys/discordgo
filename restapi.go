@@ -179,6 +179,19 @@ func WithHeader(key, value string) RequestOption {
 	}
 }
 
+func withoutAuthorization() RequestOption {
+	return func(cfg *RequestConfig) {
+		cfg.Request.Header.Del("Authorization")
+	}
+}
+
+func withoutAuthorizationOptions(options []RequestOption) []RequestOption {
+	unauthenticated := make([]RequestOption, 0, len(options)+1)
+	unauthenticated = append(unauthenticated, options...)
+	unauthenticated = append(unauthenticated, withoutAuthorization())
+	return unauthenticated
+}
+
 // WithAuditLogReason changes audit log reason associated with the request.
 func WithAuditLogReason(reason string) RequestOption {
 	return WithHeader("X-Audit-Log-Reason", reason)
@@ -2680,7 +2693,8 @@ func (s *Session) Webhook(webhookID string, options ...RequestOption) (st *Webho
 // token    : The auth token for the webhook.
 func (s *Session) WebhookWithToken(webhookID, token string, options ...RequestOption) (st *Webhook, err error) {
 
-	body, err := s.RequestWithBucketID("GET", EndpointWebhookToken(webhookID, token), nil, webhookTokenBucketID(webhookID), options...)
+	options = withoutAuthorizationOptions(options)
+	body, err := s.requestWithBucketIDNoGlobal("GET", EndpointWebhookToken(webhookID, token), nil, webhookTokenBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2725,7 +2739,8 @@ func (s *Session) WebhookEditWithToken(webhookID, token, name, avatar string, op
 	}{name, avatar}
 
 	var body []byte
-	body, err = s.RequestWithBucketID("PATCH", EndpointWebhookToken(webhookID, token), data, webhookTokenBucketID(webhookID), options...)
+	options = withoutAuthorizationOptions(options)
+	body, err = s.requestWithBucketIDNoGlobal("PATCH", EndpointWebhookToken(webhookID, token), data, webhookTokenBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2749,7 +2764,8 @@ func (s *Session) WebhookDelete(webhookID string, options ...RequestOption) (err
 // token    : The auth token for the webhook.
 func (s *Session) WebhookDeleteWithToken(webhookID, token string, options ...RequestOption) (st *Webhook, err error) {
 
-	body, err := s.RequestWithBucketID("DELETE", EndpointWebhookToken(webhookID, token), nil, webhookTokenBucketID(webhookID), options...)
+	options = withoutAuthorizationOptions(options)
+	body, err := s.requestWithBucketIDNoGlobal("DELETE", EndpointWebhookToken(webhookID, token), nil, webhookTokenBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2765,6 +2781,7 @@ func (s *Session) WebhookDeleteWithToken(webhookID, token string, options ...Req
 
 func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID string, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
 	uri := EndpointWebhookToken(webhookID, token)
+	options = withoutAuthorizationOptions(options)
 
 	v := url.Values{}
 	if wait {
@@ -2786,9 +2803,9 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 			return st, encodeErr
 		}
 
-		response, err = s.RequestRaw("POST", uri, contentType, body, bucketID, 0, options...)
+		response, err = s.requestRawWithBucketIDNoGlobal("POST", uri, contentType, body, bucketID, 0, options...)
 	} else {
-		response, err = s.RequestWithBucketID("POST", uri, data, bucketID, options...)
+		response, err = s.requestWithBucketIDNoGlobal("POST", uri, data, bucketID, options...)
 	}
 	if !wait || err != nil {
 		return
@@ -2800,6 +2817,7 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 
 func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
 	uri := EndpointWebhookToken(appID, token)
+	options = withoutAuthorizationOptions(options)
 
 	if wait {
 		v := url.Values{}
@@ -2851,7 +2869,8 @@ func (s *Session) WebhookThreadExecute(webhookID, token string, wait bool, threa
 func (s *Session) WebhookMessage(webhookID, token, messageID string, options ...RequestOption) (message *Message, err error) {
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 
-	body, err := s.RequestWithBucketID("GET", uri, nil, webhookMessageBucketID(webhookID), options...)
+	options = withoutAuthorizationOptions(options)
+	body, err := s.requestWithBucketIDNoGlobal("GET", uri, nil, webhookMessageBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2865,6 +2884,7 @@ func (s *Session) interactionWebhookMessage(appID, token, messageID string, opti
 	uri := EndpointWebhookMessage(appID, token, messageID)
 	bucketID := interactionWebhookMessageBucketID(appID, token)
 
+	options = withoutAuthorizationOptions(options)
 	body, err := s.requestWithBucketIDNoGlobal("GET", uri, nil, bucketID, options...)
 	if err != nil {
 		return
@@ -2882,6 +2902,7 @@ func (s *Session) interactionWebhookMessage(appID, token, messageID string, opti
 func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 	bucketID := webhookMessageBucketID(webhookID)
+	options = withoutAuthorizationOptions(options)
 
 	var response []byte
 	if len(data.Files) > 0 {
@@ -2890,12 +2911,12 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 			return nil, err
 		}
 
-		response, err = s.RequestRaw("PATCH", uri, contentType, body, bucketID, 0, options...)
+		response, err = s.requestRawWithBucketIDNoGlobal("PATCH", uri, contentType, body, bucketID, 0, options...)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		response, err = s.RequestWithBucketID("PATCH", uri, data, bucketID, options...)
+		response, err = s.requestWithBucketIDNoGlobal("PATCH", uri, data, bucketID, options...)
 
 		if err != nil {
 			return nil, err
@@ -2909,6 +2930,7 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
 	uri := EndpointWebhookMessage(appID, token, messageID)
 	bucketID := interactionWebhookMessageBucketID(appID, token)
+	options = withoutAuthorizationOptions(options)
 
 	var response []byte
 	if len(data.Files) > 0 {
@@ -2940,13 +2962,15 @@ func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, 
 func (s *Session) WebhookMessageDelete(webhookID, token, messageID string, options ...RequestOption) (err error) {
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 
-	_, err = s.RequestWithBucketID("DELETE", uri, nil, webhookMessageBucketID(webhookID), options...)
+	options = withoutAuthorizationOptions(options)
+	_, err = s.requestWithBucketIDNoGlobal("DELETE", uri, nil, webhookMessageBucketID(webhookID), options...)
 	return
 }
 
 func (s *Session) interactionWebhookMessageDelete(appID, token, messageID string, options ...RequestOption) (err error) {
 	uri := EndpointWebhookMessage(appID, token, messageID)
 
+	options = withoutAuthorizationOptions(options)
 	_, err = s.requestWithBucketIDNoGlobal("DELETE", uri, nil, interactionWebhookMessageBucketID(appID, token), options...)
 	return
 }
@@ -3596,6 +3620,7 @@ func (s *Session) ApplicationCommandPermissionsBatchEdit(appID, guildID string, 
 func (s *Session) InteractionRespond(interaction *Interaction, resp *InteractionResponse, options ...RequestOption) error {
 	endpoint := EndpointInteractionResponse(interaction.ID, interaction.Token)
 	bucketID := interactionResponseBucketID(interaction.ID)
+	options = withoutAuthorizationOptions(options)
 
 	if resp.Data != nil && len(resp.Data.Files) > 0 {
 		contentType, body, err := MultipartBodyWithJSON(resp, resp.Data.Files)
