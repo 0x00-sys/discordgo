@@ -1202,7 +1202,11 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			t.BeforeDelete = &oldCopy
 		}
 
-		err = s.GuildRemove(t.Guild)
+		if t.Unavailable {
+			err = s.GuildAdd(t.Guild)
+		} else {
+			err = s.GuildRemove(t.Guild)
+		}
 	case *GuildMemberAdd:
 		// Updates the MemberCount of the guild.
 		s.Lock()

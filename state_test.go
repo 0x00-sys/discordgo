@@ -68,6 +68,71 @@ func TestGuildRemoveClearsGuildIndexes(t *testing.T) {
 	}
 }
 
+func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{ID: "channel", GuildID: "guild"},
+		},
+		Threads: []*Channel{
+			{
+				ID:             "thread",
+				GuildID:        "guild",
+				Type:           ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{},
+			},
+		},
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	event := &GuildDelete{Guild: &Guild{
+		ID:          "guild",
+		Unavailable: true,
+	}}
+	if err := state.OnInterface(&Session{StateEnabled: true}, event); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after unavailable delete: %v", err)
+	}
+	if !guild.Unavailable {
+		t.Fatal("guild unavailable flag was not set")
+	}
+	if event.BeforeDelete == nil {
+		t.Fatal("BeforeDelete was not populated")
+	}
+	if _, err := state.Channel("channel"); err != nil {
+		t.Fatalf("Channel returned error after unavailable delete: %v", err)
+	}
+	if _, err := state.Channel("thread"); err != nil {
+		t.Fatalf("Thread returned error after unavailable delete: %v", err)
+	}
+	if _, err := state.Member("guild", "user"); err != nil {
+		t.Fatalf("Member returned error after unavailable delete: %v", err)
+	}
+
+	if err := state.OnInterface(&Session{StateEnabled: true}, &GuildCreate{Guild: &Guild{ID: "guild"}}); err != nil {
+		t.Fatalf("GuildCreate returned error: %v", err)
+	}
+	guild, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after available create: %v", err)
+	}
+	if guild.Unavailable {
+		t.Fatal("guild unavailable flag was not cleared")
+	}
+}
+
 func TestThreadListSyncHandlesThreadWithoutMetadata(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
