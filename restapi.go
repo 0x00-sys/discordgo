@@ -228,8 +228,9 @@ func (s *Session) requestWithEphemeralBucketID(method, urlStr string, data inter
 
 // RequestRaw makes a (GET/POST/...) Requests to Discord REST API.
 // Preferably use the other Request* methods but this lets you send JSON directly if that's what you have.
-// Sequence is the sequence number, if it fails with a 502 it will
-// retry with sequence+1 until it either succeeds or sequence >= session.MaxRestRetries
+// Sequence is the sequence number. If a retry-safe request fails with a transient
+// 5xx response, it will retry with sequence+1 until it either succeeds or
+// sequence >= session.MaxRestRetries.
 func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucketID string, sequence int, options ...RequestOption) (response []byte, err error) {
 	if bucketID == "" {
 		bucketID = strings.SplitN(urlStr, "?", 2)[0]
@@ -398,8 +399,11 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 	case http.StatusGatewayTimeout:
 		fallthrough
 	case http.StatusBadGateway:
-		// Retry sending request if possible
-		if sequence < cfg.MaxRestRetries {
+		// Retry sending request if possible. Avoid replaying non-idempotent
+		// requests because Discord may have already committed the write.
+		if !shouldRetryRESTRequest(method) {
+			err = newRestError(req, resp, response)
+		} else if sequence < cfg.MaxRestRetries {
 
 			s.log(LogInformational, "%s Failed (%s), Retrying...", redactedURL(urlStr), resp.Status)
 			closeResponseBody()
@@ -460,6 +464,15 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 	}
 
 	return
+}
+
+func shouldRetryRESTRequest(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 func retryAfterHeader(headers http.Header) (time.Duration, error) {
