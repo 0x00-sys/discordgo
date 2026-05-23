@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"io/ioutil"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -31,6 +32,14 @@ func TestVerifyInteraction(t *testing.T) {
 
 		if !VerifyInteraction(request, pubkey) {
 			t.Error("expected true, got false")
+		}
+
+		got, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("error reading restored body: %s", err)
+		}
+		if string(got) != body {
+			t.Fatalf("restored body = %q, want %q", got, body)
 		}
 	})
 
@@ -63,6 +72,30 @@ func TestVerifyInteraction(t *testing.T) {
 
 		if VerifyInteraction(request, pubkey) {
 			t.Error("expected false, got true")
+		}
+	})
+
+	t.Run("failure/body too large", func(t *testing.T) {
+		body := "body"
+		request := httptest.NewRequest("POST", "http://localhost/interaction", strings.NewReader(body))
+		request.Header.Set("X-Signature-Timestamp", timestamp)
+
+		var msg bytes.Buffer
+		msg.WriteString(timestamp)
+		msg.WriteString(body)
+		signature := ed25519.Sign(privkey, msg.Bytes())
+		request.Header.Set("X-Signature-Ed25519", hex.EncodeToString(signature[:ed25519.SignatureSize]))
+
+		if VerifyInteractionWithBodyLimit(request, pubkey, int64(len(body)-1)) {
+			t.Error("expected false, got true")
+		}
+
+		got, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("error reading restored body: %s", err)
+		}
+		if string(got) != body {
+			t.Fatalf("restored body = %q, want %q", got, body)
 		}
 	})
 }

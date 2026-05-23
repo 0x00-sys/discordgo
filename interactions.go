@@ -13,8 +13,13 @@ import (
 	"time"
 )
 
-// InteractionDeadline is the time allowed to respond to an interaction.
-const InteractionDeadline = time.Second * 3
+const (
+	// InteractionDeadline is the time allowed to respond to an interaction.
+	InteractionDeadline = time.Second * 3
+
+	// MaxInteractionVerificationBodySize is the largest request body VerifyInteraction accepts.
+	MaxInteractionVerificationBodySize int64 = 1 << 20
+)
 
 // ApplicationCommandType represents the type of application command.
 type ApplicationCommandType uint8
@@ -623,6 +628,13 @@ type InteractionResponseData struct {
 // signing algorithm, as documented here:
 // https://discord.com/developers/docs/interactions/receiving-and-responding#security-and-authorization
 func VerifyInteraction(r *http.Request, key ed25519.PublicKey) bool {
+	return VerifyInteractionWithBodyLimit(r, key, MaxInteractionVerificationBodySize)
+}
+
+// VerifyInteractionWithBodyLimit implements message verification of the discord interactions api
+// signing algorithm with a configurable maximum request body size. If maxBodyBytes is
+// less than or equal to zero, no size limit is applied.
+func VerifyInteractionWithBodyLimit(r *http.Request, key ed25519.PublicKey, maxBodyBytes int64) bool {
 	var msg bytes.Buffer
 
 	signature := r.Header.Get("X-Signature-Ed25519")
@@ -655,8 +667,16 @@ func VerifyInteraction(r *http.Request, key ed25519.PublicKey) bool {
 	}()
 
 	// copy body into buffers
-	_, err = io.Copy(&msg, io.TeeReader(r.Body, &body))
+	var reader io.Reader = r.Body
+	if maxBodyBytes > 0 {
+		reader = io.LimitReader(r.Body, maxBodyBytes+1)
+	}
+
+	n, err := io.Copy(&msg, io.TeeReader(reader, &body))
 	if err != nil {
+		return false
+	}
+	if maxBodyBytes > 0 && n > maxBodyBytes {
 		return false
 	}
 
