@@ -926,9 +926,12 @@ func (s *State) VoiceState(guildID, userID string) (*VoiceState, error) {
 		return nil, ErrNilState
 	}
 
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		return nil, err
+	s.RLock()
+	defer s.RUnlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil, ErrStateNotFound
 	}
 
 	for _, state := range guild.VoiceStates {
