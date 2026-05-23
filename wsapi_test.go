@@ -2,6 +2,7 @@ package discordgo
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -380,6 +381,52 @@ func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("heartbeat did not return")
+	}
+}
+
+func TestReconnectStopsWhenCloseCalled(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	attempted := make(chan struct{}, 1)
+	var attempts int32
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			atomic.AddInt32(&attempts, 1)
+			select {
+			case attempted <- struct{}{}:
+			default:
+			}
+			return nil, errors.New("dial failed")
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect()
+		close(done)
+	}()
+
+	select {
+	case <-attempted:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not attempt to dial")
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("reconnect did not stop after Close")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("dial attempts = %d, want 1", got)
 	}
 }
 
