@@ -115,6 +115,9 @@ func (s *Session) Open() error {
 	// When processed by onEvent the heartbeat goroutine will be started.
 	mt, m, err := s.wsConn.ReadMessage()
 	if err != nil {
+		if shouldStartNewGatewaySessionOnClose(err) {
+			s.resetGatewayResumeStateLocked()
+		}
 		return err
 	}
 	err = s.openGatewayControlEvent(mt, m, 10)
@@ -185,6 +188,9 @@ func (s *Session) Open() error {
 	// Now Discord should send us a READY or RESUMED packet.
 	mt, m, err = s.wsConn.ReadMessage()
 	if err != nil {
+		if shouldStartNewGatewaySessionOnClose(err) {
+			s.resetGatewayResumeStateLocked()
+		}
 		return err
 	}
 	err = s.openGatewayControlEvent(mt, m, 0, "READY", "RESUMED")
@@ -319,6 +325,9 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 			if sameConnection {
 
 				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, readErr)
+				if shouldStartNewGatewaySessionOnClose(readErr) {
+					s.resetGatewayResumeState()
+				}
 				closeCode := websocket.CloseNormalClosure
 				if shouldReconnectOnGatewayClose(readErr) {
 					closeCode = websocket.CloseServiceRestart
@@ -357,6 +366,22 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 func shouldReconnectOnGatewayClose(err error) bool {
 	return !websocket.IsCloseError(err, 4004, 4010, 4011, 4012, 4013, 4014)
+}
+
+func shouldStartNewGatewaySessionOnClose(err error) bool {
+	return websocket.IsCloseError(err, 4007, 4009)
+}
+
+func (s *Session) resetGatewayResumeState() {
+	s.Lock()
+	defer s.Unlock()
+	s.resetGatewayResumeStateLocked()
+}
+
+func (s *Session) resetGatewayResumeStateLocked() {
+	s.resumeGatewayURL = ""
+	s.sessionID = ""
+	atomic.StoreInt64(s.sequence, 0)
 }
 
 type heartbeatOp struct {

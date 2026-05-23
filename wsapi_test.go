@@ -62,6 +62,57 @@ func TestOpenReturnsOnInvalidSessionDuringOpen(t *testing.T) {
 	}
 }
 
+func TestOpenClearsResumeStateOnNewSessionCloseCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{
+			name: "invalid sequence",
+			code: 4007,
+		},
+		{
+			name: "session timed out",
+			code: 4009,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempts int32
+			server := newGatewayCloseAfterIdentifyTestServer(t, tt.code, &attempts)
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatalf("error creating session: %v", err)
+			}
+			session.sessionID = "old-session"
+			session.resumeGatewayURL = session.gateway
+			atomic.StoreInt64(session.sequence, 42)
+
+			err = openWithTimeout(t, session)
+			if err == nil {
+				t.Fatal("expected Open to return a gateway close error")
+			}
+
+			if session.wsConn != nil {
+				t.Fatal("Open returned an error without clearing the websocket")
+			}
+			if session.sessionID != "" {
+				t.Fatalf("sessionID = %q, want empty", session.sessionID)
+			}
+			if session.resumeGatewayURL != "" {
+				t.Fatalf("resumeGatewayURL = %q, want empty", session.resumeGatewayURL)
+			}
+			if sequence := atomic.LoadInt64(session.sequence); sequence != 0 {
+				t.Fatalf("sequence = %d, want 0", sequence)
+			}
+			if got := atomic.LoadInt32(&attempts); got != 1 {
+				t.Fatalf("gateway connection attempts = %d, want 1", got)
+			}
+		})
+	}
+}
+
 func TestInvalidSessionClearsResumeStateConcurrentRead(t *testing.T) {
 	session := &Session{
 		ShouldReconnectOnError: false,
@@ -687,6 +738,43 @@ func TestShouldReconnectOnGatewayClose(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := shouldReconnectOnGatewayClose(tt.err); got != tt.want {
 				t.Fatalf("shouldReconnectOnGatewayClose() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldStartNewGatewaySessionOnClose(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "invalid sequence",
+			err:  &websocket.CloseError{Code: 4007},
+			want: true,
+		},
+		{
+			name: "session timed out",
+			err:  &websocket.CloseError{Code: 4009},
+			want: true,
+		},
+		{
+			name: "reconnect",
+			err:  &websocket.CloseError{Code: 4000},
+			want: false,
+		},
+		{
+			name: "authentication failed",
+			err:  &websocket.CloseError{Code: 4004},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldStartNewGatewaySessionOnClose(tt.err); got != tt.want {
+				t.Fatalf("shouldStartNewGatewaySessionOnClose() = %v, want %v", got, tt.want)
 			}
 		})
 	}
