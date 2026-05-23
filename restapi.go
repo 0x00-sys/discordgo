@@ -220,20 +220,35 @@ func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucke
 	if bucketID == "" {
 		bucketID = strings.SplitN(urlStr, "?", 2)[0]
 	}
-	return s.RequestWithLockedBucket(method, urlStr, contentType, b, s.Ratelimiter.LockBucket(bucketID), sequence, options...)
+
+	cfg, err := s.requestConfig(method, urlStr, contentType, b, options...)
+	if err != nil {
+		return
+	}
+
+	bucket, err := s.Ratelimiter.LockBucketContext(cfg.Request.Context(), bucketID)
+	if err != nil {
+		return
+	}
+
+	return s.requestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, cfg, options...)
 }
 
 // RequestWithLockedBucket makes a request using a bucket that's already been locked
 func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, options ...RequestOption) (response []byte, err error) {
-	if s.Debug {
-		log.Printf("API REQUEST %8s :: %s\n", method, redactedURL(urlStr))
-		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b, contentType))
-	}
-
-	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(b))
+	cfg, err := s.requestConfig(method, urlStr, contentType, b, options...)
 	if err != nil {
 		bucket.Release(nil)
 		return
+	}
+
+	return s.requestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, cfg, options...)
+}
+
+func (s *Session) requestConfig(method, urlStr, contentType string, b []byte, options ...RequestOption) (*RequestConfig, error) {
+	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(b))
+	if err != nil {
+		return nil, err
 	}
 
 	// Not used on initial login..
@@ -255,7 +270,17 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 	for _, opt := range options {
 		opt(cfg)
 	}
-	req = cfg.Request
+
+	return cfg, nil
+}
+
+func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, cfg *RequestConfig, options ...RequestOption) (response []byte, err error) {
+	if s.Debug {
+		log.Printf("API REQUEST %8s :: %s\n", method, redactedURL(urlStr))
+		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b, contentType))
+	}
+
+	req := cfg.Request
 
 	if s.Debug {
 		for k, v := range req.Header {
@@ -268,12 +293,18 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		bucket.Release(nil)
 		return
 	}
-	defer func() {
+	respBodyClosed := false
+	closeResponseBody := func() {
+		if respBodyClosed {
+			return
+		}
 		err2 := resp.Body.Close()
+		respBodyClosed = true
 		if s.Debug && err2 != nil {
 			log.Println("error closing resp body")
 		}
-	}()
+	}
+	defer closeResponseBody()
 
 	err = bucket.Release(resp.Header)
 	if err != nil {
@@ -291,7 +322,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		for k, v := range resp.Header {
 			log.Printf("API RESPONSE  HEADER :: [%s] = %+v\n", k, v)
 		}
-		log.Printf("API RESPONSE    BODY :: [%s]\n\n\n", redactedRESTBody(response))
+		log.Printf("API RESPONSE    BODY :: [%s]\n\n\n", redactedRESTBody(response, resp.Header.Get("Content-Type")))
 	}
 
 	switch resp.StatusCode {
@@ -309,7 +340,12 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		if sequence < cfg.MaxRestRetries {
 
 			s.log(LogInformational, "%s Failed (%s), Retrying...", redactedURL(urlStr), resp.Status)
-			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, s.Ratelimiter.LockBucketObject(bucket), sequence+1, options...)
+			closeResponseBody()
+			bucket, err = s.Ratelimiter.LockBucketObjectContext(req.Context(), bucket)
+			if err != nil {
+				return
+			}
+			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence+1, options...)
 		} else {
 			err = fmt.Errorf("Exceeded Max retries HTTP %s, %s", resp.Status, response)
 		}
@@ -335,11 +371,19 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 			s.log(LogInformational, "Rate Limiting %s, retry in %v", url, rl.RetryAfter)
 			s.handleEvent(rateLimitEventType, &RateLimit{TooManyRequests: &rl, URL: url})
 
-			time.Sleep(rl.RetryAfter)
+			closeResponseBody()
+			err = sleepWithContext(req.Context(), rl.RetryAfter)
+			if err != nil {
+				return
+			}
 			// we can make the above smarter
 			// this method can cause longer delays than required
 
-			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, s.Ratelimiter.LockBucketObject(bucket), sequence, options...)
+			bucket, err = s.Ratelimiter.LockBucketObjectContext(req.Context(), bucket)
+			if err != nil {
+				return
+			}
+			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, options...)
 		} else {
 			err = &RateLimitError{&RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}}
 		}
@@ -368,6 +412,22 @@ func retryAfterHeader(headers http.Header) (time.Duration, error) {
 	}
 
 	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 const (
