@@ -193,6 +193,153 @@ func TestWebhookDeleteWithTokenAllowsNoContent(t *testing.T) {
 	}
 }
 
+func TestPermissionAllIncludesCurrentPermissionFlags(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission int64
+	}{
+		{"CreateInstantInvite", PermissionCreateInstantInvite},
+		{"KickMembers", PermissionKickMembers},
+		{"BanMembers", PermissionBanMembers},
+		{"Administrator", PermissionAdministrator},
+		{"ManageChannels", PermissionManageChannels},
+		{"ManageGuild", PermissionManageGuild},
+		{"AddReactions", PermissionAddReactions},
+		{"ViewAuditLogs", PermissionViewAuditLogs},
+		{"VoicePrioritySpeaker", PermissionVoicePrioritySpeaker},
+		{"VoiceStreamVideo", PermissionVoiceStreamVideo},
+		{"ViewChannel", PermissionViewChannel},
+		{"SendMessages", PermissionSendMessages},
+		{"SendTTSMessages", PermissionSendTTSMessages},
+		{"ManageMessages", PermissionManageMessages},
+		{"EmbedLinks", PermissionEmbedLinks},
+		{"AttachFiles", PermissionAttachFiles},
+		{"ReadMessageHistory", PermissionReadMessageHistory},
+		{"MentionEveryone", PermissionMentionEveryone},
+		{"UseExternalEmojis", PermissionUseExternalEmojis},
+		{"ViewGuildInsights", PermissionViewGuildInsights},
+		{"VoiceConnect", PermissionVoiceConnect},
+		{"VoiceSpeak", PermissionVoiceSpeak},
+		{"VoiceMuteMembers", PermissionVoiceMuteMembers},
+		{"VoiceDeafenMembers", PermissionVoiceDeafenMembers},
+		{"VoiceMoveMembers", PermissionVoiceMoveMembers},
+		{"VoiceUseVAD", PermissionVoiceUseVAD},
+		{"ChangeNickname", PermissionChangeNickname},
+		{"ManageNicknames", PermissionManageNicknames},
+		{"ManageRoles", PermissionManageRoles},
+		{"ManageWebhooks", PermissionManageWebhooks},
+		{"ManageGuildExpressions", PermissionManageGuildExpressions},
+		{"UseApplicationCommands", PermissionUseApplicationCommands},
+		{"VoiceRequestToSpeak", PermissionVoiceRequestToSpeak},
+		{"ManageEvents", PermissionManageEvents},
+		{"ManageThreads", PermissionManageThreads},
+		{"CreatePublicThreads", PermissionCreatePublicThreads},
+		{"CreatePrivateThreads", PermissionCreatePrivateThreads},
+		{"UseExternalStickers", PermissionUseExternalStickers},
+		{"SendMessagesInThreads", PermissionSendMessagesInThreads},
+		{"UseEmbeddedActivities", PermissionUseEmbeddedActivities},
+		{"ModerateMembers", PermissionModerateMembers},
+		{"ViewCreatorMonetizationAnalytics", PermissionViewCreatorMonetizationAnalytics},
+		{"UseSoundboard", PermissionUseSoundboard},
+		{"CreateGuildExpressions", PermissionCreateGuildExpressions},
+		{"CreateEvents", PermissionCreateEvents},
+		{"UseExternalSounds", PermissionUseExternalSounds},
+		{"SendVoiceMessages", PermissionSendVoiceMessages},
+		{"SetVoiceChannelStatus", PermissionSetVoiceChannelStatus},
+		{"SendPolls", PermissionSendPolls},
+		{"UseExternalApps", PermissionUseExternalApps},
+		{"PinMessages", PermissionPinMessages},
+		{"BypassSlowmode", PermissionBypassSlowmode},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if PermissionAll&tt.permission != tt.permission {
+				t.Fatalf("PermissionAll missing %s (%d)", tt.name, tt.permission)
+			}
+		})
+	}
+}
+
+func TestPermissionAllChannelIncludesCurrentChannelPermissions(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission int64
+	}{
+		{"UseExternalEmojis", PermissionUseExternalEmojis},
+		{"UseApplicationCommands", PermissionUseApplicationCommands},
+		{"ManageEvents", PermissionManageEvents},
+		{"ManageThreads", PermissionManageThreads},
+		{"CreatePublicThreads", PermissionCreatePublicThreads},
+		{"CreatePrivateThreads", PermissionCreatePrivateThreads},
+		{"UseExternalStickers", PermissionUseExternalStickers},
+		{"SendMessagesInThreads", PermissionSendMessagesInThreads},
+		{"UseEmbeddedActivities", PermissionUseEmbeddedActivities},
+		{"UseSoundboard", PermissionUseSoundboard},
+		{"CreateEvents", PermissionCreateEvents},
+		{"UseExternalSounds", PermissionUseExternalSounds},
+		{"SendVoiceMessages", PermissionSendVoiceMessages},
+		{"SetVoiceChannelStatus", PermissionSetVoiceChannelStatus},
+		{"SendPolls", PermissionSendPolls},
+		{"UseExternalApps", PermissionUseExternalApps},
+		{"PinMessages", PermissionPinMessages},
+		{"BypassSlowmode", PermissionBypassSlowmode},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if PermissionAllChannel&tt.permission != tt.permission {
+				t.Fatalf("PermissionAllChannel missing %s (%d)", tt.name, tt.permission)
+			}
+		})
+	}
+}
+
+func TestMemberPermissionsAdministratorIncludesCurrentChannelPermissions(t *testing.T) {
+	var currentChannelPermissions int64 = PermissionUseExternalEmojis |
+		PermissionUseApplicationCommands |
+		PermissionManageEvents |
+		PermissionManageThreads |
+		PermissionCreatePublicThreads |
+		PermissionCreatePrivateThreads |
+		PermissionUseExternalStickers |
+		PermissionSendMessagesInThreads |
+		PermissionUseEmbeddedActivities |
+		PermissionUseSoundboard |
+		PermissionCreateEvents |
+		PermissionUseExternalSounds |
+		PermissionSendVoiceMessages |
+		PermissionSetVoiceChannelStatus |
+		PermissionSendPolls |
+		PermissionUseExternalApps |
+		PermissionPinMessages |
+		PermissionBypassSlowmode
+
+	guild := &Guild{
+		ID:      "guild",
+		OwnerID: "owner",
+		Roles: []*Role{
+			{ID: "guild"},
+			{ID: "admin", Permissions: PermissionAdministrator},
+		},
+	}
+	channel := &Channel{
+		GuildID: "guild",
+		PermissionOverwrites: []*PermissionOverwrite{
+			{
+				ID:   "guild",
+				Type: PermissionOverwriteTypeRole,
+				Deny: currentChannelPermissions,
+			},
+		},
+	}
+
+	permissions := memberPermissions(guild, channel, "member", []string{"admin"})
+	if permissions&currentChannelPermissions != currentChannelPermissions {
+		t.Fatalf("administrator permissions missing current channel flags: got %d, want %d", permissions&currentChannelPermissions, currentChannelPermissions)
+	}
+}
+
 func TestGateway(t *testing.T) {
 
 	if dg == nil {
