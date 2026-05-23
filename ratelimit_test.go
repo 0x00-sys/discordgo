@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -160,8 +161,7 @@ func TestRatelimitDoesNotCleanBucketsBeforeReset(t *testing.T) {
 
 func TestLockBucketObjectContextRespectsContextWhileWaitingForLock(t *testing.T) {
 	rl := NewRatelimiter()
-	bucket := rl.GetBucket("/channels/99/messages")
-	bucket.Lock()
+	bucket := rl.LockBucket("/channels/99/messages")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
@@ -178,15 +178,61 @@ func TestLockBucketObjectContextRespectsContextWhileWaitingForLock(t *testing.T)
 			t.Fatalf("LockBucketObjectContext error = %v, want context deadline exceeded", err)
 		}
 	case <-time.After(time.Second):
-		bucket.Unlock()
+		if err := bucket.Release(nil); err != nil {
+			t.Fatalf("Release returned error: %v", err)
+		}
 		t.Fatal("LockBucketObjectContext did not return after context deadline")
 	}
 
-	if active := atomic.LoadInt32(&bucket.activeRequests); active != 0 {
-		t.Fatalf("activeRequests = %d, want 0", active)
+	if active := atomic.LoadInt32(&bucket.activeRequests); active != 1 {
+		t.Fatalf("activeRequests = %d, want 1", active)
 	}
 
-	bucket.Unlock()
+	if err := bucket.Release(nil); err != nil {
+		t.Fatalf("Release returned error: %v", err)
+	}
+	if active := atomic.LoadInt32(&bucket.activeRequests); active != 0 {
+		t.Fatalf("activeRequests after release = %d, want 0", active)
+	}
+}
+
+func TestLockBucketObjectContextDoesNotLeakWaitersOnCancel(t *testing.T) {
+	rl := NewRatelimiter()
+	bucket := rl.LockBucket("/channels/99/messages")
+	defer func() {
+		if err := bucket.Release(nil); err != nil {
+			t.Fatalf("Release returned error: %v", err)
+		}
+	}()
+
+	before := runtime.NumGoroutine()
+	for i := 0; i < 25; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := rl.LockBucketObjectContext(ctx, bucket)
+			done <- err
+		}()
+
+		time.Sleep(time.Millisecond)
+		cancel()
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("LockBucketObjectContext error = %v, want context canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("LockBucketObjectContext did not return after context cancellation")
+		}
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	after := runtime.NumGoroutine()
+	if after > before+5 {
+		t.Fatalf("goroutines after canceled waits = %d, before = %d", after, before)
+	}
 }
 
 func TestWebhookExecuteUsesStableTokenBucket(t *testing.T) {
