@@ -315,7 +315,7 @@ func (v *VoiceConnection) open() (err error) {
 	v.wsConn, _, err = v.session.Dialer.Dial(vg, nil)
 	if err != nil {
 		v.log(LogWarning, "error connecting to voice endpoint %s, %s", vg, err)
-		v.log(LogDebug, "voice struct: %#v\n", v)
+		v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 		return
 	}
 
@@ -426,7 +426,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 // wsListen() function.
 func (v *VoiceConnection) onEvent(message []byte) {
 
-	v.log(LogDebug, "received: %s", string(message))
+	v.log(LogDebug, "received: %s", redactedVoiceData(message))
 
 	var e Event
 	if err := json.Unmarshal(message, &e); err != nil {
@@ -439,7 +439,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 	case 2: // READY
 
 		if err := json.Unmarshal(e.RawData, &v.op2); err != nil {
-			v.log(LogError, "OP2 unmarshall error, %s, %s", err, string(e.RawData))
+			v.log(LogError, "OP2 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
 
@@ -484,7 +484,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 
 		v.op4 = voiceOP4{}
 		if err := json.Unmarshal(e.RawData, &v.op4); err != nil {
-			v.log(LogError, "OP4 unmarshall error, %s, %s", err, string(e.RawData))
+			v.log(LogError, "OP4 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
 
@@ -501,7 +501,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 
 		voiceSpeakingUpdate := &VoiceSpeakingUpdate{}
 		if err := json.Unmarshal(e.RawData, voiceSpeakingUpdate); err != nil {
-			v.log(LogError, "OP5 unmarshall error, %s, %s", err, string(e.RawData))
+			v.log(LogError, "OP5 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
 
@@ -510,10 +510,52 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		}
 
 	default:
-		v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, string(e.RawData))
+		v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, redactedVoiceData(e.RawData))
 	}
 
 	return
+}
+
+func redactedVoiceData(data []byte) string {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return string(data)
+	}
+
+	redactVoiceValue(v)
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(data)
+	}
+
+	return string(b)
+}
+
+func redactVoiceValue(v interface{}) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		for k, nested := range value {
+			if isVoiceSecretKey(k) {
+				value[k] = "[REDACTED]"
+				continue
+			}
+			redactVoiceValue(nested)
+		}
+	case []interface{}:
+		for _, nested := range value {
+			redactVoiceValue(nested)
+		}
+	}
+}
+
+func isVoiceSecretKey(key string) bool {
+	switch key {
+	case "token", "secret_key", "access_token", "refresh_token":
+		return true
+	}
+
+	return false
 }
 
 type voiceHeartbeatOp struct {
@@ -793,7 +835,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 
 		if err != nil {
 			v.log(LogError, "udp write error, %s", err)
-			v.log(LogDebug, "voice struct: %#v\n", v)
+			v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 			return
 		}
 
@@ -845,7 +887,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 			if sameConnection {
 
 				v.log(LogError, "udp read error, %s, %s", v.endpoint, err)
-				v.log(LogDebug, "voice struct: %#v\n", v)
+				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 
 				go v.reconnect()
 			}
