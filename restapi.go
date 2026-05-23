@@ -2561,6 +2561,10 @@ func (s *Session) WebhookDeleteWithToken(webhookID, token string, options ...Req
 		return
 	}
 
+	if len(body) == 0 {
+		return nil, nil
+	}
+
 	err = unmarshal(body, &st)
 
 	return

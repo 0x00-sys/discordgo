@@ -159,6 +159,39 @@ func TestGuildMembersSearchSetsGuildID(t *testing.T) {
 	}
 }
 
+func TestWebhookDeleteWithTokenAllowsNoContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodDelete)
+		}
+		if r.URL.Path != "/webhooks/webhook/token" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/webhooks/webhook/token")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointWebhooks := EndpointWebhooks
+	EndpointWebhooks = server.URL + "/webhooks/"
+	t.Cleanup(func() {
+		EndpointWebhooks = oldEndpointWebhooks
+	})
+
+	session, err := New("")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	webhook, err := session.WebhookDeleteWithToken("webhook", "token")
+	if err != nil {
+		t.Fatalf("WebhookDeleteWithToken returned error: %v", err)
+	}
+	if webhook != nil {
+		t.Fatalf("WebhookDeleteWithToken returned webhook = %#v, want nil", webhook)
+	}
+}
+
 func TestGateway(t *testing.T) {
 
 	if dg == nil {
