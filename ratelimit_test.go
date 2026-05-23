@@ -81,6 +81,45 @@ func TestRatelimitGlobal(t *testing.T) {
 	}
 }
 
+func TestRatelimitResetUsesEpoch(t *testing.T) {
+	rl := NewRatelimiter()
+	bucket := rl.LockBucket("/channels/99/messages")
+
+	resetAt := time.Now().Add(2 * time.Second).Round(time.Millisecond)
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Remaining", "0")
+	headers.Set("X-RateLimit-Reset", fmt.Sprintf("%.3f", float64(resetAt.UnixNano())/float64(time.Second)))
+	headers.Set("Date", time.Now().Add(-time.Hour).Format(time.RFC1123))
+
+	err := bucket.Release(headers)
+	if err != nil {
+		t.Fatalf("Release returned error: %v", err)
+	}
+
+	if bucket.reset.Before(resetAt.Add(-time.Millisecond)) || bucket.reset.After(resetAt.Add(time.Millisecond)) {
+		t.Fatalf("reset = %v, want %v", bucket.reset, resetAt)
+	}
+}
+
+func TestRatelimitResetDoesNotRequireDateHeader(t *testing.T) {
+	rl := NewRatelimiter()
+	bucket := rl.LockBucket("/channels/99/messages")
+
+	resetAt := time.Now().Add(2 * time.Second).Round(time.Millisecond)
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Remaining", "0")
+	headers.Set("X-RateLimit-Reset", fmt.Sprintf("%.3f", float64(resetAt.UnixNano())/float64(time.Second)))
+
+	err := bucket.Release(headers)
+	if err != nil {
+		t.Fatalf("Release returned error: %v", err)
+	}
+
+	if bucket.reset.Before(resetAt.Add(-time.Millisecond)) || bucket.reset.After(resetAt.Add(time.Millisecond)) {
+		t.Fatalf("reset = %v, want %v", bucket.reset, resetAt)
+	}
+}
+
 func BenchmarkRatelimitSingleEndpoint(b *testing.B) {
 	rl := NewRatelimiter()
 	for i := 0; i < b.N; i++ {
