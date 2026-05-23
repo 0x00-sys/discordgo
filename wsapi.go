@@ -104,6 +104,10 @@ func (s *Session) Open() error {
 		// when exiting with an error :)  Maybe someone has a better
 		// way :)
 		if err != nil {
+			if s.listening != nil {
+				close(s.listening)
+				s.listening = nil
+			}
 			if s.wsConn != nil {
 				s.wsConn.Close()
 				s.wsConn = nil
@@ -185,20 +189,16 @@ func (s *Session) Open() error {
 		s.State = state
 	}
 
-	// Now Discord should send us a READY or RESUMED packet.
-	mt, m, err = s.wsConn.ReadMessage()
-	if err != nil {
-		if shouldStartNewGatewaySessionOnClose(err) {
-			s.resetGatewayResumeStateLocked()
-		}
-		return err
-	}
-	err = s.openGatewayControlEvent(mt, m, 0, "READY", "RESUMED")
-	if err != nil {
-		return err
-	}
+	// Create listening chan outside of listen, as it needs to happen inside the
+	// mutex lock and needs to exist before calling heartbeat and listen
+	// go rountines.
+	s.listening = make(chan interface{})
+
+	// Start sending heartbeats after Hello while waiting for READY/RESUMED.
+	go s.heartbeat(s.wsConn, s.listening, h.HeartbeatInterval)
+
 	s.Unlock()
-	e, err = s.onEvent(mt, m)
+	e, err = s.waitForGatewayReady(s.wsConn)
 	s.Lock()
 	if err != nil {
 		return err
@@ -229,17 +229,38 @@ func (s *Session) Open() error {
 		s.VoiceConnections = make(map[string]*VoiceConnection)
 	}
 
-	// Create listening chan outside of listen, as it needs to happen inside the
-	// mutex lock and needs to exist before calling heartbeat and listen
-	// go rountines.
-	s.listening = make(chan interface{})
-
-	// Start sending heartbeats and reading messages from Discord.
-	go s.heartbeat(s.wsConn, s.listening, h.HeartbeatInterval)
+	// Start reading messages from Discord.
 	go s.listen(s.wsConn, s.listening)
 
 	s.log(LogInformational, "exiting")
 	return nil
+}
+
+func (s *Session) waitForGatewayReady(wsConn *websocket.Conn) (*Event, error) {
+	for {
+		mt, m, err := wsConn.ReadMessage()
+		if err != nil {
+			if shouldStartNewGatewaySessionOnClose(err) {
+				s.resetGatewayResumeState()
+			}
+			return nil, err
+		}
+
+		s.Lock()
+		err = s.openGatewayControlEvent(mt, m, 0, "READY", "RESUMED")
+		s.Unlock()
+		if err != nil {
+			return nil, err
+		}
+
+		e, err := s.onEvent(mt, m)
+		if err != nil {
+			return e, err
+		}
+		if e != nil && e.Operation == 0 && (e.Type == "READY" || e.Type == "RESUMED") {
+			return e, nil
+		}
+	}
 }
 
 func (s *Session) openGatewayControlEvent(messageType int, message []byte, expectedOperation int, expectedEventTypes ...string) error {
@@ -264,6 +285,9 @@ func (s *Session) openGatewayControlEvent(messageType int, message []byte, expec
 		return fmt.Errorf("received Op 9 invalid session during open")
 	}
 
+	if expectedOperation == 0 && (e.Operation == 1 || e.Operation == 11) {
+		return nil
+	}
 	if e.Operation != expectedOperation {
 		return fmt.Errorf("received Op %d during open, expected Op %d", e.Operation, expectedOperation)
 	}
