@@ -671,13 +671,24 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 	s.Lock()
 	defer s.Unlock()
 
-	for idx, member := range thread.Members {
+	if len(tmu.RemovedMembers) > 0 {
+		removedMembers := make(map[string]struct{}, len(tmu.RemovedMembers))
 		for _, removedMember := range tmu.RemovedMembers {
-			if member.ID == removedMember {
-				thread.Members = append(thread.Members[:idx], thread.Members[idx+1:]...)
-				break
-			}
+			removedMembers[removedMember] = struct{}{}
 		}
+
+		members := thread.Members[:0]
+		for _, member := range thread.Members {
+			if member == nil {
+				members = append(members, member)
+				continue
+			}
+			if _, ok := removedMembers[member.UserID]; ok {
+				continue
+			}
+			members = append(members, member)
+		}
+		thread.Members = members
 	}
 
 	for _, addedMember := range tmu.AddedMembers {

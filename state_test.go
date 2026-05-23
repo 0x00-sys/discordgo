@@ -376,3 +376,53 @@ func TestThreadMemberUpdateUsesStateLock(t *testing.T) {
 
 	<-done
 }
+
+func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+				Members: []*ThreadMember{
+					{
+						ID:     "thread",
+						UserID: "remove",
+					},
+					{
+						ID:     "thread",
+						UserID: "keep",
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.ThreadMembersUpdate(&ThreadMembersUpdate{
+		ID:             "thread",
+		GuildID:        "guild",
+		MemberCount:    1,
+		RemovedMembers: []string{"remove"},
+	})
+	if err != nil {
+		t.Fatalf("ThreadMembersUpdate returned error: %v", err)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(thread.Members) != 1 {
+		t.Fatalf("len(thread.Members) = %d, want 1", len(thread.Members))
+	}
+	if thread.Members[0].UserID != "keep" {
+		t.Fatalf("remaining member user ID = %q, want keep", thread.Members[0].UserID)
+	}
+	if thread.MemberCount != 1 {
+		t.Fatalf("MemberCount = %d, want 1", thread.MemberCount)
+	}
+}
