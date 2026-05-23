@@ -185,6 +185,35 @@ func TestRemoveHandler(t *testing.T) {
 	}
 }
 
+func TestAddHandlerOnceConcurrentDispatch(t *testing.T) {
+	handlerCalled := int32(0)
+	handler := func(s *Session, event *RateLimit) {
+		atomic.AddInt32(&handlerCalled, 1)
+	}
+
+	d := Session{SyncEvents: true}
+	d.AddHandlerOnce(handler)
+
+	start := make(chan struct{})
+	done := make(chan struct{})
+	for i := 0; i < 32; i++ {
+		go func() {
+			<-start
+			d.handleEvent(rateLimitEventType, &RateLimit{})
+			done <- struct{}{}
+		}()
+	}
+	close(start)
+
+	for i := 0; i < 32; i++ {
+		<-done
+	}
+
+	if atomic.LoadInt32(&handlerCalled) != 1 {
+		t.Fatalf("handlerCalled = %d, want 1", handlerCalled)
+	}
+}
+
 func TestScheduledEvents(t *testing.T) {
 	if dgBot == nil {
 		t.Skip("Skipping, dgBot not set.")

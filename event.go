@@ -164,7 +164,9 @@ func (s *Session) removeEventHandlerInstance(t string, ehi *eventHandlerInstance
 
 // Handles calling permanent and once handlers for an event type.
 func (s *Session) handle(t string, i interface{}) {
-	for _, eh := range s.handlers[t] {
+	handlers, onceHandlers := s.eventHandlers(t)
+
+	for _, eh := range handlers {
 		if s.SyncEvents {
 			eh.eventHandler.Handle(s, i)
 		} else {
@@ -172,24 +174,34 @@ func (s *Session) handle(t string, i interface{}) {
 		}
 	}
 
-	if len(s.onceHandlers[t]) > 0 {
-		for _, eh := range s.onceHandlers[t] {
-			if s.SyncEvents {
-				eh.eventHandler.Handle(s, i)
-			} else {
-				go eh.eventHandler.Handle(s, i)
-			}
+	for _, eh := range onceHandlers {
+		if s.SyncEvents {
+			eh.eventHandler.Handle(s, i)
+		} else {
+			go eh.eventHandler.Handle(s, i)
 		}
+	}
+}
+
+func (s *Session) eventHandlers(t string) (handlers, onceHandlers []*eventHandlerInstance) {
+	s.handlersMu.Lock()
+	defer s.handlersMu.Unlock()
+
+	if len(s.handlers[t]) > 0 {
+		handlers = append(handlers, s.handlers[t]...)
+	}
+
+	if len(s.onceHandlers[t]) > 0 {
+		onceHandlers = append(onceHandlers, s.onceHandlers[t]...)
 		s.onceHandlers[t] = nil
 	}
+
+	return
 }
 
 // Handles an event type by calling internal methods, firing handlers and firing the
 // interface{} event.
 func (s *Session) handleEvent(t string, i interface{}) {
-	s.handlersMu.RLock()
-	defer s.handlersMu.RUnlock()
-
 	// All events are dispatched internally first.
 	s.onInterface(i)
 
