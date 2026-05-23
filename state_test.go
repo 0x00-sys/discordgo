@@ -2,6 +2,7 @@ package discordgo
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -116,4 +117,51 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	if member.User.Username != "new" {
 		t.Fatalf("cached member username = %q, want %q", member.User.Username, "new")
 	}
+}
+
+func TestThreadMemberUpdateUsesStateLock(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread, ThreadMetadata: &ThreadMetadata{}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			err := state.ThreadListSync(&ThreadListSync{
+				GuildID: "guild",
+				Threads: []*Channel{
+					{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread, ThreadMetadata: &ThreadMetadata{}},
+				},
+				Members: []*ThreadMember{
+					{ID: "thread", UserID: "sync-" + strconv.Itoa(i)},
+				},
+			})
+			if err != nil {
+				t.Errorf("ThreadListSync returned error: %v", err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		err := state.ThreadMemberUpdate(&ThreadMemberUpdate{
+			GuildID: "guild",
+			ThreadMember: &ThreadMember{
+				ID:     "thread",
+				UserID: "update-" + strconv.Itoa(i),
+			},
+		})
+		if err != nil {
+			t.Fatalf("ThreadMemberUpdate returned error: %v", err)
+		}
+	}
+
+	<-done
 }
