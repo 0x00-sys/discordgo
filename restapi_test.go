@@ -690,6 +690,76 @@ func TestRequestWithLockedBucketClosesRateLimitBodyBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestRequestWithLockedBucketRetriesGetServerError(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Status:     "500 Internal Server Error",
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`server error`)),
+				Request:    r,
+			}, nil
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway)
+	if err != nil {
+		t.Fatalf("RequestWithBucketID() returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestRequestWithLockedBucketDoesNotRetryPostServerError(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Status:     "500 Internal Server Error",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`server error`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("POST", EndpointChannelMessages("channel"), map[string]string{
+		"content": "hello",
+	}, EndpointChannelMessages("channel"))
+	if err == nil {
+		t.Fatal("RequestWithBucketID() returned nil error, want RESTError")
+	}
+	var restErr *RESTError
+	if !errors.As(err, &restErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RESTError", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
 func TestRequestWithLockedBucketGlobalRateLimitSetsGlobalReset(t *testing.T) {
 	session, err := New("")
 	if err != nil {
