@@ -123,6 +123,9 @@ type Session struct {
 	// When nil, the session is not listening.
 	listening chan interface{}
 
+	// Closed by public Close calls to stop reconnect loops already in progress.
+	reconnectCancel chan struct{}
+
 	// sequence tracks the current gateway api websocket sequence number
 	sequence *int64
 

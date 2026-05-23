@@ -326,7 +326,7 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 				// There has been an error reading, close the websocket so that
 				// OnDisconnect event is emitted.
-				err := s.CloseWithCode(closeCode)
+				err := s.closeWithCode(closeCode, false)
 				if err != nil {
 					s.log(LogWarning, "error closing session connection, %s", err)
 				}
@@ -421,7 +421,7 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			} else {
 				s.log(LogError, "haven't gotten a heartbeat ACK in %v, triggering a reconnection", time.Now().UTC().Sub(last))
 			}
-			s.CloseWithCode(websocket.CloseServiceRestart)
+			s.closeWithCode(websocket.CloseServiceRestart, false)
 			s.reconnect()
 			return
 		}
@@ -742,7 +742,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	// Must immediately disconnect from gateway and reconnect to new gateway.
 	if e.Operation == 7 {
 		s.log(LogInformational, "Closing and reconnecting in response to Op7")
-		s.CloseWithCode(websocket.CloseServiceRestart)
+		s.closeWithCode(websocket.CloseServiceRestart, false)
 		s.reconnect()
 		return e, nil
 	}
@@ -751,7 +751,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	// Must respond with a Identify packet.
 	if e.Operation == 9 {
 		s.log(LogInformational, "Closing and reconnecting in response to Op9")
-		s.CloseWithCode(websocket.CloseServiceRestart)
+		s.closeWithCode(websocket.CloseServiceRestart, false)
 
 		var resumable bool
 		if err := json.Unmarshal(e.RawData, &resumable); err != nil {
@@ -1079,16 +1079,28 @@ func (s *Session) reconnect() {
 	s.log(LogInformational, "called")
 
 	var err error
+	cancel := s.reconnectCancelSignal()
 
 	if s.ShouldReconnectOnError {
 
 		wait := time.Duration(1)
 
 		for {
+			if reconnectCanceled(cancel) {
+				s.log(LogInformational, "reconnect canceled")
+				return
+			}
+
 			s.log(LogInformational, "trying to reconnect to gateway")
 
 			err = s.Open()
 			if err == nil {
+				if reconnectCanceled(cancel) {
+					_ = s.closeWithCode(websocket.CloseNormalClosure, false)
+					s.log(LogInformational, "reconnect canceled after opening gateway")
+					return
+				}
+
 				s.log(LogInformational, "successfully reconnected to gateway")
 
 				// I'm not sure if this is actually needed.
@@ -1126,13 +1138,60 @@ func (s *Session) reconnect() {
 
 			s.log(LogError, "error reconnecting to gateway, %s", err)
 
-			<-time.After(wait * time.Second)
+			timer := time.NewTimer(wait * time.Second)
+			select {
+			case <-timer.C:
+			case <-cancel:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				s.log(LogInformational, "reconnect canceled during backoff")
+				return
+			}
 			wait *= 2
 			if wait > 600 {
 				wait = 600
 			}
 		}
 	}
+}
+
+func (s *Session) reconnectCancelSignal() <-chan struct{} {
+	s.Lock()
+	defer s.Unlock()
+
+	if s.reconnectCancel == nil {
+		s.reconnectCancel = make(chan struct{})
+	}
+
+	return s.reconnectCancel
+}
+
+func reconnectCanceled(cancel <-chan struct{}) bool {
+	if cancel == nil {
+		return false
+	}
+
+	select {
+	case <-cancel:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) cancelReconnectLocked() {
+	if s.reconnectCancel != nil {
+		select {
+		case <-s.reconnectCancel:
+		default:
+			close(s.reconnectCancel)
+		}
+	}
+	s.reconnectCancel = make(chan struct{})
 }
 
 // Close closes a websocket and stops all listening/heartbeat goroutines.
@@ -1145,9 +1204,17 @@ func (s *Session) Close() error {
 // listening/heartbeat goroutines.
 // TODO: Add support for Voice WS/UDP connections
 func (s *Session) CloseWithCode(closeCode int) (err error) {
+	return s.closeWithCode(closeCode, true)
+}
+
+func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error) {
 
 	s.log(LogInformational, "called")
 	s.Lock()
+
+	if cancelReconnect {
+		s.cancelReconnectLocked()
+	}
 
 	s.DataReady = false
 
