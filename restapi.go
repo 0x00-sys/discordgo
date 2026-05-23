@@ -227,7 +227,7 @@ func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucke
 func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, options ...RequestOption) (response []byte, err error) {
 	if s.Debug {
 		log.Printf("API REQUEST %8s :: %s\n", method, redactedURL(urlStr))
-		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b))
+		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b, contentType))
 	}
 
 	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(b))
@@ -368,8 +368,9 @@ func retryAfterHeader(headers http.Header) (time.Duration, error) {
 }
 
 const (
-	redactedValue    = "[REDACTED]"
-	redactedURLValue = "REDACTED"
+	redactedValue         = "[REDACTED]"
+	redactedURLValue      = "REDACTED"
+	redactedMultipartBody = "[MULTIPART BODY REDACTED]"
 )
 
 func redactedHeaderValues(key string, values []string) []string {
@@ -397,9 +398,15 @@ func redactedURL(rawurl string) string {
 	return u.String()
 }
 
-func redactedRESTBody(body []byte) string {
+func redactedRESTBody(body []byte, contentTypes ...string) string {
 	if len(body) == 0 {
 		return string(body)
+	}
+
+	for _, contentType := range contentTypes {
+		if strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+			return redactedMultipartBody
+		}
 	}
 
 	var v interface{}
