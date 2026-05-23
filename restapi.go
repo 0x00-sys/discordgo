@@ -2957,7 +2957,7 @@ func (s *Session) MessageReactions(channelID, messageID, emojiID string, limit i
 func (s *Session) MessageThreadStartComplex(channelID, messageID string, data *ThreadStart, options ...RequestOption) (ch *Channel, err error) {
 	endpoint := EndpointChannelMessageThread(channelID, messageID)
 	var body []byte
-	body, err = s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
+	body, err = s.RequestWithBucketID("POST", endpoint, data, EndpointChannelMessageThread(channelID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -3102,28 +3102,28 @@ func (s *Session) ForumThreadStartEmbeds(channelID, name string, archiveDuration
 // ThreadJoin adds current user to a thread
 func (s *Session) ThreadJoin(id string, options ...RequestOption) error {
 	endpoint := EndpointThreadMember(id, "@me")
-	_, err := s.RequestWithBucketID("PUT", endpoint, nil, endpoint, options...)
+	_, err := s.RequestWithBucketID("PUT", endpoint, nil, EndpointThreadMember(id, ""), options...)
 	return err
 }
 
 // ThreadLeave removes current user to a thread
 func (s *Session) ThreadLeave(id string, options ...RequestOption) error {
 	endpoint := EndpointThreadMember(id, "@me")
-	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, EndpointThreadMember(id, ""), options...)
 	return err
 }
 
 // ThreadMemberAdd adds another member to a thread
 func (s *Session) ThreadMemberAdd(threadID, memberID string, options ...RequestOption) error {
 	endpoint := EndpointThreadMember(threadID, memberID)
-	_, err := s.RequestWithBucketID("PUT", endpoint, nil, endpoint, options...)
+	_, err := s.RequestWithBucketID("PUT", endpoint, nil, EndpointThreadMember(threadID, ""), options...)
 	return err
 }
 
 // ThreadMemberRemove removes another member from a thread
 func (s *Session) ThreadMemberRemove(threadID, memberID string, options ...RequestOption) error {
 	endpoint := EndpointThreadMember(threadID, memberID)
-	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, EndpointThreadMember(threadID, ""), options...)
 	return err
 }
 
@@ -3142,7 +3142,7 @@ func (s *Session) ThreadMember(threadID, memberID string, withMember bool, optio
 	}
 
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", uri, nil, uri, options...)
+	body, err = s.RequestWithBucketID("GET", uri, nil, EndpointThreadMember(threadID, ""), options...)
 
 	if err != nil {
 		return
@@ -3175,7 +3175,7 @@ func (s *Session) ThreadMembers(threadID string, limit int, withMember bool, aft
 	}
 
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", uri, nil, uri, options...)
+	body, err = s.RequestWithBucketID("GET", uri, nil, EndpointThreadMembers(threadID), options...)
 
 	if err != nil {
 		return
@@ -3214,6 +3214,7 @@ func (s *Session) GuildThreadsActive(guildID string, options ...RequestOption) (
 // limit  : Optional maximum amount of threads to return.
 func (s *Session) ThreadsArchived(channelID string, before *time.Time, limit int, options ...RequestOption) (threads *ThreadsList, err error) {
 	endpoint := EndpointChannelPublicArchivedThreads(channelID)
+	uri := endpoint
 	v := url.Values{}
 	if before != nil {
 		v.Set("before", before.Format(time.RFC3339))
@@ -3224,11 +3225,11 @@ func (s *Session) ThreadsArchived(channelID string, before *time.Time, limit int
 	}
 
 	if len(v) > 0 {
-		endpoint += "?" + v.Encode()
+		uri += "?" + v.Encode()
 	}
 
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err = s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
 	if err != nil {
 		return
 	}
@@ -3242,6 +3243,7 @@ func (s *Session) ThreadsArchived(channelID string, before *time.Time, limit int
 // limit  : Optional maximum amount of threads to return.
 func (s *Session) ThreadsPrivateArchived(channelID string, before *time.Time, limit int, options ...RequestOption) (threads *ThreadsList, err error) {
 	endpoint := EndpointChannelPrivateArchivedThreads(channelID)
+	uri := endpoint
 	v := url.Values{}
 	if before != nil {
 		v.Set("before", before.Format(time.RFC3339))
@@ -3252,10 +3254,10 @@ func (s *Session) ThreadsPrivateArchived(channelID string, before *time.Time, li
 	}
 
 	if len(v) > 0 {
-		endpoint += "?" + v.Encode()
+		uri += "?" + v.Encode()
 	}
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err = s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
 	if err != nil {
 		return
 	}
@@ -3269,6 +3271,7 @@ func (s *Session) ThreadsPrivateArchived(channelID string, before *time.Time, li
 // limit  : Optional maximum amount of threads to return.
 func (s *Session) ThreadsPrivateJoinedArchived(channelID string, before *time.Time, limit int, options ...RequestOption) (threads *ThreadsList, err error) {
 	endpoint := EndpointChannelJoinedPrivateArchivedThreads(channelID)
+	uri := endpoint
 	v := url.Values{}
 	if before != nil {
 		v.Set("before", before.Format(time.RFC3339))
@@ -3279,10 +3282,10 @@ func (s *Session) ThreadsPrivateJoinedArchived(channelID string, before *time.Ti
 	}
 
 	if len(v) > 0 {
-		endpoint += "?" + v.Encode()
+		uri += "?" + v.Encode()
 	}
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err = s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
 	if err != nil {
 		return
 	}

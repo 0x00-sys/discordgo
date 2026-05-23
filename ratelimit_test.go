@@ -273,6 +273,62 @@ func TestInteractionResponseDeleteUsesMessageRouteBucket(t *testing.T) {
 	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
 }
 
+func TestThreadRoutesUseStableBuckets(t *testing.T) {
+	session := newTestThreadSession(t)
+	before := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+
+	if _, err := session.MessageThreadStartComplex("channel", "message-one", &ThreadStart{Name: "thread"}); err != nil {
+		t.Fatalf("MessageThreadStartComplex returned error: %v", err)
+	}
+	if _, err := session.MessageThreadStartComplex("channel", "message-two", &ThreadStart{Name: "thread"}); err != nil {
+		t.Fatalf("MessageThreadStartComplex returned error: %v", err)
+	}
+	if err := session.ThreadJoin("thread"); err != nil {
+		t.Fatalf("ThreadJoin returned error: %v", err)
+	}
+	if err := session.ThreadLeave("thread"); err != nil {
+		t.Fatalf("ThreadLeave returned error: %v", err)
+	}
+	if err := session.ThreadMemberAdd("thread", "member-one"); err != nil {
+		t.Fatalf("ThreadMemberAdd returned error: %v", err)
+	}
+	if err := session.ThreadMemberRemove("thread", "member-two"); err != nil {
+		t.Fatalf("ThreadMemberRemove returned error: %v", err)
+	}
+	if _, err := session.ThreadMember("thread", "member-three", true); err != nil {
+		t.Fatalf("ThreadMember returned error: %v", err)
+	}
+	if _, err := session.ThreadMembers("thread", 50, true, "after-user"); err != nil {
+		t.Fatalf("ThreadMembers returned error: %v", err)
+	}
+	if _, err := session.ThreadsArchived("channel", &before, 50); err != nil {
+		t.Fatalf("ThreadsArchived returned error: %v", err)
+	}
+	if _, err := session.ThreadsPrivateArchived("channel", &before, 50); err != nil {
+		t.Fatalf("ThreadsPrivateArchived returned error: %v", err)
+	}
+	if _, err := session.ThreadsPrivateJoinedArchived("channel", &before, 50); err != nil {
+		t.Fatalf("ThreadsPrivateJoinedArchived returned error: %v", err)
+	}
+
+	for _, want := range []string{
+		EndpointChannelMessageThread("channel", ""),
+		EndpointThreadMember("thread", ""),
+		EndpointThreadMembers("thread"),
+		EndpointChannelPublicArchivedThreads("channel"),
+		EndpointChannelPrivateArchivedThreads("channel"),
+		EndpointChannelJoinedPrivateArchivedThreads("channel"),
+	} {
+		if _, ok := session.Ratelimiter.buckets[want]; !ok {
+			t.Fatalf("bucket %q was not created", want)
+		}
+	}
+
+	for _, value := range []string{"message-one", "message-two", "member-one", "member-two", "member-three", "after-user", "?"} {
+		assertRateLimitBucketsDoNotContain(t, session, value)
+	}
+}
+
 func assertRateLimitBucketsDoNotContain(t *testing.T, session *Session, value string) {
 	t.Helper()
 
@@ -280,6 +336,47 @@ func assertRateLimitBucketsDoNotContain(t *testing.T, session *Session, value st
 		if strings.Contains(key, value) {
 			t.Fatalf("bucket %q includes %q", key, value)
 		}
+	}
+}
+
+func newTestThreadSession(t *testing.T) *Session {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "1")
+		w.Header().Set("X-RateLimit-Reset-After", "0.1")
+
+		if r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		switch {
+		case strings.Contains(r.URL.Path, "/thread-members/"):
+			_, _ = w.Write([]byte(`{}`))
+		case strings.Contains(r.URL.Path, "/thread-members"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/threads/archived/"):
+			_, _ = w.Write([]byte(`{"threads":[],"members":[],"has_more":false}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := EndpointChannels
+	EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		EndpointChannels = oldEndpointChannels
+	})
+
+	return &Session{
+		Client:                 server.Client(),
+		MaxRestRetries:         0,
+		Ratelimiter:            NewRatelimiter(),
+		UserAgent:              "DiscordGo test",
+		ShouldRetryOnRateLimit: true,
 	}
 }
 
