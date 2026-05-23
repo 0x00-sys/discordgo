@@ -25,6 +25,10 @@ var ErrNilState = errors.New("state not instantiated, please use discordgo.New()
 // requested is not found
 var ErrStateNotFound = errors.New("state cache not found")
 
+// ErrStateInvalidData is returned when an event contains data that cannot be
+// safely tracked in the state cache.
+var ErrStateInvalidData = errors.New("state cache received invalid data")
+
 // ErrMessageIncompletePermissions is returned when the message
 // requested for permissions does not contain enough data to
 // generate the permissions.
@@ -200,7 +204,15 @@ func (s *State) presenceAdd(guildID string, presence *Presence) error {
 		return ErrStateNotFound
 	}
 
+	if presence == nil || presence.User == nil || presence.User.ID == "" {
+		return ErrStateInvalidData
+	}
+
 	for i, p := range guild.Presences {
+		if p == nil || p.User == nil {
+			continue
+		}
+
 		if p.User.ID == presence.User.ID {
 			//guild.Presences[i] = presence
 
@@ -266,6 +278,10 @@ func (s *State) PresenceRemove(guildID string, presence *Presence) error {
 		return ErrNilState
 	}
 
+	if presence == nil || presence.User == nil || presence.User.ID == "" {
+		return ErrStateInvalidData
+	}
+
 	guild, err := s.Guild(guildID)
 	if err != nil {
 		return err
@@ -275,6 +291,10 @@ func (s *State) PresenceRemove(guildID string, presence *Presence) error {
 	defer s.Unlock()
 
 	for i, p := range guild.Presences {
+		if p == nil || p.User == nil {
+			continue
+		}
+
 		if p.User.ID == presence.User.ID {
 			guild.Presences = append(guild.Presences[:i], guild.Presences[i+1:]...)
 			return nil
@@ -296,6 +316,10 @@ func (s *State) Presence(guildID, userID string) (*Presence, error) {
 	}
 
 	for _, p := range guild.Presences {
+		if p == nil || p.User == nil {
+			continue
+		}
+
 		if p.User.ID == userID {
 			return p, nil
 		}
@@ -1182,11 +1206,17 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *PresenceUpdate:
 		if s.TrackPresences {
-			s.PresenceAdd(t.GuildID, &t.Presence)
+			err = s.PresenceAdd(t.GuildID, &t.Presence)
+			if err != nil {
+				return err
+			}
 		}
 		if s.TrackMembers {
 			if t.Status == StatusOffline {
 				return
+			}
+			if t.User == nil || t.User.ID == "" {
+				return ErrStateInvalidData
 			}
 
 			var m *Member
