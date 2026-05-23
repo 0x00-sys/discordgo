@@ -22,9 +22,15 @@ type RateLimiter struct {
 	sync.Mutex
 	global           *int64
 	buckets          map[string]*Bucket
+	lastCleanup      time.Time
 	globalRateLimit  time.Duration
 	customRateLimits []*customRateLimit
 }
+
+var (
+	rateLimitBucketTTL             = time.Hour
+	rateLimitBucketCleanupInterval = time.Minute
+)
 
 // NewRatelimiter returns a new RateLimiter
 func NewRatelimiter() *RateLimiter {
@@ -47,7 +53,11 @@ func (r *RateLimiter) GetBucket(key string) *Bucket {
 	r.Lock()
 	defer r.Unlock()
 
+	now := time.Now()
+	r.cleanupStaleBuckets(now)
+
 	if bucket, ok := r.buckets[key]; ok {
+		bucket.touch(now)
 		return bucket
 	}
 
@@ -56,6 +66,7 @@ func (r *RateLimiter) GetBucket(key string) *Bucket {
 		Key:       key,
 		global:    r.global,
 	}
+	b.touch(now)
 
 	// Check if there is a custom ratelimit set for this bucket ID.
 	for _, rl := range r.customRateLimits {
@@ -67,6 +78,30 @@ func (r *RateLimiter) GetBucket(key string) *Bucket {
 
 	r.buckets[key] = b
 	return b
+}
+
+func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
+	if rateLimitBucketTTL <= 0 {
+		return
+	}
+	if rateLimitBucketCleanupInterval > 0 && !r.lastCleanup.IsZero() && now.Sub(r.lastCleanup) < rateLimitBucketCleanupInterval {
+		return
+	}
+
+	r.lastCleanup = now
+	expiresBefore := now.Add(-rateLimitBucketTTL).UnixNano()
+	nowUnix := now.UnixNano()
+	for key, bucket := range r.buckets {
+		if atomic.LoadInt32(&bucket.activeRequests) != 0 {
+			continue
+		}
+		if reset := atomic.LoadInt64(&bucket.resetAt); reset > nowUnix {
+			continue
+		}
+		if atomic.LoadInt64(&bucket.lastUsed) < expiresBefore {
+			delete(r.buckets, key)
+		}
+	}
 }
 
 // GetWaitTime returns the duration you should wait for a Bucket
@@ -93,6 +128,8 @@ func (r *RateLimiter) LockBucket(bucketID string) *Bucket {
 
 // LockBucketObject Locks an already resolved bucket until a request can be made
 func (r *RateLimiter) LockBucketObject(b *Bucket) *Bucket {
+	atomic.AddInt32(&b.activeRequests, 1)
+	b.touch(time.Now())
 	b.Lock()
 
 	if wait := r.GetWaitTime(b, 1); wait > 0 {
@@ -113,14 +150,28 @@ type Bucket struct {
 	global    *int64
 
 	lastReset       time.Time
+	resetAt         int64
+	lastUsed        int64
+	activeRequests  int32
 	customRateLimit *customRateLimit
 	Userdata        interface{}
+}
+
+func (b *Bucket) setReset(reset time.Time) {
+	atomic.StoreInt64(&b.resetAt, reset.UnixNano())
+}
+
+func (b *Bucket) touch(now time.Time) {
+	atomic.StoreInt64(&b.lastUsed, now.UnixNano())
 }
 
 // Release unlocks the bucket and reads the headers to update the buckets ratelimit info
 // and locks up the whole thing in case if there's a global ratelimit.
 func (b *Bucket) Release(headers http.Header) error {
-	defer b.Unlock()
+	defer func() {
+		atomic.AddInt32(&b.activeRequests, -1)
+		b.Unlock()
+	}()
 
 	// Check if the bucket uses a custom ratelimiter
 	if rl := b.customRateLimit; rl != nil {
@@ -130,6 +181,7 @@ func (b *Bucket) Release(headers http.Header) error {
 		}
 		if b.Remaining < 1 {
 			b.reset = time.Now().Add(rl.reset)
+			b.setReset(b.reset)
 		}
 		return nil
 	}
@@ -162,6 +214,7 @@ func (b *Bucket) Release(headers http.Header) error {
 			atomic.StoreInt64(b.global, resetAt.UnixNano())
 		} else {
 			b.reset = resetAt
+			b.setReset(resetAt)
 		}
 	} else if reset != "" {
 		// Calculate the reset time by using the date header returned from discord
@@ -182,6 +235,7 @@ func (b *Bucket) Release(headers http.Header) error {
 		whole, frac := math.Modf(unix)
 		delta := time.Unix(int64(whole), 0).Add(time.Duration(frac*1000)*time.Millisecond).Sub(discordTime) + time.Millisecond*250
 		b.reset = time.Now().Add(delta)
+		b.setReset(b.reset)
 	}
 
 	// Udpate remaining if header is present
