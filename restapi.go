@@ -91,7 +91,7 @@ type RateLimitError struct {
 
 // Error returns a rate limit error with rate limited endpoint and retry time.
 func (e RateLimitError) Error() string {
-	return "Rate limit exceeded on " + e.URL + ", retry after " + e.RetryAfter.String()
+	return "Rate limit exceeded on " + redactedURL(e.URL) + ", retry after " + e.RetryAfter.String()
 }
 
 // RequestConfig is an HTTP request configuration.
@@ -277,7 +277,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		// Retry sending request if possible
 		if sequence < cfg.MaxRestRetries {
 
-			s.log(LogInformational, "%s Failed (%s), Retrying...", urlStr, resp.Status)
+			s.log(LogInformational, "%s Failed (%s), Retrying...", redactedURL(urlStr), resp.Status)
 			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, s.Ratelimiter.LockBucketObject(bucket), sequence+1, options...)
 		} else {
 			err = fmt.Errorf("Exceeded Max retries HTTP %s, %s", resp.Status, response)
@@ -297,8 +297,9 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		}
 
 		if cfg.ShouldRetryOnRateLimit {
-			s.log(LogInformational, "Rate Limiting %s, retry in %v", urlStr, rl.RetryAfter)
-			s.handleEvent(rateLimitEventType, &RateLimit{TooManyRequests: &rl, URL: urlStr})
+			url := redactedURL(urlStr)
+			s.log(LogInformational, "Rate Limiting %s, retry in %v", url, rl.RetryAfter)
+			s.handleEvent(rateLimitEventType, &RateLimit{TooManyRequests: &rl, URL: url})
 
 			time.Sleep(rl.RetryAfter)
 			// we can make the above smarter
@@ -306,7 +307,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 
 			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, s.Ratelimiter.LockBucketObject(bucket), sequence, options...)
 		} else {
-			err = &RateLimitError{&RateLimit{TooManyRequests: &rl, URL: urlStr}}
+			err = &RateLimitError{&RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}}
 		}
 	case http.StatusUnauthorized:
 		if strings.Index(s.Token, "Bot ") != 0 {

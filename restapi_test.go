@@ -347,6 +347,81 @@ func TestRequestWithLockedBucketNonJSONRateLimitUsesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestRateLimitErrorRedactsWebhookToken(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Body:       io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":1}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointWebhookToken("webhook", "secret-token"), nil, webhookTokenBucketID("webhook"), WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RateLimitError", err)
+	}
+	if strings.Contains(rateLimitErr.URL, "secret-token") {
+		t.Fatalf("RateLimit URL leaked webhook token: %q", rateLimitErr.URL)
+	}
+	if !strings.Contains(rateLimitErr.URL, redactedURLValue) {
+		t.Fatalf("RateLimit URL = %q, want redacted token", rateLimitErr.URL)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("RateLimitError leaked webhook token: %q", err.Error())
+	}
+}
+
+func TestRateLimitEventRedactsWebhookToken(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+
+	var gotURL string
+	session.AddHandler(func(_ *Session, event *RateLimit) {
+		gotURL = event.URL
+	})
+
+	requests := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Status:     "429 Too Many Requests",
+				Body:       io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":0}`)),
+				Request:    r,
+			}, nil
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointWebhookToken("webhook", "secret-token"), nil, webhookTokenBucketID("webhook"))
+	if err != nil {
+		t.Fatalf("RequestWithBucketID() returned error: %v", err)
+	}
+	if strings.Contains(gotURL, "secret-token") {
+		t.Fatalf("RateLimit event URL leaked webhook token: %q", gotURL)
+	}
+	if !strings.Contains(gotURL, redactedURLValue) {
+		t.Fatalf("RateLimit event URL = %q, want redacted token", gotURL)
+	}
+}
+
 func TestChannelMessagesPinnedUsesGlobalBucket(t *testing.T) {
 	session, err := New("")
 	if err != nil {
