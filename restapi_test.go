@@ -269,6 +269,62 @@ func TestWithContext(t *testing.T) {
 	}
 }
 
+func TestRedactedHeaderValues(t *testing.T) {
+	values := redactedHeaderValues("Authorization", []string{"Bot secret"})
+	if len(values) != 1 || values[0] != redactedValue {
+		t.Fatalf("redactedHeaderValues() = %#v, want %q", values, redactedValue)
+	}
+
+	values = redactedHeaderValues("User-Agent", []string{"discordgo"})
+	if len(values) != 1 || values[0] != "discordgo" {
+		t.Fatalf("redactedHeaderValues() changed non-secret header: %#v", values)
+	}
+}
+
+func TestRedactedURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "webhook token",
+			url:  "https://discord.com/api/v10/webhooks/123456789/token-value/messages/@original?wait=true",
+			want: "https://discord.com/api/v10/webhooks/123456789/REDACTED/messages/@original?wait=true",
+		},
+		{
+			name: "interaction token",
+			url:  "https://discord.com/api/v10/interactions/123456789/token-value/callback",
+			want: "https://discord.com/api/v10/interactions/123456789/REDACTED/callback",
+		},
+		{
+			name: "ordinary endpoint",
+			url:  "https://discord.com/api/v10/channels/123/messages",
+			want: "https://discord.com/api/v10/channels/123/messages",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactedURL(tt.url); got != tt.want {
+				t.Fatalf("redactedURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedactedIdentify(t *testing.T) {
+	op := identifyOp{2, Identify{Token: "Bot secret"}}
+
+	redacted := redactedIdentify(op)
+	if redacted.Data.Token != redactedValue {
+		t.Fatalf("redacted token = %q, want %q", redacted.Data.Token, redactedValue)
+	}
+	if op.Data.Token != "Bot secret" {
+		t.Fatalf("redactedIdentify mutated original token: %q", op.Data.Token)
+	}
+}
+
 // roundTripperFunc implements http.RoundTripper.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 

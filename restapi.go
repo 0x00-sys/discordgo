@@ -195,7 +195,7 @@ func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucke
 // RequestWithLockedBucket makes a request using a bucket that's already been locked
 func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, options ...RequestOption) (response []byte, err error) {
 	if s.Debug {
-		log.Printf("API REQUEST %8s :: %s\n", method, urlStr)
+		log.Printf("API REQUEST %8s :: %s\n", method, redactedURL(urlStr))
 		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", string(b))
 	}
 
@@ -228,7 +228,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 
 	if s.Debug {
 		for k, v := range req.Header {
-			log.Printf("API REQUEST   HEADER :: [%s] = %+v\n", k, v)
+			log.Printf("API REQUEST   HEADER :: [%s] = %+v\n", k, redactedHeaderValues(k, v))
 		}
 	}
 
@@ -313,6 +313,36 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 	}
 
 	return
+}
+
+const (
+	redactedValue    = "[REDACTED]"
+	redactedURLValue = "REDACTED"
+)
+
+func redactedHeaderValues(key string, values []string) []string {
+	if strings.EqualFold(key, "Authorization") {
+		return []string{redactedValue}
+	}
+
+	return values
+}
+
+func redactedURL(rawurl string) string {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return rawurl
+	}
+
+	parts := strings.Split(u.Path, "/")
+	for i, part := range parts {
+		if (part == "webhooks" || part == "interactions") && i+2 < len(parts) {
+			parts[i+2] = redactedURLValue
+		}
+	}
+	u.Path = strings.Join(parts, "/")
+
+	return u.String()
 }
 
 func unmarshal(data []byte, v interface{}) error {

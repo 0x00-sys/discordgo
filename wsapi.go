@@ -884,12 +884,20 @@ func (s *Session) identify() error {
 
 	// Send Identify packet to Discord
 	op := identifyOp{2, s.Identify}
-	s.log(LogDebug, "Identify Packet: \n%#v", op)
+	s.log(LogDebug, "Identify Packet: \n%#v", redactedIdentify(op))
 	s.wsMutex.Lock()
 	err := s.wsConn.WriteJSON(op)
 	s.wsMutex.Unlock()
 
 	return err
+}
+
+func redactedIdentify(op identifyOp) identifyOp {
+	if op.Data.Token != "" {
+		op.Data.Token = redactedValue
+	}
+
+	return op
 }
 
 func (s *Session) reconnect() {
