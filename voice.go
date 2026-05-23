@@ -192,9 +192,7 @@ func (v *VoiceConnection) Close() {
 
 		// To cleanly close a connection, a client should send a close
 		// frame and wait for the server to close the connection.
-		v.wsMutex.Lock()
-		err := v.wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		v.wsMutex.Unlock()
+		err := writeWebsocketCloseFrame(v.wsConn, websocket.CloseNormalClosure)
 		if err != nil {
 			v.log(LogError, "error closing websocket, %s", err)
 		}

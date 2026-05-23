@@ -36,6 +36,16 @@ var ErrWSNotFound = errors.New("no websocket connection exists")
 // more than the total shard count
 var ErrWSShardBounds = errors.New("ShardID must be less than ShardCount")
 
+const websocketCloseFrameTimeout = time.Second
+
+func writeWebsocketCloseFrame(conn *websocket.Conn, closeCode int) error {
+	return conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(closeCode, ""),
+		time.Now().Add(websocketCloseFrameTimeout),
+	)
+}
+
 type resumePacket struct {
 	Op   int `json:"op"`
 	Data struct {
@@ -1308,9 +1318,7 @@ func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error)
 		s.log(LogInformational, "sending close frame")
 		// To cleanly close a connection, a client should send a close
 		// frame and wait for the server to close the connection.
-		s.wsMutex.Lock()
-		err := s.wsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, ""))
-		s.wsMutex.Unlock()
+		err := writeWebsocketCloseFrame(s.wsConn, closeCode)
 		if err != nil {
 			s.log(LogInformational, "error closing websocket, %s", err)
 		}

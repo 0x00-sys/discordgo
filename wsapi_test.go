@@ -168,6 +168,35 @@ func TestOpenHandlesHeartbeatAckDuringOpen(t *testing.T) {
 	defer session.Close()
 }
 
+func TestSessionCloseWithLockedWSMutex(t *testing.T) {
+	server := newCloseFrameTestServer(t)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{
+		LogLevel:  -1,
+		wsConn:    conn,
+		listening: make(chan interface{}),
+		sequence:  new(int64),
+	}
+
+	session.wsMutex.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Close()
+	}()
+
+	requireCloseDoneWhileWSMutexLocked(t, func() {
+		session.wsMutex.Unlock()
+	}, done)
+}
+
 func TestOpenSendsHeartbeatsBeforeReady(t *testing.T) {
 	heartbeatRead := make(chan struct{}, 1)
 	server := newGatewayOpenAfterHeartbeatTestServer(t, heartbeatRead)
@@ -908,5 +937,44 @@ func TestRedactedGatewayDataInvalidJSON(t *testing.T) {
 
 	if got := redactedGatewayData(data); got != string(data) {
 		t.Fatalf("redactedGatewayData() = %q, want %q", got, string(data))
+	}
+}
+
+func newCloseFrameTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	upgrader := websocket.Upgrader{}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade() error = %v", err)
+			return
+		}
+		defer c.Close()
+
+		for {
+			if _, _, err = c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+}
+
+func requireCloseDoneWhileWSMutexLocked(t *testing.T, unlock func(), done <-chan error) {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		unlock()
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		unlock()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("Close did not return while wsMutex was locked")
 	}
 }

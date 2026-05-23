@@ -154,6 +154,35 @@ func TestVoiceCloseClearsOpusChannels(t *testing.T) {
 	}
 }
 
+func TestVoiceCloseWithLockedWSMutex(t *testing.T) {
+	server := newCloseFrameTestServer(t)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		close:    make(chan struct{}),
+		wsConn:   conn,
+	}
+
+	voice.wsMutex.Lock()
+	done := make(chan error, 1)
+	go func() {
+		voice.Close()
+		done <- nil
+	}()
+
+	requireCloseDoneWhileWSMutexLocked(t, func() {
+		voice.wsMutex.Unlock()
+	}, done)
+}
+
 func TestVoiceReconnectStopsWhenUnregistered(t *testing.T) {
 	v := &VoiceConnection{
 		GuildID:   "guild",
