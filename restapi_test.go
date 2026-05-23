@@ -406,6 +406,35 @@ func TestRedactedHeaderValues(t *testing.T) {
 	}
 }
 
+func TestNewRestErrorRedactsAuthorizationHeader(t *testing.T) {
+	req, err := http.NewRequest("GET", EndpointGateway, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bot secret")
+	req.Header.Set("User-Agent", "discordgo")
+	resp := &http.Response{
+		Status:     "401 Unauthorized",
+		StatusCode: http.StatusUnauthorized,
+		Request:    req,
+	}
+
+	restErr := newRestError(req, resp, []byte(`{"code":0,"message":"unauthorized"}`))
+
+	if got := restErr.Request.Header.Get("Authorization"); got != redactedValue {
+		t.Fatalf("RESTError request authorization = %q, want %q", got, redactedValue)
+	}
+	if got := restErr.Response.Request.Header.Get("Authorization"); got != redactedValue {
+		t.Fatalf("RESTError response request authorization = %q, want %q", got, redactedValue)
+	}
+	if got := restErr.Request.Header.Get("User-Agent"); got != "discordgo" {
+		t.Fatalf("RESTError request user agent = %q, want discordgo", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bot secret" {
+		t.Fatalf("original request authorization = %q, want Bot secret", got)
+	}
+}
+
 func TestRedactedURL(t *testing.T) {
 	tests := []struct {
 		name string
