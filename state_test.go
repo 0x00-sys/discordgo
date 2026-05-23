@@ -158,6 +158,123 @@ func TestPresenceUpdateRequiresUserForMemberTracking(t *testing.T) {
 	}
 }
 
+func TestUserChannelPermissionsUsesStateLock(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: PermissionViewChannel,
+			},
+			{
+				ID:          "role",
+				Permissions: PermissionSendMessages,
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+			},
+		},
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+				Roles:   []string{"role"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 10000; i++ {
+			err := state.RoleAdd("guild", &Role{
+				ID:          "role",
+				Permissions: PermissionSendMessages,
+			})
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	for i := 0; i < 10000; i++ {
+		_, err := state.UserChannelPermissions("user", "channel")
+		if err != nil {
+			t.Fatalf("UserChannelPermissions returned error: %v", err)
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("RoleAdd returned error: %v", err)
+	}
+}
+
+func TestMessagePermissionsUsesStateLock(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: PermissionViewChannel,
+			},
+			{
+				ID:          "role",
+				Permissions: PermissionSendMessages,
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	message := &Message{
+		ChannelID: "channel",
+		Author:    &User{ID: "user"},
+		Member: &Member{
+			Roles: []string{"role"},
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 10000; i++ {
+			err := state.RoleAdd("guild", &Role{
+				ID:          "role",
+				Permissions: PermissionSendMessages,
+			})
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	for i := 0; i < 10000; i++ {
+		_, err := state.MessagePermissions(message)
+		if err != nil {
+			t.Fatalf("MessagePermissions returned error: %v", err)
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("RoleAdd returned error: %v", err)
+	}
+}
+
 func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	state := NewState()
 	oldUser := &User{

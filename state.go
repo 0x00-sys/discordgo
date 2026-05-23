@@ -1275,19 +1275,27 @@ func (s *State) UserChannelPermissions(userID, channelID string) (apermissions i
 		return 0, ErrNilState
 	}
 
-	channel, err := s.Channel(channelID)
-	if err != nil {
-		return
+	s.RLock()
+	defer s.RUnlock()
+
+	channel, ok := s.channelMap[channelID]
+	if !ok {
+		return 0, ErrStateNotFound
 	}
 
-	guild, err := s.Guild(channel.GuildID)
-	if err != nil {
-		return
+	guild, ok := s.guildMap[channel.GuildID]
+	if !ok {
+		return 0, ErrStateNotFound
 	}
 
-	member, err := s.Member(guild.ID, userID)
-	if err != nil {
-		return
+	members, ok := s.memberMap[guild.ID]
+	if !ok {
+		return 0, ErrStateNotFound
+	}
+
+	member, ok := members[userID]
+	if !ok {
+		return 0, ErrStateNotFound
 	}
 
 	return memberPermissions(guild, channel, userID, member.Roles), nil
@@ -1304,14 +1312,17 @@ func (s *State) MessagePermissions(message *Message) (apermissions int64, err er
 		return 0, ErrMessageIncompletePermissions
 	}
 
-	channel, err := s.Channel(message.ChannelID)
-	if err != nil {
-		return
+	s.RLock()
+	defer s.RUnlock()
+
+	channel, ok := s.channelMap[message.ChannelID]
+	if !ok {
+		return 0, ErrStateNotFound
 	}
 
-	guild, err := s.Guild(channel.GuildID)
-	if err != nil {
-		return
+	guild, ok := s.guildMap[channel.GuildID]
+	if !ok {
+		return 0, ErrStateNotFound
 	}
 
 	return memberPermissions(guild, channel, message.Author.ID, message.Member.Roles), nil
