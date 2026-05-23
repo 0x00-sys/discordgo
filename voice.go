@@ -95,6 +95,8 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 		Data voiceSpeakingData `json:"d"`
 	}
 
+	v.Lock()
+	defer v.Unlock()
 	if v.wsConn == nil {
 		return fmt.Errorf("no VoiceConnection websocket")
 	}
@@ -104,8 +106,6 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 	err = v.wsConn.WriteJSON(data)
 	v.wsMutex.Unlock()
 
-	v.Lock()
-	defer v.Unlock()
 	if err != nil {
 		v.speaking = false
 		v.log(LogError, "Speaking() write json error, %s", err)
