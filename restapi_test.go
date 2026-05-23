@@ -3,8 +3,13 @@ package discordgo
 import (
 	"context"
 	"errors"
+	"io"
+	"io/ioutil"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 //////////////////////////////////////////////////////////////////////////////
@@ -109,6 +114,48 @@ func TestUserGuilds(t *testing.T) {
 	_, err := dg.UserGuilds(10, "", "", false)
 	if err != nil {
 		t.Errorf(err.Error())
+	}
+}
+
+func TestGuildMembersSearchSetsGuildID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/guilds/guild/members/search" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/members/search")
+		}
+		if query := r.URL.Query().Get("query"); query != "user" {
+			t.Fatalf("query = %q, want %q", query, "user")
+		}
+		if limit := r.URL.Query().Get("limit"); limit != "2" {
+			t.Fatalf("limit = %q, want %q", limit, "2")
+		}
+		_, _ = w.Write([]byte(`[{"user":{"id":"user","username":"user","discriminator":"0"},"avatar":"guild-avatar"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	members, err := session.GuildMembersSearch("guild", "user", 2)
+	if err != nil {
+		t.Fatalf("GuildMembersSearch returned error: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("len(members) = %d, want 1", len(members))
+	}
+	if members[0].GuildID != "guild" {
+		t.Fatalf("GuildID = %q, want %q", members[0].GuildID, "guild")
+	}
+	if got, want := members[0].AvatarURL(""), EndpointGuildMemberAvatar("guild", "user", "guild-avatar"); got != want {
+		t.Fatalf("AvatarURL = %q, want %q", got, want)
 	}
 }
 
@@ -266,6 +313,165 @@ func TestWithContext(t *testing.T) {
 	// Verify that the assertion code was actually run.
 	if !errors.Is(err, testErr) {
 		t.Errorf("unexpected error %v returned from client", err)
+	}
+}
+
+func TestRequestWithLockedBucketNonJSONRateLimitUsesRetryAfter(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header: http.Header{
+				"Retry-After": []string{"2"},
+			},
+			Body:    io.NopCloser(strings.NewReader("error code: 1015")),
+			Request: r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RateLimitError", err)
+	}
+	if rateLimitErr.RetryAfter != 2*time.Second {
+		t.Fatalf("RetryAfter = %v, want %v", rateLimitErr.RetryAfter, 2*time.Second)
+	}
+	if rateLimitErr.Message != "error code: 1015" {
+		t.Fatalf("Message = %q, want %q", rateLimitErr.Message, "error code: 1015")
+	}
+}
+
+func TestChannelMessagesPinnedUsesGlobalBucket(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header: http.Header{
+				"X-RateLimit-Remaining":   []string{"1"},
+				"X-RateLimit-Reset-After": []string{"0.1"},
+			},
+			Body:    ioutil.NopCloser(strings.NewReader(`{"items":[],"has_more":false}`)),
+			Request: r,
+		}, nil
+	})
+
+	before := time.Now()
+	if _, err = session.ChannelMessagesPinned("channel-a", &before, 10); err != nil {
+		t.Fatalf("ChannelMessagesPinned returned error: %v", err)
+	}
+	if _, err = session.ChannelMessagesPinned("channel-b", nil, 0); err != nil {
+		t.Fatalf("ChannelMessagesPinned returned error: %v", err)
+	}
+
+	session.Ratelimiter.Lock()
+	defer session.Ratelimiter.Unlock()
+
+	want := EndpointChannelMessagesPins("")
+	if _, ok := session.Ratelimiter.buckets[want]; !ok {
+		t.Fatalf("bucket %q was not created", want)
+	}
+	if len(session.Ratelimiter.buckets) != 1 {
+		t.Fatalf("bucket count = %d, want 1", len(session.Ratelimiter.buckets))
+	}
+	for key := range session.Ratelimiter.buckets {
+		if strings.Contains(key, "?") {
+			t.Fatalf("bucket %q includes query parameters", key)
+		}
+		if strings.Contains(key, "channel-a") || strings.Contains(key, "channel-b") {
+			t.Fatalf("bucket %q includes channel ID", key)
+		}
+	}
+}
+
+func TestRedactedHeaderValues(t *testing.T) {
+	values := redactedHeaderValues("Authorization", []string{"Bot secret"})
+	if len(values) != 1 || values[0] != redactedValue {
+		t.Fatalf("redactedHeaderValues() = %#v, want %q", values, redactedValue)
+	}
+
+	values = redactedHeaderValues("User-Agent", []string{"discordgo"})
+	if len(values) != 1 || values[0] != "discordgo" {
+		t.Fatalf("redactedHeaderValues() changed non-secret header: %#v", values)
+	}
+}
+
+func TestRedactedURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "webhook token",
+			url:  "https://discord.com/api/v10/webhooks/123456789/token-value/messages/@original?wait=true",
+			want: "https://discord.com/api/v10/webhooks/123456789/REDACTED/messages/@original?wait=true",
+		},
+		{
+			name: "interaction token",
+			url:  "https://discord.com/api/v10/interactions/123456789/token-value/callback",
+			want: "https://discord.com/api/v10/interactions/123456789/REDACTED/callback",
+		},
+		{
+			name: "ordinary endpoint",
+			url:  "https://discord.com/api/v10/channels/123/messages",
+			want: "https://discord.com/api/v10/channels/123/messages",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactedURL(tt.url); got != tt.want {
+				t.Fatalf("redactedURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedactedIdentify(t *testing.T) {
+	op := identifyOp{2, Identify{Token: "Bot secret"}}
+
+	redacted := redactedIdentify(op)
+	if redacted.Data.Token != redactedValue {
+		t.Fatalf("redacted token = %q, want %q", redacted.Data.Token, redactedValue)
+	}
+	if op.Data.Token != "Bot secret" {
+		t.Fatalf("redactedIdentify mutated original token: %q", op.Data.Token)
+	}
+}
+
+func TestRedactedRESTBody(t *testing.T) {
+	body := []byte(`{"access_token":"access-value","token":"webhook-value","password":"password-value","nested":{"refresh_token":"refresh-value","client_secret":"client-secret-value","safe":"ok"},"items":[{"token":"item-token-value"}]}`)
+
+	got := redactedRESTBody(body)
+	for _, secret := range []string{"access-value", "webhook-value", "password-value", "refresh-value", "client-secret-value", "item-token-value"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redactedRESTBody() leaked %q in %s", secret, got)
+		}
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("redactedRESTBody() = %s, want redacted value", got)
+	}
+	if !strings.Contains(got, `"safe":"ok"`) {
+		t.Fatalf("redactedRESTBody() = %s, want non-secret fields preserved", got)
+	}
+}
+
+func TestRedactedRESTBodyInvalidJSON(t *testing.T) {
+	body := []byte("not-json")
+
+	if got := redactedRESTBody(body); got != string(body) {
+		t.Fatalf("redactedRESTBody() = %q, want %q", got, string(body))
 	}
 }
 

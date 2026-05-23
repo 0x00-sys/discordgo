@@ -115,6 +115,10 @@ func (s *Session) Open() error {
 	if err != nil {
 		return err
 	}
+	err = s.openGatewayControlEvent(mt, m, 10)
+	if err != nil {
+		return err
+	}
 	e, err := s.onEvent(mt, m)
 	if err != nil {
 		return err
@@ -181,6 +185,10 @@ func (s *Session) Open() error {
 	if err != nil {
 		return err
 	}
+	err = s.openGatewayControlEvent(mt, m, 0, "READY", "RESUMED")
+	if err != nil {
+		return err
+	}
 	e, err = s.onEvent(mt, m)
 	if err != nil {
 		return err
@@ -214,6 +222,66 @@ func (s *Session) Open() error {
 	return nil
 }
 
+func (s *Session) openGatewayControlEvent(messageType int, message []byte, expectedOperation int, expectedEventTypes ...string) error {
+	e, err := peekGatewayEvent(messageType, message)
+	if err != nil || e == nil {
+		return nil
+	}
+
+	switch e.Operation {
+	case 7:
+		return fmt.Errorf("received Op 7 reconnect during open")
+	case 9:
+		var resumable bool
+		if err := json.Unmarshal(e.RawData, &resumable); err != nil {
+			return fmt.Errorf("error unmarshalling invalid session event, %s", err)
+		}
+		if !resumable {
+			s.resumeGatewayURL = ""
+			s.sessionID = ""
+			atomic.StoreInt64(s.sequence, 0)
+		}
+		return fmt.Errorf("received Op 9 invalid session during open")
+	}
+
+	if e.Operation != expectedOperation {
+		return fmt.Errorf("received Op %d during open, expected Op %d", e.Operation, expectedOperation)
+	}
+	if e.Operation == 0 {
+		for _, expected := range expectedEventTypes {
+			if e.Type == expected {
+				return nil
+			}
+		}
+		return fmt.Errorf("received %s event during open", e.Type)
+	}
+
+	return nil
+}
+
+func peekGatewayEvent(messageType int, message []byte) (*Event, error) {
+	var reader io.Reader
+	reader = bytes.NewBuffer(message)
+
+	if messageType == websocket.BinaryMessage {
+		z, err := zlib.NewReader(reader)
+		if err != nil {
+			return nil, err
+		}
+		defer z.Close()
+
+		reader = z
+	}
+
+	var e *Event
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(&e); err != nil {
+		return e, err
+	}
+
+	return e, nil
+}
+
 // listen polls the websocket connection for events, it will stop when the
 // listening channel is closed, or an error occurs.
 func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
@@ -225,6 +293,7 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 		messageType, message, err := wsConn.ReadMessage()
 
 		if err != nil {
+			readErr := err
 
 			// Detect if we have been closed manually. If a Close() has already
 			// happened, the websocket we are listening on will be different to
@@ -235,12 +304,17 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 			if sameConnection {
 
-				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, err)
+				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, readErr)
 				// There has been an error reading, close the websocket so that
 				// OnDisconnect event is emitted.
 				err := s.Close()
 				if err != nil {
 					s.log(LogWarning, "error closing session connection, %s", err)
+				}
+
+				if !shouldReconnectOnGatewayClose(readErr) {
+					s.log(LogInformational, "not reconnecting after terminal gateway close, %s", readErr)
+					return
 				}
 
 				s.log(LogInformational, "calling reconnect() now")
@@ -260,6 +334,10 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 		}
 	}
+}
+
+func shouldReconnectOnGatewayClose(err error) bool {
+	return !websocket.IsCloseError(err, 4004, 4010, 4011, 4012, 4013, 4014)
 }
 
 type heartbeatOp struct {
@@ -297,6 +375,10 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 	defer ticker.Stop()
 
 	for {
+		if isListeningClosed(listening) {
+			return
+		}
+
 		s.RLock()
 		last := s.LastHeartbeatAck
 		s.RUnlock()
@@ -307,6 +389,9 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		err = wsConn.WriteJSON(heartbeatOp{1, sequence})
 		s.wsMutex.Unlock()
 		if err != nil || time.Now().UTC().Sub(last) > (heartbeatIntervalMsec*FailedHeartbeatAcks) {
+			if isListeningClosed(listening) {
+				return
+			}
 			if err != nil {
 				s.log(LogError, "error sending heartbeat to gateway %s, %s", s.gateway, err)
 			} else {
@@ -326,6 +411,15 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		case <-listening:
 			return
 		}
+	}
+}
+
+func isListeningClosed(listening <-chan interface{}) bool {
+	select {
+	case <-listening:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -596,7 +690,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		return e, err
 	}
 
-	s.log(LogDebug, "Op: %d, Seq: %d, Type: %s, Data: %s\n\n", e.Operation, e.Sequence, e.Type, string(e.RawData))
+	s.log(LogDebug, "Op: %d, Seq: %d, Type: %s, Data: %s\n\n", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData))
 
 	// Ping request.
 	// Must respond with a heartbeat packet within 5 seconds
@@ -669,7 +763,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	if e.Operation != 0 {
 		// But we probably should be doing something with them.
 		// TEMP
-		s.log(LogWarning, "unknown Op: %d, Seq: %d, Type: %s, Data: %s, message: %s", e.Operation, e.Sequence, e.Type, string(e.RawData), string(message))
+		s.log(LogWarning, "unknown Op: %d, Seq: %d, Type: %s, Data: %s, message: %s", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData), redactedGatewayData(message))
 		return e, nil
 	}
 
@@ -694,13 +788,55 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		// Either way, READY events must fire, even with errors.
 		s.handleEvent(e.Type, e.Struct)
 	} else {
-		s.log(LogWarning, "unknown event: Op: %d, Seq: %d, Type: %s, Data: %s", e.Operation, e.Sequence, e.Type, string(e.RawData))
+		s.log(LogWarning, "unknown event: Op: %d, Seq: %d, Type: %s, Data: %s", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData))
 	}
 
 	// For legacy reasons, we send the raw event also, this could be useful for handling unknown events.
 	s.handleEvent(eventEventType, e)
 
 	return e, nil
+}
+
+func redactedGatewayData(data []byte) string {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return string(data)
+	}
+
+	redactGatewayValue(v)
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(data)
+	}
+
+	return string(b)
+}
+
+func redactGatewayValue(v interface{}) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		for k, nested := range value {
+			if isGatewaySecretKey(k) {
+				value[k] = "[REDACTED]"
+				continue
+			}
+			redactGatewayValue(nested)
+		}
+	case []interface{}:
+		for _, nested := range value {
+			redactGatewayValue(nested)
+		}
+	}
+}
+
+func isGatewaySecretKey(key string) bool {
+	switch key {
+	case "token", "access_token", "refresh_token":
+		return true
+	}
+
+	return false
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -896,12 +1032,20 @@ func (s *Session) identify() error {
 
 	// Send Identify packet to Discord
 	op := identifyOp{2, s.Identify}
-	s.log(LogDebug, "Identify Packet: \n%#v", op)
+	s.log(LogDebug, "Identify Packet: \n%#v", redactedIdentify(op))
 	s.wsMutex.Lock()
 	err := s.wsConn.WriteJSON(op)
 	s.wsMutex.Unlock()
 
 	return err
+}
+
+func redactedIdentify(op identifyOp) identifyOp {
+	if op.Data.Token != "" {
+		op.Data.Token = redactedValue
+	}
+
+	return op
 }
 
 func (s *Session) reconnect() {

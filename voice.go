@@ -95,6 +95,8 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 		Data voiceSpeakingData `json:"d"`
 	}
 
+	v.Lock()
+	defer v.Unlock()
 	if v.wsConn == nil {
 		return fmt.Errorf("no VoiceConnection websocket")
 	}
@@ -104,8 +106,6 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 	err = v.wsConn.WriteJSON(data)
 	v.wsMutex.Unlock()
 
-	v.Lock()
-	defer v.Unlock()
 	if err != nil {
 		v.speaking = false
 		v.log(LogError, "Speaking() write json error, %s", err)
@@ -124,9 +124,7 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 	v.log(LogInformational, "called")
 
 	data := voiceChannelJoinOp{4, voiceChannelJoinData{&v.GuildID, &channelID, mute, deaf}}
-	v.session.wsMutex.Lock()
-	err = v.session.wsConn.WriteJSON(data)
-	v.session.wsMutex.Unlock()
+	err = v.session.GatewayWriteStruct(data)
 	if err != nil {
 		return
 	}
@@ -146,9 +144,7 @@ func (v *VoiceConnection) Disconnect() (err error) {
 	v.Lock()
 	if v.sessionID != "" {
 		data := voiceChannelJoinOp{4, voiceChannelJoinData{&v.GuildID, nil, true, true}}
-		v.session.wsMutex.Lock()
-		err = v.session.wsConn.WriteJSON(data)
-		v.session.wsMutex.Unlock()
+		err = v.session.GatewayWriteStruct(data)
 		v.sessionID = ""
 	}
 	v.Unlock()
@@ -214,6 +210,9 @@ func (v *VoiceConnection) Close() {
 
 		v.wsConn = nil
 	}
+
+	v.OpusSend = nil
+	v.OpusRecv = nil
 }
 
 // AddHandler adds a Handler for VoiceSpeakingUpdate events.
@@ -315,7 +314,7 @@ func (v *VoiceConnection) open() (err error) {
 	v.wsConn, _, err = v.session.Dialer.Dial(vg, nil)
 	if err != nil {
 		v.log(LogWarning, "error connecting to voice endpoint %s, %s", vg, err)
-		v.log(LogDebug, "voice struct: %#v\n", v)
+		v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 		return
 	}
 
@@ -356,36 +355,48 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 	v.log(LogInformational, "called")
 
 	for {
-		_, message, err := v.wsConn.ReadMessage()
+		_, message, err := wsConn.ReadMessage()
 		if err != nil {
+			select {
+			case <-close:
+				return
+			default:
+			}
+
+			closeErr, isCloseErr := err.(*websocket.CloseError)
+
 			// 4014 indicates a manual disconnection by someone in the guild;
+			// 4021 indicates that the voice connection was dropped due to rate limiting;
+			// 4022 indicates that the call was terminated.
 			// we shouldn't reconnect.
-			if websocket.IsCloseError(err, 4014) {
-				v.log(LogInformational, "received 4014 manual disconnection")
+			if isCloseErr && (closeErr.Code == 4014 || closeErr.Code == 4021 || closeErr.Code == 4022) {
+				v.log(LogInformational, "received %d manual disconnection", closeErr.Code)
 
 				// Abandon the voice WS connection
 				v.Lock()
 				v.wsConn = nil
 				v.Unlock()
 
-				// Wait for VOICE_SERVER_UPDATE.
-				// When the bot is moved by the user to another voice channel,
-				// VOICE_SERVER_UPDATE is received after the code 4014.
-				for i := 0; i < 5; i++ { // TODO: temp, wait for VoiceServerUpdate.
-					<-time.After(1 * time.Second)
+				if closeErr.Code == 4014 {
+					// Wait for VOICE_SERVER_UPDATE.
+					// When the bot is moved by the user to another voice channel,
+					// VOICE_SERVER_UPDATE is received after the code 4014.
+					for i := 0; i < 5; i++ { // TODO: temp, wait for VoiceServerUpdate.
+						<-time.After(1 * time.Second)
 
-					v.RLock()
-					reconnected := v.wsConn != nil
-					v.RUnlock()
-					if !reconnected {
-						continue
+						v.RLock()
+						reconnected := v.wsConn != nil
+						v.RUnlock()
+						if !reconnected {
+							continue
+						}
+						v.log(LogInformational, "successfully reconnected after 4014 manual disconnection")
+						return
 					}
-					v.log(LogInformational, "successfully reconnected after 4014 manual disconnection")
-					return
 				}
 
 				// When VOICE_SERVER_UPDATE is not received, disconnect as usual.
-				v.log(LogInformational, "disconnect due to 4014 manual disconnection")
+				v.log(LogInformational, "disconnect due to %d manual disconnection", closeErr.Code)
 
 				v.session.Lock()
 				delete(v.session.VoiceConnections, v.GuildID)
@@ -426,7 +437,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 // wsListen() function.
 func (v *VoiceConnection) onEvent(message []byte) {
 
-	v.log(LogDebug, "received: %s", string(message))
+	v.log(LogDebug, "received: %s", redactedVoiceData(message))
 
 	var e Event
 	if err := json.Unmarshal(message, &e); err != nil {
@@ -439,12 +450,17 @@ func (v *VoiceConnection) onEvent(message []byte) {
 	case 2: // READY
 
 		if err := json.Unmarshal(e.RawData, &v.op2); err != nil {
-			v.log(LogError, "OP2 unmarshall error, %s, %s", err, string(e.RawData))
+			v.log(LogError, "OP2 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
 
+		v.RLock()
+		wsConn := v.wsConn
+		closeChan := v.close
+		v.RUnlock()
+
 		// Start the voice websocket heartbeat to keep the connection alive
-		go v.wsHeartbeat(v.wsConn, v.close, v.op2.HeartbeatInterval)
+		go v.wsHeartbeat(wsConn, closeChan, v.op2.HeartbeatInterval)
 		// TODO monitor a chan/bool to verify this was successful
 
 		// Start the UDP connection
@@ -457,18 +473,28 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		// Start the opusSender.
 		// TODO: Should we allow 48000/960 values to be user defined?
 		// answer: no, 48k is required as per discord documentaiton and 960 is the most optimal frame size (based on testing)
+		v.Lock()
 		if v.OpusSend == nil {
 			v.OpusSend = make(chan []byte, 2)
 		}
-		go v.opusSender(v.udpConn, v.close, v.OpusSend, 48000, 960)
+		udpConn := v.udpConn
+		closeChan = v.close
+		opusSend := v.OpusSend
+		deaf := v.deaf
 
-		// Start the opusReceiver
-		if !v.deaf {
+		if !deaf {
 			if v.OpusRecv == nil {
 				v.OpusRecv = make(chan *Packet, 2)
 			}
+		}
+		opusRecv := v.OpusRecv
+		v.Unlock()
 
-			go v.opusReceiver(v.udpConn, v.close, v.OpusRecv)
+		go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
+
+		// Start the opusReceiver
+		if !deaf {
+			go v.opusReceiver(udpConn, closeChan, opusRecv)
 		}
 
 		return
@@ -484,7 +510,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 
 		v.op4 = voiceOP4{}
 		if err := json.Unmarshal(e.RawData, &v.op4); err != nil {
-			v.log(LogError, "OP4 unmarshall error, %s, %s", err, string(e.RawData))
+			v.log(LogError, "OP4 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
 
@@ -501,7 +527,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 
 		voiceSpeakingUpdate := &VoiceSpeakingUpdate{}
 		if err := json.Unmarshal(e.RawData, voiceSpeakingUpdate); err != nil {
-			v.log(LogError, "OP5 unmarshall error, %s, %s", err, string(e.RawData))
+			v.log(LogError, "OP5 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
 
@@ -510,10 +536,52 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		}
 
 	default:
-		v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, string(e.RawData))
+		v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, redactedVoiceData(e.RawData))
 	}
 
 	return
+}
+
+func redactedVoiceData(data []byte) string {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return string(data)
+	}
+
+	redactVoiceValue(v)
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(data)
+	}
+
+	return string(b)
+}
+
+func redactVoiceValue(v interface{}) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		for k, nested := range value {
+			if isVoiceSecretKey(k) {
+				value[k] = "[REDACTED]"
+				continue
+			}
+			redactVoiceValue(nested)
+		}
+	case []interface{}:
+		for _, nested := range value {
+			redactVoiceValue(nested)
+		}
+	}
+}
+
+func isVoiceSecretKey(key string) bool {
+	switch key {
+	case "token", "secret_key", "access_token", "refresh_token":
+		return true
+	}
+
+	return false
 }
 
 type voiceHeartbeatOp struct {
@@ -575,6 +643,8 @@ type voiceUDPOp struct {
 	Data voiceUDPD `json:"d"`
 }
 
+var voiceUDPReadTimeout = 5 * time.Second
+
 // udpOpen opens a UDP connection to the voice server and completes the
 // initial required handshake.  This connection is left open in the session
 // and can be used to send or receive audio.  This should only be called
@@ -632,7 +702,16 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	// of the response.  This should be our public IP and PORT as Discord
 	// saw us.
 	rb := make([]byte, 74)
+	err = v.udpConn.SetReadDeadline(time.Now().Add(voiceUDPReadTimeout))
+	if err != nil {
+		v.log(LogWarning, "udp read deadline error, %s, %s", addr.String(), err)
+		return
+	}
+
 	rlen, _, err := v.udpConn.ReadFromUDP(rb)
+	if deadlineErr := v.udpConn.SetReadDeadline(time.Time{}); deadlineErr != nil && err == nil {
+		err = deadlineErr
+	}
 	if err != nil {
 		v.log(LogWarning, "udp read error, %s, %s", addr.String(), err)
 		return
@@ -774,10 +853,17 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 
 		// encrypt the opus data
 		// add incrementing nonce counter as per discord's requirements
+		v.RLock()
+		aead := v.aead
+		v.RUnlock()
+		if aead == nil {
+			continue
+		}
+
 		binary.LittleEndian.PutUint32(nonce[:4], v.nonceCounter)
 		v.nonceCounter++
 
-		sendbuf := v.aead.Seal(nil, nonce, recvbuf, udpHeader)
+		sendbuf := aead.Seal(nil, nonce, recvbuf, udpHeader)
 		sendbuf = append(sendbuf, nonce[:4]...) // 4 byte nonce to ciphertext appended
 		sendbuf = append(udpHeader, sendbuf...) // final
 
@@ -793,7 +879,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 
 		if err != nil {
 			v.log(LogError, "udp write error, %s", err)
-			v.log(LogDebug, "voice struct: %#v\n", v)
+			v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 			return
 		}
 
@@ -845,7 +931,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 			if sameConnection {
 
 				v.log(LogError, "udp read error, %s, %s", v.endpoint, err)
-				v.log(LogDebug, "voice struct: %#v\n", v)
+				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 
 				go v.reconnect()
 			}
@@ -910,11 +996,14 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 
 		binary.LittleEndian.PutUint32(nonce[:4], binary.LittleEndian.Uint32(nonceCounter))
 
-		if v.aead == nil {
+		v.RLock()
+		aead := v.aead
+		v.RUnlock()
+		if aead == nil {
 			continue
 		}
 		// AAD must cover the unencrypted header portion.
-		if plain, err := v.aead.Open(nil, nonce[:], cipherTextPayload, recvbuf[:aadLen]); err == nil {
+		if plain, err := aead.Open(nil, nonce[:], cipherTextPayload, recvbuf[:aadLen]); err == nil {
 			// If header extensions are present, strip decrypted extension payload to get to Opus.
 			if extPayloadBytes > 0 {
 				if len(plain) < extPayloadBytes {
@@ -973,7 +1062,11 @@ func (v *VoiceConnection) reconnect() {
 			wait = 600
 		}
 
-		if v.session.DataReady == false || v.session.wsConn == nil {
+		v.session.RLock()
+		dataReady := v.session.DataReady
+		wsConn := v.session.wsConn
+		v.session.RUnlock()
+		if !dataReady || wsConn == nil {
 			v.log(LogInformational, "cannot reconnect to channel %s with unready session", v.ChannelID)
 			continue
 		}
@@ -992,9 +1085,7 @@ func (v *VoiceConnection) reconnect() {
 		// packet to reset things.
 		// Send a OP4 with a nil channel to disconnect
 		data := voiceChannelJoinOp{4, voiceChannelJoinData{&v.GuildID, nil, true, true}}
-		v.session.wsMutex.Lock()
-		err = v.session.wsConn.WriteJSON(data)
-		v.session.wsMutex.Unlock()
+		err = v.session.GatewayWriteStruct(data)
 		if err != nil {
 			v.log(LogError, "error sending disconnect packet, %s", err)
 		}

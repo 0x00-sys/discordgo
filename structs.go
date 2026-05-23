@@ -601,6 +601,44 @@ type ForumTag struct {
 	EmojiName string `json:"emoji_name,omitempty"`
 }
 
+func (t *ForumTag) UnmarshalJSON(data []byte) error {
+	temp := struct {
+		ID        forumTagID `json:"id,omitempty"`
+		Name      string     `json:"name"`
+		Moderated bool       `json:"moderated"`
+		EmojiID   string     `json:"emoji_id,omitempty"`
+		EmojiName string     `json:"emoji_name,omitempty"`
+	}{}
+
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	t.ID = string(temp.ID)
+	t.Name = temp.Name
+	t.Moderated = temp.Moderated
+	t.EmojiID = temp.EmojiID
+	t.EmojiName = temp.EmojiName
+	return nil
+}
+
+type forumTagID string
+
+func (id *forumTagID) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*id = forumTagID(str)
+		return nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	*id = forumTagID(number.String())
+	return nil
+}
+
 // Emoji struct holds data related to Emoji's
 type Emoji struct {
 	ID            string   `json:"id"`
@@ -2247,7 +2285,7 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 		Type          ActivityType `json:"type"`
 		URL           string       `json:"url,omitempty"`
 		CreatedAt     int64        `json:"created_at"`
-		ApplicationID json.Number  `json:"application_id,omitempty"`
+		ApplicationID stringNumber `json:"application_id,omitempty"`
 		State         string       `json:"state,omitempty"`
 		Details       string       `json:"details,omitempty"`
 		Timestamps    TimeStamps   `json:"timestamps,omitempty"`
@@ -2262,7 +2300,7 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return err
 	}
-	activity.ApplicationID = temp.ApplicationID.String()
+	activity.ApplicationID = string(temp.ApplicationID)
 	activity.CreatedAt = time.Unix(0, temp.CreatedAt*1000000)
 	activity.Assets = temp.Assets
 	activity.Details = temp.Details
@@ -2276,6 +2314,23 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 	activity.Timestamps = temp.Timestamps
 	activity.Type = temp.Type
 	activity.URL = temp.URL
+	return nil
+}
+
+type stringNumber string
+
+func (s *stringNumber) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*s = stringNumber(str)
+		return nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(b, &number); err != nil {
+		return err
+	}
+	*s = stringNumber(number.String())
 	return nil
 }
 

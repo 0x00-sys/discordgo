@@ -195,8 +195,8 @@ func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucke
 // RequestWithLockedBucket makes a request using a bucket that's already been locked
 func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, options ...RequestOption) (response []byte, err error) {
 	if s.Debug {
-		log.Printf("API REQUEST %8s :: %s\n", method, urlStr)
-		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", string(b))
+		log.Printf("API REQUEST %8s :: %s\n", method, redactedURL(urlStr))
+		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b))
 	}
 
 	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(b))
@@ -228,7 +228,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 
 	if s.Debug {
 		for k, v := range req.Header {
-			log.Printf("API REQUEST   HEADER :: [%s] = %+v\n", k, v)
+			log.Printf("API REQUEST   HEADER :: [%s] = %+v\n", k, redactedHeaderValues(k, v))
 		}
 	}
 
@@ -260,7 +260,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		for k, v := range resp.Header {
 			log.Printf("API RESPONSE  HEADER :: [%s] = %+v\n", k, v)
 		}
-		log.Printf("API RESPONSE    BODY :: [%s]\n\n\n", response)
+		log.Printf("API RESPONSE    BODY :: [%s]\n\n\n", redactedRESTBody(response))
 	}
 
 	switch resp.StatusCode {
@@ -286,8 +286,14 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		rl := TooManyRequests{}
 		err = Unmarshal(response, &rl)
 		if err != nil {
-			s.log(LogError, "rate limit unmarshal error, %s", err)
-			return
+			retryAfter, parseErr := retryAfterHeader(resp.Header)
+			if parseErr != nil {
+				s.log(LogError, "rate limit unmarshal error, %s", err)
+				return
+			}
+			err = nil
+			rl.Message = strings.TrimSpace(string(response))
+			rl.RetryAfter = retryAfter
 		}
 
 		if cfg.ShouldRetryOnRateLimit {
@@ -313,6 +319,96 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 	}
 
 	return
+}
+
+func retryAfterHeader(headers http.Header) (time.Duration, error) {
+	retryAfter := headers.Get("Retry-After")
+	if retryAfter == "" {
+		return 0, errors.New("Retry-After header not found")
+	}
+
+	seconds, err := strconv.ParseFloat(retryAfter, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+const (
+	redactedValue    = "[REDACTED]"
+	redactedURLValue = "REDACTED"
+)
+
+func redactedHeaderValues(key string, values []string) []string {
+	if strings.EqualFold(key, "Authorization") {
+		return []string{redactedValue}
+	}
+
+	return values
+}
+
+func redactedURL(rawurl string) string {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return rawurl
+	}
+
+	parts := strings.Split(u.Path, "/")
+	for i, part := range parts {
+		if (part == "webhooks" || part == "interactions") && i+2 < len(parts) {
+			parts[i+2] = redactedURLValue
+		}
+	}
+	u.Path = strings.Join(parts, "/")
+
+	return u.String()
+}
+
+func redactedRESTBody(body []byte) string {
+	if len(body) == 0 {
+		return string(body)
+	}
+
+	var v interface{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return string(body)
+	}
+
+	redactRESTValue(v)
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(body)
+	}
+
+	return string(b)
+}
+
+func redactRESTValue(v interface{}) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		for k, nested := range value {
+			if isRESTSecretKey(k) {
+				value[k] = redactedValue
+				continue
+			}
+			redactRESTValue(nested)
+		}
+	case []interface{}:
+		for _, nested := range value {
+			redactRESTValue(nested)
+		}
+	}
+}
+
+func isRESTSecretKey(key string) bool {
+	switch key {
+	case "token", "access_token", "refresh_token", "client_secret", "password":
+		return true
+	}
+
+	return false
 }
 
 func unmarshal(data []byte, v interface{}) error {
@@ -841,6 +937,10 @@ func (s *Session) GuildMembersSearch(guildID, query string, limit int, options .
 	}
 
 	err = unmarshal(body, &st)
+	// The returned objects don't have the GuildID attribute so we will set it here.
+	for _, member := range st {
+		member.GuildID = guildID
+	}
 	return
 }
 
@@ -2038,7 +2138,7 @@ func (s *Session) ChannelMessagesPinned(channelID string, before *time.Time, lim
 		uri += "?" + v.Encode()
 	}
 
-	body, err := s.RequestWithBucketID("GET", uri, nil, uri, options...)
+	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointChannelMessagesPins(""), options...)
 	if err != nil {
 		return
 	}
@@ -2387,7 +2487,7 @@ func (s *Session) Webhook(webhookID string, options ...RequestOption) (st *Webho
 // token    : The auth token for the webhook.
 func (s *Session) WebhookWithToken(webhookID, token string, options ...RequestOption) (st *Webhook, err error) {
 
-	body, err := s.RequestWithBucketID("GET", EndpointWebhookToken(webhookID, token), nil, EndpointWebhookToken("", ""), options...)
+	body, err := s.RequestWithBucketID("GET", EndpointWebhookToken(webhookID, token), nil, webhookTokenBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2432,7 +2532,7 @@ func (s *Session) WebhookEditWithToken(webhookID, token, name, avatar string, op
 	}{name, avatar}
 
 	var body []byte
-	body, err = s.RequestWithBucketID("PATCH", EndpointWebhookToken(webhookID, token), data, EndpointWebhookToken("", ""), options...)
+	body, err = s.RequestWithBucketID("PATCH", EndpointWebhookToken(webhookID, token), data, webhookTokenBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2456,7 +2556,7 @@ func (s *Session) WebhookDelete(webhookID string, options ...RequestOption) (err
 // token    : The auth token for the webhook.
 func (s *Session) WebhookDeleteWithToken(webhookID, token string, options ...RequestOption) (st *Webhook, err error) {
 
-	body, err := s.RequestWithBucketID("DELETE", EndpointWebhookToken(webhookID, token), nil, EndpointWebhookToken("", ""), options...)
+	body, err := s.RequestWithBucketID("DELETE", EndpointWebhookToken(webhookID, token), nil, webhookTokenBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2482,15 +2582,16 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 	}
 
 	var response []byte
+	bucketID := webhookTokenBucketID(webhookID)
 	if len(data.Files) > 0 {
 		contentType, body, encodeErr := MultipartBodyWithJSON(data, data.Files)
 		if encodeErr != nil {
 			return st, encodeErr
 		}
 
-		response, err = s.RequestRaw("POST", uri, contentType, body, uri, 0, options...)
+		response, err = s.RequestRaw("POST", uri, contentType, body, bucketID, 0, options...)
 	} else {
-		response, err = s.RequestWithBucketID("POST", uri, data, uri, options...)
+		response, err = s.RequestWithBucketID("POST", uri, data, bucketID, options...)
 	}
 	if !wait || err != nil {
 		return
@@ -2524,7 +2625,7 @@ func (s *Session) WebhookThreadExecute(webhookID, token string, wait bool, threa
 func (s *Session) WebhookMessage(webhookID, token, messageID string, options ...RequestOption) (message *Message, err error) {
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 
-	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointWebhookToken("", ""), options...)
+	body, err := s.RequestWithBucketID("GET", uri, nil, webhookMessageBucketID(webhookID), options...)
 	if err != nil {
 		return
 	}
@@ -2540,6 +2641,7 @@ func (s *Session) WebhookMessage(webhookID, token, messageID string, options ...
 // messageID : The ID of message to edit
 func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
+	bucketID := webhookMessageBucketID(webhookID)
 
 	var response []byte
 	if len(data.Files) > 0 {
@@ -2548,12 +2650,12 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 			return nil, err
 		}
 
-		response, err = s.RequestRaw("PATCH", uri, contentType, body, uri, 0, options...)
+		response, err = s.RequestRaw("PATCH", uri, contentType, body, bucketID, 0, options...)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		response, err = s.RequestWithBucketID("PATCH", uri, data, EndpointWebhookToken("", ""), options...)
+		response, err = s.RequestWithBucketID("PATCH", uri, data, bucketID, options...)
 
 		if err != nil {
 			return nil, err
@@ -2571,8 +2673,16 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 func (s *Session) WebhookMessageDelete(webhookID, token, messageID string, options ...RequestOption) (err error) {
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 
-	_, err = s.RequestWithBucketID("DELETE", uri, nil, EndpointWebhookToken("", ""), options...)
+	_, err = s.RequestWithBucketID("DELETE", uri, nil, webhookMessageBucketID(webhookID), options...)
 	return
+}
+
+func webhookTokenBucketID(webhookID string) string {
+	return EndpointWebhookToken(webhookID, "")
+}
+
+func webhookMessageBucketID(webhookID string) string {
+	return EndpointWebhookMessage(webhookID, "", "")
 }
 
 // MessageReactionAdd creates an emoji reaction to a message.

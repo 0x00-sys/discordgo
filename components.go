@@ -39,6 +39,27 @@ type unmarshalableMessageComponent struct {
 	MessageComponent
 }
 
+type unknownMessageComponent struct {
+	ComponentType ComponentType
+	RawData       json.RawMessage
+}
+
+func (c unknownMessageComponent) Type() ComponentType {
+	return c.ComponentType
+}
+
+func (c unknownMessageComponent) MarshalJSON() ([]byte, error) {
+	if c.RawData != nil {
+		return c.RawData, nil
+	}
+
+	return Marshal(struct {
+		Type ComponentType `json:"type"`
+	}{
+		Type: c.Type(),
+	})
+}
+
 // UnmarshalJSON is a helper function to unmarshal MessageComponent object.
 func (umc *unmarshalableMessageComponent) UnmarshalJSON(src []byte) error {
 	var v struct {
@@ -78,7 +99,11 @@ func (umc *unmarshalableMessageComponent) UnmarshalJSON(src []byte) error {
 	case FileUploadComponent:
 		umc.MessageComponent = &FileUpload{}
 	default:
-		return fmt.Errorf("unknown component type: %d", v.Type)
+		umc.MessageComponent = unknownMessageComponent{
+			ComponentType: v.Type,
+			RawData:       append(json.RawMessage(nil), src...),
+		}
+		return nil
 	}
 	return json.Unmarshal(src, umc.MessageComponent)
 }
