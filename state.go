@@ -322,9 +322,12 @@ func (s *State) Presence(guildID, userID string) (*Presence, error) {
 		return nil, ErrNilState
 	}
 
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		return nil, err
+	s.RLock()
+	defer s.RUnlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil, ErrStateNotFound
 	}
 
 	for _, p := range guild.Presences {

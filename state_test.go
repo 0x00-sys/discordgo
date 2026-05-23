@@ -96,6 +96,50 @@ func TestPresenceAddSkipsMalformedCachedPresences(t *testing.T) {
 	}
 }
 
+func TestPresenceReadUsesStateLock(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Presences: []*Presence{
+			{
+				User:   &User{ID: "user"},
+				Status: StatusOnline,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 10000; i++ {
+			err := state.PresenceAdd("guild", &Presence{
+				User:   &User{ID: "user"},
+				Status: StatusIdle,
+			})
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	for i := 0; i < 10000; i++ {
+		presence, err := state.Presence("guild", "user")
+		if err != nil {
+			t.Fatalf("Presence returned error: %v", err)
+		}
+		if presence == nil {
+			t.Fatal("Presence returned nil presence")
+		}
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("PresenceAdd returned error: %v", err)
+	}
+}
+
 func TestPresenceUpdateRequiresUserForMemberTracking(t *testing.T) {
 	state := NewState()
 	state.TrackPresences = false
