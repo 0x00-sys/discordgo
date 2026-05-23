@@ -3,8 +3,11 @@ package discordgo
 import (
 	"context"
 	"errors"
+	"io/ioutil"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 //////////////////////////////////////////////////////////////////////////////
@@ -266,6 +269,53 @@ func TestWithContext(t *testing.T) {
 	// Verify that the assertion code was actually run.
 	if !errors.Is(err, testErr) {
 		t.Errorf("unexpected error %v returned from client", err)
+	}
+}
+
+func TestChannelMessagesPinnedUsesGlobalBucket(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header: http.Header{
+				"X-RateLimit-Remaining":   []string{"1"},
+				"X-RateLimit-Reset-After": []string{"0.1"},
+			},
+			Body:    ioutil.NopCloser(strings.NewReader(`{"items":[],"has_more":false}`)),
+			Request: r,
+		}, nil
+	})
+
+	before := time.Now()
+	if _, err = session.ChannelMessagesPinned("channel-a", &before, 10); err != nil {
+		t.Fatalf("ChannelMessagesPinned returned error: %v", err)
+	}
+	if _, err = session.ChannelMessagesPinned("channel-b", nil, 0); err != nil {
+		t.Fatalf("ChannelMessagesPinned returned error: %v", err)
+	}
+
+	session.Ratelimiter.Lock()
+	defer session.Ratelimiter.Unlock()
+
+	want := EndpointChannelMessagesPins("")
+	if _, ok := session.Ratelimiter.buckets[want]; !ok {
+		t.Fatalf("bucket %q was not created", want)
+	}
+	if len(session.Ratelimiter.buckets) != 1 {
+		t.Fatalf("bucket count = %d, want 1", len(session.Ratelimiter.buckets))
+	}
+	for key := range session.Ratelimiter.buckets {
+		if strings.Contains(key, "?") {
+			t.Fatalf("bucket %q includes query parameters", key)
+		}
+		if strings.Contains(key, "channel-a") || strings.Contains(key, "channel-b") {
+			t.Fatalf("bucket %q includes channel ID", key)
+		}
 	}
 }
 
