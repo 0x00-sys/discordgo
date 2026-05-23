@@ -115,6 +115,10 @@ func (s *Session) Open() error {
 	if err != nil {
 		return err
 	}
+	err = s.openGatewayControlEvent(mt, m, 10)
+	if err != nil {
+		return err
+	}
 	e, err := s.onEvent(mt, m)
 	if err != nil {
 		return err
@@ -181,6 +185,10 @@ func (s *Session) Open() error {
 	if err != nil {
 		return err
 	}
+	err = s.openGatewayControlEvent(mt, m, 0, "READY", "RESUMED")
+	if err != nil {
+		return err
+	}
 	e, err = s.onEvent(mt, m)
 	if err != nil {
 		return err
@@ -212,6 +220,66 @@ func (s *Session) Open() error {
 
 	s.log(LogInformational, "exiting")
 	return nil
+}
+
+func (s *Session) openGatewayControlEvent(messageType int, message []byte, expectedOperation int, expectedEventTypes ...string) error {
+	e, err := peekGatewayEvent(messageType, message)
+	if err != nil || e == nil {
+		return nil
+	}
+
+	switch e.Operation {
+	case 7:
+		return fmt.Errorf("received Op 7 reconnect during open")
+	case 9:
+		var resumable bool
+		if err := json.Unmarshal(e.RawData, &resumable); err != nil {
+			return fmt.Errorf("error unmarshalling invalid session event, %s", err)
+		}
+		if !resumable {
+			s.resumeGatewayURL = ""
+			s.sessionID = ""
+			atomic.StoreInt64(s.sequence, 0)
+		}
+		return fmt.Errorf("received Op 9 invalid session during open")
+	}
+
+	if e.Operation != expectedOperation {
+		return fmt.Errorf("received Op %d during open, expected Op %d", e.Operation, expectedOperation)
+	}
+	if e.Operation == 0 {
+		for _, expected := range expectedEventTypes {
+			if e.Type == expected {
+				return nil
+			}
+		}
+		return fmt.Errorf("received %s event during open", e.Type)
+	}
+
+	return nil
+}
+
+func peekGatewayEvent(messageType int, message []byte) (*Event, error) {
+	var reader io.Reader
+	reader = bytes.NewBuffer(message)
+
+	if messageType == websocket.BinaryMessage {
+		z, err := zlib.NewReader(reader)
+		if err != nil {
+			return nil, err
+		}
+		defer z.Close()
+
+		reader = z
+	}
+
+	var e *Event
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(&e); err != nil {
+		return e, err
+	}
+
+	return e, nil
 }
 
 // listen polls the websocket connection for events, it will stop when the
