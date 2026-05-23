@@ -68,6 +68,56 @@ func TestGuildRemoveClearsGuildIndexes(t *testing.T) {
 	}
 }
 
+func TestThreadListSyncHandlesThreadWithoutMetadata(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:       "keep-thread",
+				GuildID:  "guild",
+				ParentID: "other-parent",
+				Type:     ChannelTypeGuildPublicThread,
+			},
+			{
+				ID:       "remove-thread",
+				GuildID:  "guild",
+				ParentID: "synced-parent",
+				Type:     ChannelTypeGuildPublicThread,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.ThreadListSync(&ThreadListSync{
+		GuildID:    "guild",
+		ChannelIDs: []string{"synced-parent"},
+		Threads: []*Channel{
+			{
+				ID:             "synced-thread",
+				GuildID:        "guild",
+				ParentID:       "synced-parent",
+				Type:           ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ThreadListSync returned error: %v", err)
+	}
+
+	if _, err := state.Channel("keep-thread"); err != nil {
+		t.Fatalf("keep-thread missing after ThreadListSync: %v", err)
+	}
+	if _, err := state.Channel("remove-thread"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("remove-thread error = %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Channel("synced-thread"); err != nil {
+		t.Fatalf("synced-thread missing after ThreadListSync: %v", err)
+	}
+}
+
 func TestPresenceAddSkipsMalformedCachedPresences(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
