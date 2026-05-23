@@ -257,20 +257,65 @@ func TestInteractionRespondUsesEphemeralBucket(t *testing.T) {
 
 func TestInteractionResponseDeleteUsesMessageRouteBucket(t *testing.T) {
 	session := newTestInteractionSession(t)
+	atomic.StoreInt64(session.Ratelimiter.global, time.Now().Add(time.Hour).UnixNano())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 
 	err := session.InteractionResponseDelete(&Interaction{
 		AppID: "application",
 		Token: "secret-token",
-	})
+	}, WithContext(ctx))
 	if err != nil {
 		t.Fatalf("InteractionResponseDelete returned error: %v", err)
 	}
 
-	want := interactionResponseActionsBucketID("application")
+	want := interactionWebhookMessageBucketID("application", "secret-token")
 	if _, ok := session.Ratelimiter.buckets[want]; !ok {
 		t.Fatalf("bucket %q was not created", want)
 	}
 	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
+}
+
+func TestInteractionFollowupCreateUsesTokenScopedNoGlobalBucket(t *testing.T) {
+	session := newTestInteractionSession(t)
+	atomic.StoreInt64(session.Ratelimiter.global, time.Now().Add(time.Hour).UnixNano())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := session.FollowupMessageCreate(&Interaction{
+		AppID: "application",
+		Token: "secret-one",
+	}, false, &WebhookParams{
+		Content: "hello",
+	}, WithContext(ctx))
+	if err != nil {
+		t.Fatalf("FollowupMessageCreate returned error: %v", err)
+	}
+
+	_, err = session.FollowupMessageCreate(&Interaction{
+		AppID: "application",
+		Token: "secret-two",
+	}, false, &WebhookParams{
+		Content: "hello",
+	}, WithContext(ctx))
+	if err != nil {
+		t.Fatalf("FollowupMessageCreate returned error: %v", err)
+	}
+
+	wantOne := interactionWebhookTokenBucketID("application", "secret-one")
+	wantTwo := interactionWebhookTokenBucketID("application", "secret-two")
+	if wantOne == wantTwo {
+		t.Fatal("interaction tokens mapped to the same bucket")
+	}
+	for _, want := range []string{wantOne, wantTwo} {
+		if _, ok := session.Ratelimiter.buckets[want]; !ok {
+			t.Fatalf("bucket %q was not created", want)
+		}
+	}
+	assertRateLimitBucketsDoNotContain(t, session, "secret-one")
+	assertRateLimitBucketsDoNotContain(t, session, "secret-two")
 }
 
 func TestThreadRoutesUseStableBuckets(t *testing.T) {

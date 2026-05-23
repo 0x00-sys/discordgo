@@ -12,6 +12,8 @@ package discordgo
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -257,6 +259,36 @@ func (s *Session) requestRawWithEphemeralBucket(method, urlStr, contentType stri
 	}
 
 	bucket, err := s.Ratelimiter.lockEphemeralBucketContext(cfg.Request.Context(), bucketID, useGlobalRateLimit)
+	if err != nil {
+		return
+	}
+
+	return s.requestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, cfg, options...)
+}
+
+func (s *Session) requestWithBucketIDNoGlobal(method, urlStr string, data interface{}, bucketID string, options ...RequestOption) (response []byte, err error) {
+	var body []byte
+	if data != nil {
+		body, err = Marshal(data)
+		if err != nil {
+			return
+		}
+	}
+
+	return s.requestRawWithBucketIDNoGlobal(method, urlStr, "application/json", body, bucketID, 0, options...)
+}
+
+func (s *Session) requestRawWithBucketIDNoGlobal(method, urlStr, contentType string, b []byte, bucketID string, sequence int, options ...RequestOption) (response []byte, err error) {
+	if bucketID == "" {
+		bucketID = strings.SplitN(urlStr, "?", 2)[0]
+	}
+
+	cfg, err := s.requestConfig(method, urlStr, contentType, b, options...)
+	if err != nil {
+		return
+	}
+
+	bucket, err := s.Ratelimiter.lockBucketContext(cfg.Request.Context(), bucketID, false)
 	if err != nil {
 		return
 	}
@@ -2766,6 +2798,35 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 	return
 }
 
+func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
+	uri := EndpointWebhookToken(appID, token)
+
+	if wait {
+		v := url.Values{}
+		v.Set("wait", "true")
+		uri += "?" + v.Encode()
+	}
+
+	var response []byte
+	bucketID := interactionWebhookTokenBucketID(appID, token)
+	if len(data.Files) > 0 {
+		contentType, body, encodeErr := MultipartBodyWithJSON(data, data.Files)
+		if encodeErr != nil {
+			return st, encodeErr
+		}
+
+		response, err = s.requestRawWithBucketIDNoGlobal("POST", uri, contentType, body, bucketID, 0, options...)
+	} else {
+		response, err = s.requestWithBucketIDNoGlobal("POST", uri, data, bucketID, options...)
+	}
+	if !wait || err != nil {
+		return
+	}
+
+	err = unmarshal(response, &st)
+	return
+}
+
 // WebhookExecute executes a webhook.
 // webhookID: The ID of a webhook.
 // token    : The auth token for the webhook
@@ -2791,6 +2852,20 @@ func (s *Session) WebhookMessage(webhookID, token, messageID string, options ...
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 
 	body, err := s.RequestWithBucketID("GET", uri, nil, webhookMessageBucketID(webhookID), options...)
+	if err != nil {
+		return
+	}
+
+	err = Unmarshal(body, &message)
+
+	return
+}
+
+func (s *Session) interactionWebhookMessage(appID, token, messageID string, options ...RequestOption) (message *Message, err error) {
+	uri := EndpointWebhookMessage(appID, token, messageID)
+	bucketID := interactionWebhookMessageBucketID(appID, token)
+
+	body, err := s.requestWithBucketIDNoGlobal("GET", uri, nil, bucketID, options...)
 	if err != nil {
 		return
 	}
@@ -2831,6 +2906,33 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 	return
 }
 
+func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
+	uri := EndpointWebhookMessage(appID, token, messageID)
+	bucketID := interactionWebhookMessageBucketID(appID, token)
+
+	var response []byte
+	if len(data.Files) > 0 {
+		contentType, body, err := MultipartBodyWithJSON(data, data.Files)
+		if err != nil {
+			return nil, err
+		}
+
+		response, err = s.requestRawWithBucketIDNoGlobal("PATCH", uri, contentType, body, bucketID, 0, options...)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		response, err = s.requestWithBucketIDNoGlobal("PATCH", uri, data, bucketID, options...)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err = unmarshal(response, &st)
+	return
+}
+
 // WebhookMessageDelete deletes a webhook message.
 // webhookID : The ID of a webhook
 // token     : The auth token for the webhook
@@ -2842,6 +2944,13 @@ func (s *Session) WebhookMessageDelete(webhookID, token, messageID string, optio
 	return
 }
 
+func (s *Session) interactionWebhookMessageDelete(appID, token, messageID string, options ...RequestOption) (err error) {
+	uri := EndpointWebhookMessage(appID, token, messageID)
+
+	_, err = s.requestWithBucketIDNoGlobal("DELETE", uri, nil, interactionWebhookMessageBucketID(appID, token), options...)
+	return
+}
+
 func webhookTokenBucketID(webhookID string) string {
 	return EndpointWebhookToken(webhookID, "")
 }
@@ -2850,12 +2959,21 @@ func webhookMessageBucketID(webhookID string) string {
 	return EndpointWebhookMessage(webhookID, "", "")
 }
 
-func interactionResponseBucketID(interactionID string) string {
-	return EndpointInteractionResponse(interactionID, "")
+func interactionWebhookTokenBucketID(appID, token string) string {
+	return EndpointWebhookToken(appID, interactionTokenBucketKey(token))
 }
 
-func interactionResponseActionsBucketID(appID string) string {
-	return webhookMessageBucketID(appID)
+func interactionWebhookMessageBucketID(appID, token string) string {
+	return EndpointWebhookMessage(appID, interactionTokenBucketKey(token), "")
+}
+
+func interactionTokenBucketKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "sha256-" + hex.EncodeToString(sum[:])
+}
+
+func interactionResponseBucketID(interactionID string) string {
+	return EndpointInteractionResponse(interactionID, "")
 }
 
 // MessageReactionAdd creates an emoji reaction to a message.
@@ -3496,24 +3614,20 @@ func (s *Session) InteractionRespond(interaction *Interaction, resp *Interaction
 // InteractionResponse gets the response to an interaction.
 // interaction : Interaction instance.
 func (s *Session) InteractionResponse(interaction *Interaction, options ...RequestOption) (*Message, error) {
-	return s.WebhookMessage(interaction.AppID, interaction.Token, "@original", options...)
+	return s.interactionWebhookMessage(interaction.AppID, interaction.Token, "@original", options...)
 }
 
 // InteractionResponseEdit edits the response to an interaction.
 // interaction : Interaction instance.
 // newresp     : Updated response message data.
 func (s *Session) InteractionResponseEdit(interaction *Interaction, newresp *WebhookEdit, options ...RequestOption) (*Message, error) {
-	return s.WebhookMessageEdit(interaction.AppID, interaction.Token, "@original", newresp, options...)
+	return s.interactionWebhookMessageEdit(interaction.AppID, interaction.Token, "@original", newresp, options...)
 }
 
 // InteractionResponseDelete deletes the response to an interaction.
 // interaction : Interaction instance.
 func (s *Session) InteractionResponseDelete(interaction *Interaction, options ...RequestOption) error {
-	endpoint := EndpointInteractionResponseActions(interaction.AppID, interaction.Token)
-
-	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, interactionResponseActionsBucketID(interaction.AppID), options...)
-
-	return err
+	return s.interactionWebhookMessageDelete(interaction.AppID, interaction.Token, "@original", options...)
 }
 
 // FollowupMessageCreate creates the followup message for an interaction.
@@ -3521,7 +3635,7 @@ func (s *Session) InteractionResponseDelete(interaction *Interaction, options ..
 // wait        : Waits for server confirmation of message send and ensures that the return struct is populated (it is nil otherwise)
 // data        : Data of the message to send.
 func (s *Session) FollowupMessageCreate(interaction *Interaction, wait bool, data *WebhookParams, options ...RequestOption) (*Message, error) {
-	return s.WebhookExecute(interaction.AppID, interaction.Token, wait, data, options...)
+	return s.interactionWebhookExecute(interaction.AppID, interaction.Token, wait, data, options...)
 }
 
 // FollowupMessageEdit edits a followup message of an interaction.
@@ -3529,14 +3643,14 @@ func (s *Session) FollowupMessageCreate(interaction *Interaction, wait bool, dat
 // messageID   : The followup message ID.
 // data        : Data to update the message
 func (s *Session) FollowupMessageEdit(interaction *Interaction, messageID string, data *WebhookEdit, options ...RequestOption) (*Message, error) {
-	return s.WebhookMessageEdit(interaction.AppID, interaction.Token, messageID, data, options...)
+	return s.interactionWebhookMessageEdit(interaction.AppID, interaction.Token, messageID, data, options...)
 }
 
 // FollowupMessageDelete deletes a followup message of an interaction.
 // interaction : Interaction instance.
 // messageID   : The followup message ID.
 func (s *Session) FollowupMessageDelete(interaction *Interaction, messageID string, options ...RequestOption) error {
-	return s.WebhookMessageDelete(interaction.AppID, interaction.Token, messageID, options...)
+	return s.interactionWebhookMessageDelete(interaction.AppID, interaction.Token, messageID, options...)
 }
 
 // ------------------------------------------------------------------------------------------------
