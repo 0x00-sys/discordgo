@@ -83,9 +83,72 @@ func NewState() *State {
 func (s *State) createMemberMap(guild *Guild) {
 	members := make(map[string]*Member)
 	for _, m := range guild.Members {
+		if m == nil || m.User == nil {
+			continue
+		}
 		members[m.User.ID] = m
 	}
 	s.memberMap[guild.ID] = members
+}
+
+func (s *State) guildForTracking(guild *Guild) *Guild {
+	if guild == nil {
+		return nil
+	}
+
+	tracked := *guild
+	if !s.TrackRoles {
+		tracked.Roles = nil
+	}
+	if !s.TrackEmojis {
+		tracked.Emojis = nil
+	}
+	if !s.TrackStickers {
+		tracked.Stickers = nil
+	}
+	if !s.TrackMembers {
+		tracked.Members = nil
+	}
+	if !s.TrackPresences {
+		tracked.Presences = nil
+	}
+	if !s.TrackChannels {
+		tracked.Channels = nil
+	}
+	if !s.TrackThreads {
+		tracked.Threads = nil
+	} else if !s.TrackThreadMembers {
+		tracked.Threads = threadsWithoutMembers(tracked.Threads)
+	}
+	if !s.TrackVoice {
+		tracked.VoiceStates = nil
+	}
+
+	return &tracked
+}
+
+func threadsWithoutMembers(threads []*Channel) []*Channel {
+	if len(threads) == 0 {
+		return threads
+	}
+
+	copied := make([]*Channel, len(threads))
+	for i, thread := range threads {
+		copied[i] = threadWithoutMembers(thread)
+	}
+
+	return copied
+}
+
+func threadWithoutMembers(thread *Channel) *Channel {
+	if thread == nil {
+		return nil
+	}
+
+	threadCopy := *thread
+	threadCopy.Member = nil
+	threadCopy.Members = nil
+	return &threadCopy
 }
 
 // GuildAdd adds a guild to the current world state, or
@@ -94,26 +157,40 @@ func (s *State) GuildAdd(guild *Guild) error {
 	if s == nil {
 		return ErrNilState
 	}
+	guild = s.guildForTracking(guild)
+	if guild == nil {
+		return ErrStateInvalidData
+	}
 
 	s.Lock()
 	defer s.Unlock()
 
 	// Update the channels to point to the right guild, adding them to the channelMap as we go
 	for _, c := range guild.Channels {
+		if c == nil {
+			continue
+		}
 		s.channelMap[c.ID] = c
 	}
 
 	// Add all the threads to the state in case of thread sync list.
 	for _, t := range guild.Threads {
+		if t == nil {
+			continue
+		}
 		s.channelMap[t.ID] = t
 	}
 
 	// If this guild contains a new member slice, we must regenerate the member map so the pointers stay valid
-	if guild.Members != nil {
-		s.createMemberMap(guild)
-	} else if _, ok := s.memberMap[guild.ID]; !ok {
-		// Even if we have no new member slice, we still initialize the member map for this guild if it doesn't exist
-		s.memberMap[guild.ID] = make(map[string]*Member)
+	if s.TrackMembers {
+		if guild.Members != nil {
+			s.createMemberMap(guild)
+		} else if _, ok := s.memberMap[guild.ID]; !ok {
+			// Even if we have no new member slice, we still initialize the member map for this guild if it doesn't exist
+			s.memberMap[guild.ID] = make(map[string]*Member)
+		}
+	} else {
+		delete(s.memberMap, guild.ID)
 	}
 
 	if g, ok := s.guildMap[guild.ID]; ok {
@@ -122,26 +199,57 @@ func (s *State) GuildAdd(guild *Guild) error {
 		if guild.MemberCount == 0 {
 			guild.MemberCount = g.MemberCount
 		}
-		if guild.Roles == nil {
+		if guild.Roles == nil && s.TrackRoles {
 			guild.Roles = g.Roles
 		}
-		if guild.Emojis == nil {
+		if guild.Emojis == nil && s.TrackEmojis {
 			guild.Emojis = g.Emojis
 		}
-		if guild.Members == nil {
+		if guild.Stickers == nil && s.TrackStickers {
+			guild.Stickers = g.Stickers
+		}
+		if guild.Members == nil && s.TrackMembers {
 			guild.Members = g.Members
 		}
-		if guild.Presences == nil {
+		if guild.Presences == nil && s.TrackPresences {
 			guild.Presences = g.Presences
 		}
-		if guild.Channels == nil {
+		if guild.Channels == nil && s.TrackChannels {
 			guild.Channels = g.Channels
 		}
-		if guild.Threads == nil {
-			guild.Threads = g.Threads
+		if guild.Threads == nil && s.TrackThreads {
+			if s.TrackThreadMembers {
+				guild.Threads = g.Threads
+			} else {
+				guild.Threads = threadsWithoutMembers(g.Threads)
+			}
 		}
-		if guild.VoiceStates == nil {
+		if guild.VoiceStates == nil && s.TrackVoice {
 			guild.VoiceStates = g.VoiceStates
+		}
+		for _, c := range guild.Channels {
+			if c != nil {
+				s.channelMap[c.ID] = c
+			}
+		}
+		for _, t := range guild.Threads {
+			if t != nil {
+				s.channelMap[t.ID] = t
+			}
+		}
+		if !s.TrackChannels {
+			for _, c := range g.Channels {
+				if c != nil {
+					delete(s.channelMap, c.ID)
+				}
+			}
+		}
+		if !s.TrackThreads {
+			for _, t := range g.Threads {
+				if t != nil {
+					delete(s.channelMap, t.ID)
+				}
+			}
 		}
 		*g = *guild
 		return nil
@@ -191,10 +299,7 @@ func (s *State) GuildRemove(guild *Guild) error {
 	return nil
 }
 
-// Guild gets a guild by ID.
-// Useful for querying if @me is in a guild:
-//    _, err := discordgo.Session.State.Guild(guildID)
-//	  isInGuild := err == nil
+// Guild gets a guild by ID. This is useful for querying if @me is in a guild.
 func (s *State) Guild(guildID string) (*Guild, error) {
 	if s == nil {
 		return nil, ErrNilState
@@ -653,13 +758,18 @@ outer:
 	}
 	guild.Threads = guild.Threads[:index]
 	for _, t := range tls.Threads {
+		if !s.TrackThreadMembers {
+			t = threadWithoutMembers(t)
+		}
 		s.channelMap[t.ID] = t
 		guild.Threads = append(guild.Threads, t)
 	}
 
-	for _, m := range tls.Members {
-		if c, ok := s.channelMap[m.ID]; ok {
-			c.Member = m
+	if s.TrackThreadMembers {
+		for _, m := range tls.Members {
+			if c, ok := s.channelMap[m.ID]; ok {
+				c.Member = m
+			}
 		}
 	}
 
@@ -697,13 +807,13 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 
 	for _, addedMember := range tmu.AddedMembers {
 		thread.Members = append(thread.Members, addedMember.ThreadMember)
-		if addedMember.Member != nil {
+		if s.TrackMembers && addedMember.Member != nil {
 			err = s.memberAdd(addedMember.Member)
 			if err != nil {
 				return err
 			}
 		}
-		if addedMember.Presence != nil {
+		if s.TrackPresences && addedMember.Presence != nil {
 			err = s.presenceAdd(tmu.GuildID, addedMember.Presence)
 			if err != nil {
 				return err
@@ -1008,23 +1118,53 @@ func (s *State) onReady(se *Session, r *Ready) (err error) {
 		return nil
 	}
 
-	s.Ready = *r
+	ready := *r
+	ready.Guilds = make([]*Guild, 0, len(r.Guilds))
+	for _, g := range r.Guilds {
+		tracked := s.guildForTracking(g)
+		if tracked == nil {
+			continue
+		}
+		ready.Guilds = append(ready.Guilds, tracked)
+	}
+	if !s.TrackChannels {
+		ready.PrivateChannels = nil
+	}
+	s.Ready = ready
 
 	for _, g := range s.Guilds {
+		if g == nil {
+			continue
+		}
 		s.guildMap[g.ID] = g
-		s.createMemberMap(g)
+		if s.TrackMembers {
+			s.createMemberMap(g)
+		} else {
+			delete(s.memberMap, g.ID)
+		}
 
 		for _, c := range g.Channels {
+			if c == nil {
+				continue
+			}
 			s.channelMap[c.ID] = c
 		}
 
 		for _, t := range g.Threads {
+			if t == nil {
+				continue
+			}
 			s.channelMap[t.ID] = t
 		}
 	}
 
-	for _, c := range s.PrivateChannels {
-		s.channelMap[c.ID] = c
+	if s.TrackChannels {
+		for _, c := range s.PrivateChannels {
+			if c == nil {
+				continue
+			}
+			s.channelMap[c.ID] = c
+		}
 	}
 
 	return nil
@@ -1214,11 +1354,11 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.ChannelRemove(t.Channel)
 		}
 	case *ThreadMemberUpdate:
-		if s.TrackThreads {
+		if s.TrackThreads && s.TrackThreadMembers {
 			err = s.ThreadMemberUpdate(t)
 		}
 	case *ThreadMembersUpdate:
-		if s.TrackThreadMembers {
+		if s.TrackThreads && s.TrackThreadMembers {
 			err = s.ThreadMembersUpdate(t)
 		}
 	case *ThreadListSync:

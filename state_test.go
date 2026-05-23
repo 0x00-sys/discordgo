@@ -864,6 +864,105 @@ func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
 	}
 }
 
+func TestThreadMembersUpdateRespectsMemberPresenceTracking(t *testing.T) {
+	state := NewState()
+	state.TrackMembers = false
+	state.TrackPresences = false
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &ThreadMembersUpdate{
+		ID:          "thread",
+		GuildID:     "guild",
+		MemberCount: 1,
+		AddedMembers: []AddedThreadMember{
+			{
+				ThreadMember: &ThreadMember{
+					ID:     "thread",
+					UserID: "user",
+				},
+				Member: &Member{
+					GuildID: "guild",
+					User:    &User{ID: "user"},
+				},
+				Presence: &Presence{
+					User: &User{ID: "user"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(thread.Members) != 1 {
+		t.Fatalf("len(thread.Members) = %d, want 1", len(thread.Members))
+	}
+	if _, err := state.Member("guild", "user"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Member returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Presence("guild", "user"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Presence returned error %v, want %v", err, ErrStateNotFound)
+	}
+}
+
+func TestThreadListSyncRespectsThreadMemberTracking(t *testing.T) {
+	state := NewState()
+	state.TrackThreadMembers = false
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &ThreadListSync{
+		GuildID: "guild",
+		Threads: []*Channel{{
+			ID:      "thread",
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+			Member: &ThreadMember{
+				ID:     "thread",
+				UserID: "user",
+			},
+			Members: []*ThreadMember{{
+				ID:     "thread",
+				UserID: "user",
+			}},
+		}},
+		Members: []*ThreadMember{{
+			ID:     "thread",
+			UserID: "user",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if thread.Member != nil {
+		t.Fatalf("thread.Member = %#v, want nil", thread.Member)
+	}
+	if len(thread.Members) != 0 {
+		t.Fatalf("len(thread.Members) = %d, want 0", len(thread.Members))
+	}
+}
+
 func TestGuildMemberAddMemberCountUsesStateLock(t *testing.T) {
 	state := NewState()
 	state.TrackMembers = false
@@ -958,5 +1057,162 @@ func TestGuildMemberRemoveMemberCountUsesStateLock(t *testing.T) {
 	}
 	if guild.MemberCount != 0 {
 		t.Fatalf("MemberCount = %d, want 0", guild.MemberCount)
+	}
+}
+
+func TestGuildCreateRespectsTrackingFlags(t *testing.T) {
+	state := NewState()
+	state.TrackChannels = false
+	state.TrackThreads = false
+	state.TrackEmojis = false
+	state.TrackStickers = false
+	state.TrackMembers = false
+	state.TrackRoles = false
+	state.TrackVoice = false
+	state.TrackPresences = false
+
+	guild := &Guild{
+		ID:          "guild",
+		MemberCount: 1,
+		Roles:       []*Role{{ID: "role"}},
+		Emojis:      []*Emoji{{ID: "emoji"}},
+		Stickers:    []*Sticker{{ID: "sticker"}},
+		Members: []*Member{{
+			GuildID: "guild",
+			User:    &User{ID: "user"},
+		}},
+		Presences: []*Presence{{
+			User: &User{ID: "user"},
+		}},
+		Channels: []*Channel{{
+			ID:      "channel",
+			GuildID: "guild",
+		}},
+		Threads: []*Channel{{
+			ID:      "thread",
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+			Member: &ThreadMember{
+				UserID: "user",
+			},
+			Members: []*ThreadMember{{
+				UserID: "user",
+			}},
+		}},
+		VoiceStates: []*VoiceState{{
+			GuildID: "guild",
+			UserID:  "user",
+		}},
+	}
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &GuildCreate{Guild: guild})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	stored, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if stored.MemberCount != 1 {
+		t.Fatalf("MemberCount = %d, want 1", stored.MemberCount)
+	}
+	if len(stored.Roles) != 0 || len(stored.Emojis) != 0 || len(stored.Stickers) != 0 ||
+		len(stored.Members) != 0 || len(stored.Presences) != 0 ||
+		len(stored.Channels) != 0 || len(stored.Threads) != 0 || len(stored.VoiceStates) != 0 {
+		t.Fatalf("tracked guild kept disabled state: %#v", stored)
+	}
+	if _, err := state.Member("guild", "user"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Member returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Channel("channel"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Channel returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if len(guild.Members) != 1 || len(guild.Channels) != 1 || len(guild.Threads) != 1 {
+		t.Fatal("GuildCreate event payload was mutated")
+	}
+}
+
+func TestReadyRespectsTrackingFlags(t *testing.T) {
+	state := NewState()
+	state.TrackChannels = false
+	state.TrackMembers = false
+	state.TrackPresences = false
+	state.TrackVoice = false
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &Ready{
+		Version:   10,
+		User:      &User{ID: "bot"},
+		SessionID: "session",
+		Guilds: []*Guild{{
+			ID: "guild",
+			Members: []*Member{{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+			}},
+			Presences: []*Presence{{
+				User: &User{ID: "user"},
+			}},
+			Channels: []*Channel{{
+				ID:      "channel",
+				GuildID: "guild",
+			}},
+			VoiceStates: []*VoiceState{{
+				GuildID: "guild",
+				UserID:  "user",
+			}},
+		}},
+		PrivateChannels: []*Channel{{
+			ID:   "dm",
+			Type: ChannelTypeDM,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.Members) != 0 || len(guild.Presences) != 0 || len(guild.Channels) != 0 || len(guild.VoiceStates) != 0 {
+		t.Fatalf("Ready kept disabled state: %#v", guild)
+	}
+	if _, err := state.Channel("channel"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Channel returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Channel("dm"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("DM channel returned error %v, want %v", err, ErrStateNotFound)
+	}
+}
+
+func TestThreadMemberTrackingFlagKeepsThread(t *testing.T) {
+	state := NewState()
+	state.TrackThreads = true
+	state.TrackThreadMembers = false
+	err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{{
+			ID:      "thread",
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+			Members: []*ThreadMember{{
+				UserID: "user",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(thread.Members) != 0 {
+		t.Fatalf("thread members = %d, want 0", len(thread.Members))
+	}
+	if thread.Member != nil {
+		t.Fatalf("thread.Member = %#v, want nil", thread.Member)
 	}
 }
