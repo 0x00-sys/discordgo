@@ -331,6 +331,81 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	}
 }
 
+func TestMessageEventsFillMissingGuildIDFromChannelState(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		event func(*Message) interface{}
+	}{
+		{
+			name:  "create",
+			event: func(message *Message) interface{} { return &MessageCreate{Message: message} },
+		},
+		{
+			name:  "update",
+			event: func(message *Message) interface{} { return &MessageUpdate{Message: message} },
+		},
+		{
+			name:  "delete",
+			event: func(message *Message) interface{} { return &MessageDelete{Message: message} },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message := &Message{
+				ID:        "message-" + tt.name,
+				ChannelID: "channel",
+			}
+			if err := state.OnInterface(&Session{StateEnabled: true}, tt.event(message)); err != nil {
+				t.Fatalf("OnInterface returned error: %v", err)
+			}
+			if message.GuildID != "guild" {
+				t.Fatalf("GuildID = %q, want guild", message.GuildID)
+			}
+		})
+	}
+}
+
+func TestMessageEventKeepsExistingGuildID(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	message := &Message{
+		ID:        "message",
+		ChannelID: "channel",
+		GuildID:   "existing-guild",
+	}
+	if err := state.OnInterface(&Session{StateEnabled: true}, &MessageCreate{Message: message}); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	if message.GuildID != "existing-guild" {
+		t.Fatalf("GuildID = %q, want existing-guild", message.GuildID)
+	}
+}
+
 func TestUserColorDoesNotReorderCachedRoles(t *testing.T) {
 	state := newColorTestState(t)
 

@@ -889,6 +889,19 @@ func (s *State) messageRemoveByID(channelID, messageID string) error {
 	return ErrStateNotFound
 }
 
+func (s *State) fillMessageGuildID(message *Message) {
+	if message == nil || message.GuildID != "" || message.ChannelID == "" {
+		return
+	}
+
+	s.RLock()
+	defer s.RUnlock()
+
+	if channel, ok := s.channelMap[message.ChannelID]; ok && channel != nil {
+		message.GuildID = channel.GuildID
+	}
+}
+
 func (s *State) voiceStateUpdate(update *VoiceStateUpdate) error {
 	guild, err := s.Guild(update.GuildID)
 	if err != nil {
@@ -1205,10 +1218,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.ThreadListSync(t)
 		}
 	case *MessageCreate:
+		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			err = s.MessageAdd(t.Message)
 		}
 	case *MessageUpdate:
+		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			var old *Message
 			old, err = s.Message(t.ChannelID, t.ID)
@@ -1220,6 +1235,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.MessageAdd(t.Message)
 		}
 	case *MessageDelete:
+		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			var old *Message
 			old, err = s.Message(t.ChannelID, t.ID)
