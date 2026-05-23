@@ -2721,6 +2721,14 @@ func webhookMessageBucketID(webhookID string) string {
 	return EndpointWebhookMessage(webhookID, "", "")
 }
 
+func interactionResponseBucketID(interactionID string) string {
+	return EndpointInteractionResponse(interactionID, "")
+}
+
+func interactionResponseActionsBucketID(appID string) string {
+	return webhookMessageBucketID(appID)
+}
+
 // MessageReactionAdd creates an emoji reaction to a message.
 // channelID : The channel ID.
 // messageID : The message ID.
@@ -3337,6 +3345,7 @@ func (s *Session) ApplicationCommandPermissionsBatchEdit(appID, guildID string, 
 // resp        : Response message data.
 func (s *Session) InteractionRespond(interaction *Interaction, resp *InteractionResponse, options ...RequestOption) error {
 	endpoint := EndpointInteractionResponse(interaction.ID, interaction.Token)
+	bucketID := interactionResponseBucketID(interaction.ID)
 
 	if resp.Data != nil && len(resp.Data.Files) > 0 {
 		contentType, body, err := MultipartBodyWithJSON(resp, resp.Data.Files)
@@ -3344,11 +3353,11 @@ func (s *Session) InteractionRespond(interaction *Interaction, resp *Interaction
 			return err
 		}
 
-		_, err = s.RequestRaw("POST", endpoint, contentType, body, endpoint, 0, options...)
+		_, err = s.RequestRaw("POST", endpoint, contentType, body, bucketID, 0, options...)
 		return err
 	}
 
-	_, err := s.RequestWithBucketID("POST", endpoint, *resp, endpoint, options...)
+	_, err := s.RequestWithBucketID("POST", endpoint, *resp, bucketID, options...)
 	return err
 }
 
@@ -3370,7 +3379,7 @@ func (s *Session) InteractionResponseEdit(interaction *Interaction, newresp *Web
 func (s *Session) InteractionResponseDelete(interaction *Interaction, options ...RequestOption) error {
 	endpoint := EndpointInteractionResponseActions(interaction.AppID, interaction.Token)
 
-	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, interactionResponseActionsBucketID(interaction.AppID), options...)
 
 	return err
 }
