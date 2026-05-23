@@ -97,6 +97,9 @@ type Message struct {
 	// A list of reactions to the message.
 	Reactions []*MessageReactions `json:"reactions"`
 
+	// The nonce used for validating that the message was sent.
+	Nonce interface{} `json:"nonce,omitempty"`
+
 	// Whether the message is pinned or not.
 	Pinned bool `json:"pinned"`
 
@@ -250,6 +253,8 @@ type MessageSend struct {
 	Files           []*File                 `json:"-"`
 	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
 	Reference       *MessageReference       `json:"message_reference,omitempty"`
+	Nonce           interface{}             `json:"nonce,omitempty"`
+	EnforceNonce    bool                    `json:"enforce_nonce,omitempty"`
 	StickerIDs      []string                `json:"sticker_ids"`
 	Flags           MessageFlags            `json:"flags,omitempty"`
 	Poll            *Poll                   `json:"poll,omitempty"`

@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -107,5 +108,27 @@ func TestMessageReference_DefaultTypeIsDefault(t *testing.T) {
 	r := MessageReference{}
 	if r.Type != MessageReferenceTypeDefault {
 		t.Error("Default message type should be MessageReferenceTypeDefault")
+	}
+}
+
+func TestMessageSendNonce(t *testing.T) {
+	payload, err := Marshal(&MessageSend{
+		Content:      "hello",
+		Nonce:        "ticket-123",
+		EnforceNonce: true,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() returned error: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if got["nonce"] != "ticket-123" {
+		t.Fatalf("nonce = %v, want %q", got["nonce"], "ticket-123")
+	}
+	if got["enforce_nonce"] != true {
+		t.Fatalf("enforce_nonce = %v, want true", got["enforce_nonce"])
 	}
 }
