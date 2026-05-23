@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -266,6 +267,31 @@ func TestWithContext(t *testing.T) {
 	// Verify that the assertion code was actually run.
 	if !errors.Is(err, testErr) {
 		t.Errorf("unexpected error %v returned from client", err)
+	}
+}
+
+func TestRedactedRESTBody(t *testing.T) {
+	body := []byte(`{"access_token":"access-value","token":"webhook-value","password":"password-value","nested":{"refresh_token":"refresh-value","client_secret":"client-secret-value","safe":"ok"},"items":[{"token":"item-token-value"}]}`)
+
+	got := redactedRESTBody(body)
+	for _, secret := range []string{"access-value", "webhook-value", "password-value", "refresh-value", "client-secret-value", "item-token-value"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redactedRESTBody() leaked %q in %s", secret, got)
+		}
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("redactedRESTBody() = %s, want redacted value", got)
+	}
+	if !strings.Contains(got, `"safe":"ok"`) {
+		t.Fatalf("redactedRESTBody() = %s, want non-secret fields preserved", got)
+	}
+}
+
+func TestRedactedRESTBodyInvalidJSON(t *testing.T) {
+	body := []byte("not-json")
+
+	if got := redactedRESTBody(body); got != string(body) {
+		t.Fatalf("redactedRESTBody() = %q, want %q", got, string(body))
 	}
 }
 

@@ -196,7 +196,7 @@ func (s *Session) RequestRaw(method, urlStr, contentType string, b []byte, bucke
 func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, options ...RequestOption) (response []byte, err error) {
 	if s.Debug {
 		log.Printf("API REQUEST %8s :: %s\n", method, urlStr)
-		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", string(b))
+		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b))
 	}
 
 	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(b))
@@ -260,7 +260,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		for k, v := range resp.Header {
 			log.Printf("API RESPONSE  HEADER :: [%s] = %+v\n", k, v)
 		}
-		log.Printf("API RESPONSE    BODY :: [%s]\n\n\n", response)
+		log.Printf("API RESPONSE    BODY :: [%s]\n\n\n", redactedRESTBody(response))
 	}
 
 	switch resp.StatusCode {
@@ -313,6 +313,52 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 	}
 
 	return
+}
+
+func redactedRESTBody(body []byte) string {
+	if len(body) == 0 {
+		return string(body)
+	}
+
+	var v interface{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return string(body)
+	}
+
+	redactRESTValue(v)
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		return string(body)
+	}
+
+	return string(b)
+}
+
+func redactRESTValue(v interface{}) {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		for k, nested := range value {
+			if isRESTSecretKey(k) {
+				value[k] = "[REDACTED]"
+				continue
+			}
+			redactRESTValue(nested)
+		}
+	case []interface{}:
+		for _, nested := range value {
+			redactRESTValue(nested)
+		}
+	}
+}
+
+func isRESTSecretKey(key string) bool {
+	switch key {
+	case "token", "access_token", "refresh_token", "client_secret", "password":
+		return true
+	}
+
+	return false
 }
 
 func unmarshal(data []byte, v interface{}) error {
