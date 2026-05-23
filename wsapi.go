@@ -355,6 +355,9 @@ const FailedHeartbeatAcks time.Duration = 5 * time.Millisecond
 // HeartbeatLatency returns the latency between heartbeat acknowledgement and heartbeat send.
 func (s *Session) HeartbeatLatency() time.Duration {
 
+	s.RLock()
+	defer s.RUnlock()
+
 	return s.LastHeartbeatAck.Sub(s.LastHeartbeatSent)
 
 }
@@ -384,8 +387,10 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		s.RUnlock()
 		sequence := atomic.LoadInt64(s.sequence)
 		s.log(LogDebug, "sending gateway websocket heartbeat seq %d", sequence)
-		s.wsMutex.Lock()
+		s.Lock()
 		s.LastHeartbeatSent = time.Now().UTC()
+		s.Unlock()
+		s.wsMutex.Lock()
 		err = wsConn.WriteJSON(heartbeatOp{1, sequence})
 		s.wsMutex.Unlock()
 		if err != nil || time.Now().UTC().Sub(last) > (heartbeatIntervalMsec*FailedHeartbeatAcks) {

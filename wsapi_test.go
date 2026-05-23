@@ -137,6 +137,72 @@ func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 	}
 }
 
+func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
+	heartbeatRead := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		for {
+			if _, _, err = conn.ReadMessage(); err != nil {
+				return
+			}
+			select {
+			case heartbeatRead <- struct{}{}:
+			default:
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	listening := make(chan interface{})
+	t.Cleanup(func() {
+		close(listening)
+	})
+
+	session := &Session{
+		LastHeartbeatAck: time.Now().Add(time.Hour).UTC(),
+		sequence:         new(int64),
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = session.HeartbeatLatency()
+			}
+		}
+	}()
+
+	go session.heartbeat(conn, listening, 1)
+
+	select {
+	case <-heartbeatRead:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat was not written")
+	}
+
+	close(stop)
+	<-done
+}
+
 func newGatewayOpenTestServer(t *testing.T, startupPacket []byte) *httptest.Server {
 	t.Helper()
 
