@@ -1356,18 +1356,26 @@ func (s *State) UserColor(userID, channelID string) int {
 		return 0
 	}
 
-	channel, err := s.Channel(channelID)
-	if err != nil {
+	s.RLock()
+	defer s.RUnlock()
+
+	channel, ok := s.channelMap[channelID]
+	if !ok {
 		return 0
 	}
 
-	guild, err := s.Guild(channel.GuildID)
-	if err != nil {
+	guild, ok := s.guildMap[channel.GuildID]
+	if !ok {
 		return 0
 	}
 
-	member, err := s.Member(guild.ID, userID)
-	if err != nil {
+	members, ok := s.memberMap[guild.ID]
+	if !ok {
+		return 0
+	}
+
+	member, ok := members[userID]
+	if !ok {
 		return 0
 	}
 
@@ -1385,13 +1393,16 @@ func (s *State) MessageColor(message *Message) int {
 		return 0
 	}
 
-	channel, err := s.Channel(message.ChannelID)
-	if err != nil {
+	s.RLock()
+	defer s.RUnlock()
+
+	channel, ok := s.channelMap[message.ChannelID]
+	if !ok {
 		return 0
 	}
 
-	guild, err := s.Guild(channel.GuildID)
-	if err != nil {
+	guild, ok := s.guildMap[channel.GuildID]
+	if !ok {
 		return 0
 	}
 
@@ -1399,7 +1410,7 @@ func (s *State) MessageColor(message *Message) int {
 }
 
 func firstRoleColorColor(guild *Guild, memberRoles []string) int {
-	roles := Roles(guild.Roles)
+	roles := append(Roles(nil), guild.Roles...)
 	sort.Sort(roles)
 
 	for _, role := range roles {
