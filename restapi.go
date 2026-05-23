@@ -286,8 +286,14 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 		rl := TooManyRequests{}
 		err = Unmarshal(response, &rl)
 		if err != nil {
-			s.log(LogError, "rate limit unmarshal error, %s", err)
-			return
+			retryAfter, parseErr := retryAfterHeader(resp.Header)
+			if parseErr != nil {
+				s.log(LogError, "rate limit unmarshal error, %s", err)
+				return
+			}
+			err = nil
+			rl.Message = strings.TrimSpace(string(response))
+			rl.RetryAfter = retryAfter
 		}
 
 		if cfg.ShouldRetryOnRateLimit {
@@ -313,6 +319,20 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 	}
 
 	return
+}
+
+func retryAfterHeader(headers http.Header) (time.Duration, error) {
+	retryAfter := headers.Get("Retry-After")
+	if retryAfter == "" {
+		return 0, errors.New("Retry-After header not found")
+	}
+
+	seconds, err := strconv.ParseFloat(retryAfter, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return time.Duration(seconds * float64(time.Second)), nil
 }
 
 func unmarshal(data []byte, v interface{}) error {

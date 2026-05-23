@@ -3,8 +3,11 @@ package discordgo
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 //////////////////////////////////////////////////////////////////////////////
@@ -266,6 +269,37 @@ func TestWithContext(t *testing.T) {
 	// Verify that the assertion code was actually run.
 	if !errors.Is(err, testErr) {
 		t.Errorf("unexpected error %v returned from client", err)
+	}
+}
+
+func TestRequestWithLockedBucketNonJSONRateLimitUsesRetryAfter(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header: http.Header{
+				"Retry-After": []string{"2"},
+			},
+			Body:    io.NopCloser(strings.NewReader("error code: 1015")),
+			Request: r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RateLimitError", err)
+	}
+	if rateLimitErr.RetryAfter != 2*time.Second {
+		t.Fatalf("RetryAfter = %v, want %v", rateLimitErr.RetryAfter, 2*time.Second)
+	}
+	if rateLimitErr.Message != "error code: 1015" {
+		t.Fatalf("Message = %q, want %q", rateLimitErr.Message, "error code: 1015")
 	}
 }
 
