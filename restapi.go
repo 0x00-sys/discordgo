@@ -689,9 +689,26 @@ func (s *Session) UserChannelPermissions(userID, channelID string, fetchOptions 
 		}
 	}
 
-	guild, err := s.State.Guild(channel.GuildID)
+	permissionsChannel := channel
+	thread := channel.IsThread()
+	if thread && channel.ParentID != "" {
+		permissionsChannel, err = s.State.Channel(channel.ParentID)
+		if err != nil || permissionsChannel == nil {
+			permissionsChannel, err = s.Channel(channel.ParentID, fetchOptions...)
+			if err != nil {
+				return
+			}
+		}
+	}
+
+	guildID := permissionsChannel.GuildID
+	if guildID == "" {
+		guildID = channel.GuildID
+	}
+
+	guild, err := s.State.Guild(guildID)
 	if err != nil || guild == nil {
-		guild, err = s.Guild(channel.GuildID, fetchOptions...)
+		guild, err = s.Guild(guildID, fetchOptions...)
 		if err != nil {
 			return
 		}
@@ -710,7 +727,11 @@ func (s *Session) UserChannelPermissions(userID, channelID string, fetchOptions 
 		}
 	}
 
-	return memberPermissions(guild, channel, userID, member.Roles), nil
+	apermissions = memberPermissions(guild, permissionsChannel, userID, member.Roles)
+	if thread {
+		apermissions = threadPermissions(apermissions)
+	}
+	return
 }
 
 // Calculates the permissions for a member.
@@ -778,6 +799,14 @@ func memberPermissions(guild *Guild, channel *Channel, userID string, roles []st
 	}
 
 	return apermissions
+}
+
+func threadPermissions(apermissions int64) int64 {
+	if apermissions&PermissionAdministrator == PermissionAdministrator {
+		return apermissions
+	}
+
+	return apermissions &^ PermissionSendMessages
 }
 
 // ------------------------------------------------------------------------------------------------

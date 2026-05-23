@@ -331,6 +331,102 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	}
 }
 
+func TestThreadPermissionsUseParentChannelOverwrites(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: PermissionViewChannel | PermissionSendMessages | PermissionSendMessagesInThreads,
+			},
+		},
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "parent",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildText,
+				PermissionOverwrites: []*PermissionOverwrite{
+					{
+						ID:   "guild",
+						Type: PermissionOverwriteTypeRole,
+						Deny: PermissionViewChannel,
+					},
+				},
+			},
+		},
+		Threads: []*Channel{
+			{
+				ID:       "thread",
+				ParentID: "parent",
+				Type:     ChannelTypeGuildPublicThread,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	permissions, err := state.UserChannelPermissions("user", "thread")
+	if err != nil {
+		t.Fatalf("UserChannelPermissions returned error: %v", err)
+	}
+	if permissions&PermissionViewChannel != 0 {
+		t.Fatalf("thread permissions include ViewChannel despite parent deny: %d", permissions)
+	}
+}
+
+func TestThreadMessagePermissionsUseThreadSendPermission(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: PermissionViewChannel | PermissionSendMessages | PermissionSendMessagesInThreads,
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "parent",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+		Threads: []*Channel{
+			{
+				ID:       "thread",
+				ParentID: "parent",
+				Type:     ChannelTypeGuildPublicThread,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	permissions, err := state.MessagePermissions(&Message{
+		ChannelID: "thread",
+		Author:    &User{ID: "user"},
+		Member: &Member{
+			Roles: []string{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("MessagePermissions returned error: %v", err)
+	}
+	if permissions&PermissionSendMessages != 0 {
+		t.Fatalf("thread permissions include SendMessages: %d", permissions)
+	}
+	if permissions&PermissionSendMessagesInThreads == 0 {
+		t.Fatalf("thread permissions do not include SendMessagesInThreads: %d", permissions)
+	}
+}
+
 func TestMessageEventsFillMissingGuildIDFromChannelState(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{

@@ -1312,14 +1312,9 @@ func (s *State) UserChannelPermissions(userID, channelID string) (apermissions i
 	s.RLock()
 	defer s.RUnlock()
 
-	channel, ok := s.channelMap[channelID]
-	if !ok {
-		return 0, ErrStateNotFound
-	}
-
-	guild, ok := s.guildMap[channel.GuildID]
-	if !ok {
-		return 0, ErrStateNotFound
+	guild, channel, thread, err := s.channelPermissionContext(channelID)
+	if err != nil {
+		return
 	}
 
 	members, ok := s.memberMap[guild.ID]
@@ -1332,7 +1327,11 @@ func (s *State) UserChannelPermissions(userID, channelID string) (apermissions i
 		return 0, ErrStateNotFound
 	}
 
-	return memberPermissions(guild, channel, userID, member.Roles), nil
+	apermissions = memberPermissions(guild, channel, userID, member.Roles)
+	if thread {
+		apermissions = threadPermissions(apermissions)
+	}
+	return
 }
 
 // MessagePermissions returns the permissions of the author of the message
@@ -1349,17 +1348,40 @@ func (s *State) MessagePermissions(message *Message) (apermissions int64, err er
 	s.RLock()
 	defer s.RUnlock()
 
-	channel, ok := s.channelMap[message.ChannelID]
-	if !ok {
-		return 0, ErrStateNotFound
+	guild, channel, thread, err := s.channelPermissionContext(message.ChannelID)
+	if err != nil {
+		return
 	}
 
-	guild, ok := s.guildMap[channel.GuildID]
+	apermissions = memberPermissions(guild, channel, message.Author.ID, message.Member.Roles)
+	if thread {
+		apermissions = threadPermissions(apermissions)
+	}
+	return
+}
+
+func (s *State) channelPermissionContext(channelID string) (guild *Guild, channel *Channel, thread bool, err error) {
+	var ok bool
+	channel, ok = s.channelMap[channelID]
 	if !ok {
-		return 0, ErrStateNotFound
+		err = ErrStateNotFound
+		return
 	}
 
-	return memberPermissions(guild, channel, message.Author.ID, message.Member.Roles), nil
+	thread = channel.IsThread()
+	if thread && channel.ParentID != "" {
+		channel, ok = s.channelMap[channel.ParentID]
+		if !ok {
+			err = ErrStateNotFound
+			return
+		}
+	}
+
+	guild, ok = s.guildMap[channel.GuildID]
+	if !ok {
+		err = ErrStateNotFound
+	}
+	return
 }
 
 // UserColor returns the color of a user in a channel.
