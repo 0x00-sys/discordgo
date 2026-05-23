@@ -481,6 +481,47 @@ func TestRedactedHeaderValues(t *testing.T) {
 	}
 }
 
+func TestNewRestErrorRedactsRequestSecrets(t *testing.T) {
+	req, err := http.NewRequest("GET", EndpointWebhookToken("webhook", "secret-token"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bot secret")
+	req.Header.Set("User-Agent", "discordgo")
+	resp := &http.Response{
+		Status:     "401 Unauthorized",
+		StatusCode: http.StatusUnauthorized,
+		Request:    req,
+	}
+
+	restErr := newRestError(req, resp, []byte(`{"code":0,"message":"unauthorized"}`))
+
+	if got := restErr.Request.Header.Get("Authorization"); got != redactedValue {
+		t.Fatalf("RESTError request authorization = %q, want %q", got, redactedValue)
+	}
+	if got := restErr.Response.Request.Header.Get("Authorization"); got != redactedValue {
+		t.Fatalf("RESTError response request authorization = %q, want %q", got, redactedValue)
+	}
+	if got := restErr.Request.URL.String(); strings.Contains(got, "secret-token") {
+		t.Fatalf("RESTError request URL leaked webhook token: %q", got)
+	}
+	if got := restErr.Response.Request.URL.String(); strings.Contains(got, "secret-token") {
+		t.Fatalf("RESTError response request URL leaked webhook token: %q", got)
+	}
+	if got := restErr.Request.URL.String(); !strings.Contains(got, redactedURLValue) {
+		t.Fatalf("RESTError request URL = %q, want redacted token", got)
+	}
+	if got := restErr.Request.Header.Get("User-Agent"); got != "discordgo" {
+		t.Fatalf("RESTError request user agent = %q, want discordgo", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bot secret" {
+		t.Fatalf("original request authorization = %q, want Bot secret", got)
+	}
+	if got := req.URL.String(); !strings.Contains(got, "secret-token") {
+		t.Fatalf("original request URL = %q, want original token", got)
+	}
+}
+
 func TestRedactedURL(t *testing.T) {
 	tests := []struct {
 		name string

@@ -61,6 +61,9 @@ type RESTError struct {
 
 // newRestError returns a new REST API error.
 func newRestError(req *http.Request, resp *http.Response, body []byte) *RESTError {
+	req = redactedRequest(req)
+	resp = redactedResponse(resp, req)
+
 	restErr := &RESTError{
 		Request:      req,
 		Response:     resp,
@@ -75,6 +78,34 @@ func newRestError(req *http.Request, resp *http.Response, body []byte) *RESTErro
 	}
 
 	return restErr
+}
+
+func redactedRequest(req *http.Request) *http.Request {
+	if req == nil {
+		return nil
+	}
+
+	redacted := req.Clone(req.Context())
+	if redacted.Header.Get("Authorization") != "" {
+		redacted.Header.Set("Authorization", redactedValue)
+	}
+	if redacted.URL != nil {
+		if u, err := url.Parse(redactedURL(redacted.URL.String())); err == nil {
+			redacted.URL = u
+		}
+	}
+	return redacted
+}
+
+func redactedResponse(resp *http.Response, req *http.Request) *http.Response {
+	if resp == nil {
+		return nil
+	}
+
+	redacted := new(http.Response)
+	*redacted = *resp
+	redacted.Request = req
+	return redacted
 }
 
 // Error returns a Rest API Error with its status code and body.
