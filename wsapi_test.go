@@ -152,19 +152,39 @@ func TestInvalidSessionClearsResumeStateConcurrentRead(t *testing.T) {
 	<-readerDone
 }
 
-func TestOpenReturnsOnHeartbeatAckDuringOpen(t *testing.T) {
-	server := newGatewayOpenTestServer(t, []byte(`{"op":11,"d":null}`))
+func TestOpenHandlesHeartbeatAckDuringOpen(t *testing.T) {
+	server := newGatewayOpenTestServer(t,
+		[]byte(`{"op":11,"d":null}`),
+		[]byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`),
+	)
 	session, err := newGatewayOpenTestSession(server, "Bot test")
 	if err != nil {
 		t.Fatalf("error creating session: %v", err)
 	}
 
-	err = openWithTimeout(t, session)
-	if err == nil {
-		t.Fatal("expected Open to return an unexpected operation error")
+	if err = openWithTimeout(t, session); err != nil {
+		t.Fatalf("Open returned error: %v", err)
 	}
-	if session.wsConn != nil {
-		t.Fatal("Open returned an error without clearing the websocket")
+	defer session.Close()
+}
+
+func TestOpenSendsHeartbeatsBeforeReady(t *testing.T) {
+	heartbeatRead := make(chan struct{}, 1)
+	server := newGatewayOpenAfterHeartbeatTestServer(t, heartbeatRead)
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	if err = openWithTimeout(t, session); err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer session.Close()
+
+	select {
+	case <-heartbeatRead:
+	case <-time.After(time.Second):
+		t.Fatal("gateway did not receive a heartbeat before READY")
 	}
 }
 
@@ -605,7 +625,7 @@ func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 	}
 }
 
-func newGatewayOpenTestServer(t *testing.T, startupPacket []byte) *httptest.Server {
+func newGatewayOpenTestServer(t *testing.T, startupPackets ...[]byte) *httptest.Server {
 	t.Helper()
 
 	upgrader := websocket.Upgrader{}
@@ -622,10 +642,61 @@ func newGatewayOpenTestServer(t *testing.T, startupPacket []byte) *httptest.Serv
 		if _, _, err := conn.ReadMessage(); err != nil {
 			return
 		}
-		if err := conn.WriteMessage(websocket.TextMessage, startupPacket); err != nil {
-			return
+		for _, startupPacket := range startupPackets {
+			if err := conn.WriteMessage(websocket.TextMessage, startupPacket); err != nil {
+				return
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
+	}))
+
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newGatewayOpenAfterHeartbeatTestServer(t *testing.T, heartbeatRead chan<- struct{}) *httptest.Server {
+	t.Helper()
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":10}}`)); err != nil {
+			return
+		}
+
+		for i := 0; i < 2; i++ {
+			if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				return
+			}
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var event Event
+			if err := json.Unmarshal(message, &event); err != nil {
+				return
+			}
+			if event.Operation == 1 {
+				select {
+				case heartbeatRead <- struct{}{}:
+				default:
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":11,"d":null}`)); err != nil {
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`)); err != nil {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+				return
+			}
+		}
 	}))
 
 	t.Cleanup(server.Close)
