@@ -16,6 +16,56 @@ func TestPresenceAddRequiresUser(t *testing.T) {
 	}
 }
 
+func TestGuildRemoveClearsGuildIndexes(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{ID: "channel", GuildID: "guild"},
+		},
+		Threads: []*Channel{
+			{
+				ID:             "thread",
+				GuildID:        "guild",
+				Type:           ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{},
+			},
+		},
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	if _, err := state.Channel("channel"); err != nil {
+		t.Fatalf("Channel returned error before GuildRemove: %v", err)
+	}
+	if _, err := state.Channel("thread"); err != nil {
+		t.Fatalf("Thread returned error before GuildRemove: %v", err)
+	}
+	if _, err := state.Member("guild", "user"); err != nil {
+		t.Fatalf("Member returned error before GuildRemove: %v", err)
+	}
+
+	if err := state.GuildRemove(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildRemove returned error: %v", err)
+	}
+
+	if _, err := state.Channel("channel"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Channel returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Channel("thread"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Thread returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Member("guild", "user"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Member returned error %v, want %v", err, ErrStateNotFound)
+	}
+}
+
 func TestPresenceAddSkipsMalformedCachedPresences(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{

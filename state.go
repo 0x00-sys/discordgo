@@ -159,7 +159,7 @@ func (s *State) GuildRemove(guild *Guild) error {
 		return ErrNilState
 	}
 
-	_, err := s.Guild(guild.ID)
+	old, err := s.Guild(guild.ID)
 	if err != nil {
 		return err
 	}
@@ -168,6 +168,18 @@ func (s *State) GuildRemove(guild *Guild) error {
 	defer s.Unlock()
 
 	delete(s.guildMap, guild.ID)
+	delete(s.memberMap, guild.ID)
+
+	for _, channel := range old.Channels {
+		if channel != nil {
+			delete(s.channelMap, channel.ID)
+		}
+	}
+	for _, thread := range old.Threads {
+		if thread != nil {
+			delete(s.channelMap, thread.ID)
+		}
+	}
 
 	for i, g := range s.Guilds {
 		if g.ID == guild.ID {
