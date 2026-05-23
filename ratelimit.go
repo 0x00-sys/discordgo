@@ -114,7 +114,11 @@ func (r *RateLimiter) GetWaitTime(b *Bucket, minRemaining int) time.Duration {
 	}
 
 	// Check for global ratelimits
-	sleepTo := time.Unix(0, atomic.LoadInt64(r.global))
+	global := r.global
+	if b.global != nil {
+		global = b.global
+	}
+	sleepTo := time.Unix(0, atomic.LoadInt64(global))
 	if now := time.Now(); now.Before(sleepTo) {
 		return sleepTo.Sub(now)
 	}
@@ -131,6 +135,19 @@ func (r *RateLimiter) LockBucket(bucketID string) *Bucket {
 // LockBucketContext locks until a request can be made or ctx is canceled.
 func (r *RateLimiter) LockBucketContext(ctx context.Context, bucketID string) (*Bucket, error) {
 	return r.LockBucketObjectContext(ctx, r.GetBucket(bucketID))
+}
+
+func (r *RateLimiter) lockEphemeralBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
+	globalReset := r.global
+	if !useGlobalRateLimit {
+		globalReset = new(int64)
+	}
+
+	return r.LockBucketObjectContext(ctx, &Bucket{
+		Remaining: 1,
+		Key:       bucketID,
+		global:    globalReset,
+	})
 }
 
 // LockBucketObject Locks an already resolved bucket until a request can be made
