@@ -1119,6 +1119,11 @@ func (s *Session) reconnect() {
 				return
 			}
 
+			if !shouldReconnectOnGatewayClose(err) {
+				s.log(LogInformational, "not reconnecting after terminal gateway close, %s", err)
+				return
+			}
+
 			s.log(LogError, "error reconnecting to gateway, %s", err)
 
 			<-time.After(wait * time.Second)
