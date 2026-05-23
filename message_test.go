@@ -150,6 +150,58 @@ func TestMessageCreateUnknownComponentType(t *testing.T) {
 	}
 }
 
+func TestMessageCreateLinksMemberUser(t *testing.T) {
+	var m MessageCreate
+	err := json.Unmarshal([]byte(`{
+		"id":"message",
+		"channel_id":"channel",
+		"guild_id":"guild",
+		"author":{"id":"user","username":"User"},
+		"member":{"roles":["role"],"nick":"Nick"}
+	}`), &m)
+	if err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if m.Member == nil {
+		t.Fatal("Member is nil")
+	}
+	if m.Member.User != m.Author {
+		t.Fatal("Member.User was not linked to Author")
+	}
+	if m.Member.GuildID != "guild" {
+		t.Fatalf("Member.GuildID = %q, want guild", m.Member.GuildID)
+	}
+	if mention := m.Member.Mention(); mention != "<@!user>" {
+		t.Fatalf("Member.Mention() = %q, want %q", mention, "<@!user>")
+	}
+	if displayName := m.Member.DisplayName(); displayName != "Nick" {
+		t.Fatalf("Member.DisplayName() = %q, want Nick", displayName)
+	}
+}
+
+func TestMessageUpdateLinksMemberUser(t *testing.T) {
+	var m MessageUpdate
+	err := json.Unmarshal([]byte(`{
+		"id":"message",
+		"channel_id":"channel",
+		"guild_id":"guild",
+		"author":{"id":"user","username":"User"},
+		"member":{"roles":["role"]}
+	}`), &m)
+	if err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if m.Member == nil {
+		t.Fatal("Member is nil")
+	}
+	if m.Member.User != m.Author {
+		t.Fatal("Member.User was not linked to Author")
+	}
+	if displayName := m.Member.DisplayName(); displayName != "User" {
+		t.Fatalf("Member.DisplayName() = %q, want User", displayName)
+	}
+}
+
 func TestMessageSendNonce(t *testing.T) {
 	payload, err := Marshal(&MessageSend{
 		Content:      "hello",
