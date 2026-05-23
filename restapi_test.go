@@ -475,6 +475,20 @@ func TestRedactedRESTBodyInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestRedactedRESTBodyMultipart(t *testing.T) {
+	body := []byte("--boundary\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"upload.txt\"\r\n\r\nprivate upload contents\r\n--boundary--")
+
+	got := redactedRESTBody(body, "multipart/form-data; boundary=boundary")
+	if got != redactedMultipartBody {
+		t.Fatalf("redactedRESTBody() = %q, want %q", got, redactedMultipartBody)
+	}
+	for _, secret := range []string{"upload.txt", "private upload contents"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redactedRESTBody() leaked %q in %s", secret, got)
+		}
+	}
+}
+
 // roundTripperFunc implements http.RoundTripper.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
