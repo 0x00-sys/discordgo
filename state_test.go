@@ -331,6 +331,124 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	}
 }
 
+func TestUserColorDoesNotReorderCachedRoles(t *testing.T) {
+	state := newColorTestState(t)
+
+	if color := state.UserColor("user", "channel"); color != 0x123456 {
+		t.Fatalf("UserColor = %d, want %d", color, 0x123456)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	got := []string{guild.Roles[0].ID, guild.Roles[1].ID, guild.Roles[2].ID}
+	want := []string{"guild", "role-high", "role-low"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cached role order = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestMessageColorDoesNotReorderCachedRoles(t *testing.T) {
+	state := newColorTestState(t)
+	message := &Message{
+		ChannelID: "channel",
+		Member: &Member{
+			Roles: []string{"role-high"},
+		},
+	}
+
+	if color := state.MessageColor(message); color != 0x123456 {
+		t.Fatalf("MessageColor = %d, want %d", color, 0x123456)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	got := []string{guild.Roles[0].ID, guild.Roles[1].ID, guild.Roles[2].ID}
+	want := []string{"guild", "role-high", "role-low"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cached role order = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestUserColorUsesStateLock(t *testing.T) {
+	state := newColorTestState(t)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			if err := state.RoleAdd("guild", &Role{
+				ID:       "role-high",
+				Color:    0x123456,
+				Position: i + 1,
+			}); err != nil {
+				t.Errorf("RoleAdd returned error: %v", err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		if color := state.UserColor("user", "channel"); color != 0x123456 {
+			t.Fatalf("UserColor = %d, want %d", color, 0x123456)
+		}
+	}
+
+	<-done
+}
+
+func newColorTestState(t *testing.T) *State {
+	t.Helper()
+
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:       "guild",
+				Color:    0x654321,
+				Position: 0,
+			},
+			{
+				ID:       "role-high",
+				Color:    0x123456,
+				Position: 10,
+			},
+			{
+				ID:       "role-low",
+				Color:    0,
+				Position: 1,
+			},
+		},
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+				Roles:   []string{"role-high"},
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	return state
+}
+
 func TestVoiceStateUsesStateLock(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
