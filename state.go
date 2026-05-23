@@ -634,7 +634,11 @@ func (s *State) ThreadListSync(tls *ThreadListSync) error {
 	index := 0
 outer:
 	for _, t := range guild.Threads {
-		if !t.ThreadMetadata.Archived && tls.ChannelIDs != nil {
+		if t == nil {
+			continue
+		}
+		active := t.ThreadMetadata == nil || !t.ThreadMetadata.Archived
+		if active && tls.ChannelIDs != nil {
 			for _, v := range tls.ChannelIDs {
 				if t.ParentID == v {
 					delete(s.channelMap, t.ID)
