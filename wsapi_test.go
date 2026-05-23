@@ -60,6 +60,45 @@ func TestOpenReturnsOnInvalidSessionDuringOpen(t *testing.T) {
 	}
 }
 
+func TestInvalidSessionClearsResumeStateConcurrentRead(t *testing.T) {
+	session := &Session{
+		ShouldReconnectOnError: false,
+		sequence:               new(int64),
+	}
+
+	done := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				session.RLock()
+				_, _ = session.sessionID, session.resumeGatewayURL
+				session.RUnlock()
+			}
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		session.Lock()
+		session.sessionID = "session"
+		session.resumeGatewayURL = "wss://gateway.example"
+		session.Unlock()
+
+		if _, err := session.onEvent(websocket.TextMessage, []byte(`{"op":9,"d":false}`)); err != nil {
+			close(done)
+			<-readerDone
+			t.Fatalf("onEvent returned error: %v", err)
+		}
+	}
+
+	close(done)
+	<-readerDone
+}
+
 func TestOpenReturnsOnHeartbeatAckDuringOpen(t *testing.T) {
 	server := newGatewayOpenTestServer(t, []byte(`{"op":11,"d":null}`))
 	session, err := newGatewayOpenTestSession(server, "Bot test")
