@@ -864,6 +864,64 @@ func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
 	}
 }
 
+func TestThreadMembersUpdateAddsMemberWithEventGuildID(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	update := &ThreadMembersUpdate{
+		ID:          "thread",
+		GuildID:     "guild",
+		MemberCount: 1,
+		AddedMembers: []AddedThreadMember{
+			{
+				ThreadMember: &ThreadMember{
+					ID:     "thread",
+					UserID: "user",
+				},
+				Member: &Member{
+					User: &User{ID: "user"},
+				},
+			},
+		},
+	}
+	if err := state.OnInterface(&Session{StateEnabled: true}, update); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	member, err := state.Member("guild", "user")
+	if err != nil {
+		t.Fatalf("Member returned error: %v", err)
+	}
+	if member.GuildID != "guild" {
+		t.Fatalf("member.GuildID = %q, want guild", member.GuildID)
+	}
+	if update.AddedMembers[0].Member.GuildID != "" {
+		t.Fatalf("event member GuildID = %q, want empty", update.AddedMembers[0].Member.GuildID)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(thread.Members) != 1 {
+		t.Fatalf("len(thread.Members) = %d, want 1", len(thread.Members))
+	}
+	if thread.MemberCount != 1 {
+		t.Fatalf("MemberCount = %d, want 1", thread.MemberCount)
+	}
+}
+
 func TestThreadMembersUpdateRespectsMemberPresenceTracking(t *testing.T) {
 	state := NewState()
 	state.TrackMembers = false
