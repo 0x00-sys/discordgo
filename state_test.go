@@ -426,3 +426,100 @@ func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
 		t.Fatalf("MemberCount = %d, want 1", thread.MemberCount)
 	}
 }
+
+func TestGuildMemberAddMemberCountUsesStateLock(t *testing.T) {
+	state := NewState()
+	state.TrackMembers = false
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	const goroutines = 4
+	const iterations = 1000
+
+	start := make(chan struct{})
+	errCh := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			<-start
+			for j := 0; j < iterations; j++ {
+				err := state.OnInterface(&Session{StateEnabled: true}, &GuildMemberAdd{
+					Member: &Member{
+						GuildID: "guild",
+						User:    &User{ID: "user"},
+					},
+				})
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}
+			errCh <- nil
+		}()
+	}
+	close(start)
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if guild.MemberCount != goroutines*iterations {
+		t.Fatalf("MemberCount = %d, want %d", guild.MemberCount, goroutines*iterations)
+	}
+}
+
+func TestGuildMemberRemoveMemberCountUsesStateLock(t *testing.T) {
+	state := NewState()
+	state.TrackMembers = false
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		MemberCount: 4000,
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	const goroutines = 4
+	const iterations = 1000
+
+	start := make(chan struct{})
+	errCh := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			<-start
+			for j := 0; j < iterations; j++ {
+				err := state.OnInterface(&Session{StateEnabled: true}, &GuildMemberRemove{
+					Member: &Member{
+						GuildID: "guild",
+						User:    &User{ID: "user"},
+					},
+				})
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}
+			errCh <- nil
+		}()
+	}
+	close(start)
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if guild.MemberCount != 0 {
+		t.Fatalf("MemberCount = %d, want 0", guild.MemberCount)
+	}
+}
