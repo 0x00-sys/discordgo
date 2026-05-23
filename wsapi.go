@@ -737,8 +737,10 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 
 		if !resumable {
 			s.log(LogInformational, "Gateway session is not resumable, discarding its information")
+			s.Lock()
 			s.resumeGatewayURL = ""
 			s.sessionID = ""
+			s.Unlock()
 			atomic.StoreInt64(s.sequence, 0)
 		}
 
