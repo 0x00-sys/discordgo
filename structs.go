@@ -601,6 +601,44 @@ type ForumTag struct {
 	EmojiName string `json:"emoji_name,omitempty"`
 }
 
+func (t *ForumTag) UnmarshalJSON(data []byte) error {
+	temp := struct {
+		ID        forumTagID `json:"id,omitempty"`
+		Name      string     `json:"name"`
+		Moderated bool       `json:"moderated"`
+		EmojiID   string     `json:"emoji_id,omitempty"`
+		EmojiName string     `json:"emoji_name,omitempty"`
+	}{}
+
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	t.ID = string(temp.ID)
+	t.Name = temp.Name
+	t.Moderated = temp.Moderated
+	t.EmojiID = temp.EmojiID
+	t.EmojiName = temp.EmojiName
+	return nil
+}
+
+type forumTagID string
+
+func (id *forumTagID) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*id = forumTagID(str)
+		return nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	*id = forumTagID(number.String())
+	return nil
+}
+
 // Emoji struct holds data related to Emoji's
 type Emoji struct {
 	ID            string   `json:"id"`
