@@ -297,6 +297,10 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 	defer ticker.Stop()
 
 	for {
+		if isListeningClosed(listening) {
+			return
+		}
+
 		s.RLock()
 		last := s.LastHeartbeatAck
 		s.RUnlock()
@@ -307,6 +311,9 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		err = wsConn.WriteJSON(heartbeatOp{1, sequence})
 		s.wsMutex.Unlock()
 		if err != nil || time.Now().UTC().Sub(last) > (heartbeatIntervalMsec*FailedHeartbeatAcks) {
+			if isListeningClosed(listening) {
+				return
+			}
 			if err != nil {
 				s.log(LogError, "error sending heartbeat to gateway %s, %s", s.gateway, err)
 			} else {
@@ -326,6 +333,15 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		case <-listening:
 			return
 		}
+	}
+}
+
+func isListeningClosed(listening <-chan interface{}) bool {
+	select {
+	case <-listening:
+		return true
+	default:
+		return false
 	}
 }
 
