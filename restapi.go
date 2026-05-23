@@ -1876,7 +1876,7 @@ func (s *Session) ChannelMessageSend(channelID string, content string, options .
 	}, options...)
 }
 
-var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "%0D", "\n", "%0A")
 
 // ChannelMessageSendComplex sends a message to the given channel.
 // channelID : The ID of a Channel.
