@@ -1053,6 +1053,10 @@ func (v *VoiceConnection) reconnect() {
 	// Close any currently open connections
 	v.Close()
 
+	if !v.isSessionVoiceConnection() {
+		return
+	}
+
 	wait := time.Duration(1)
 	for {
 
@@ -1060,6 +1064,10 @@ func (v *VoiceConnection) reconnect() {
 		wait *= 2
 		if wait > 600 {
 			wait = 600
+		}
+
+		if !v.isSessionVoiceConnection() {
+			return
 		}
 
 		v.session.RLock()
@@ -1091,4 +1099,15 @@ func (v *VoiceConnection) reconnect() {
 		}
 
 	}
+}
+
+func (v *VoiceConnection) isSessionVoiceConnection() bool {
+	if v.session == nil {
+		return false
+	}
+
+	v.session.RLock()
+	defer v.session.RUnlock()
+
+	return v.session.VoiceConnections[v.GuildID] == v
 }
