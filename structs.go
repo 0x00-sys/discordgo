@@ -2247,7 +2247,7 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 		Type          ActivityType `json:"type"`
 		URL           string       `json:"url,omitempty"`
 		CreatedAt     int64        `json:"created_at"`
-		ApplicationID json.Number  `json:"application_id,omitempty"`
+		ApplicationID stringNumber `json:"application_id,omitempty"`
 		State         string       `json:"state,omitempty"`
 		Details       string       `json:"details,omitempty"`
 		Timestamps    TimeStamps   `json:"timestamps,omitempty"`
@@ -2262,7 +2262,7 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return err
 	}
-	activity.ApplicationID = temp.ApplicationID.String()
+	activity.ApplicationID = string(temp.ApplicationID)
 	activity.CreatedAt = time.Unix(0, temp.CreatedAt*1000000)
 	activity.Assets = temp.Assets
 	activity.Details = temp.Details
@@ -2276,6 +2276,23 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 	activity.Timestamps = temp.Timestamps
 	activity.Type = temp.Type
 	activity.URL = temp.URL
+	return nil
+}
+
+type stringNumber string
+
+func (s *stringNumber) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*s = stringNumber(str)
+		return nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(b, &number); err != nil {
+		return err
+	}
+	*s = stringNumber(number.String())
 	return nil
 }
 

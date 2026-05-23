@@ -8,6 +8,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -34,4 +35,40 @@ func TestMember_DisplayName(t *testing.T) {
 			t.Errorf("Member.DisplayName() = %v, want %v", dn, m.Nick)
 		}
 	})
+}
+
+func TestActivityUnmarshalApplicationID(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "string",
+			data: `{"name":"Rocket League","type":0,"created_at":1511200066000,"application_id":"379286085710381999"}`,
+			want: "379286085710381999",
+		},
+		{
+			name: "number",
+			data: `{"name":"Rocket League","type":0,"created_at":1511200066000,"application_id":379286085710381999}`,
+			want: "379286085710381999",
+		},
+		{
+			name: "null",
+			data: `{"name":"Rocket League","type":0,"created_at":1511200066000,"application_id":null}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var activity Activity
+			if err := json.Unmarshal([]byte(tt.data), &activity); err != nil {
+				t.Fatalf("json.Unmarshal() returned error: %v", err)
+			}
+			if activity.ApplicationID != tt.want {
+				t.Fatalf("ApplicationID = %q, want %q", activity.ApplicationID, tt.want)
+			}
+		})
+	}
 }
