@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -109,6 +110,48 @@ func TestUserGuilds(t *testing.T) {
 	_, err := dg.UserGuilds(10, "", "", false)
 	if err != nil {
 		t.Errorf(err.Error())
+	}
+}
+
+func TestGuildMembersSearchSetsGuildID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/guilds/guild/members/search" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/members/search")
+		}
+		if query := r.URL.Query().Get("query"); query != "user" {
+			t.Fatalf("query = %q, want %q", query, "user")
+		}
+		if limit := r.URL.Query().Get("limit"); limit != "2" {
+			t.Fatalf("limit = %q, want %q", limit, "2")
+		}
+		_, _ = w.Write([]byte(`[{"user":{"id":"user","username":"user","discriminator":"0"},"avatar":"guild-avatar"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	members, err := session.GuildMembersSearch("guild", "user", 2)
+	if err != nil {
+		t.Fatalf("GuildMembersSearch returned error: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("len(members) = %d, want 1", len(members))
+	}
+	if members[0].GuildID != "guild" {
+		t.Fatalf("GuildID = %q, want %q", members[0].GuildID, "guild")
+	}
+	if got, want := members[0].AvatarURL(""), EndpointGuildMemberAvatar("guild", "user", "guild-avatar"); got != want {
+		t.Fatalf("AvatarURL = %q, want %q", got, want)
 	}
 }
 

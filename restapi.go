@@ -841,6 +841,10 @@ func (s *Session) GuildMembersSearch(guildID, query string, limit int, options .
 	}
 
 	err = unmarshal(body, &st)
+	// The returned objects don't have the GuildID attribute so we will set it here.
+	for _, member := range st {
+		member.GuildID = guildID
+	}
 	return
 }
 
