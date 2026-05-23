@@ -38,6 +38,13 @@ var ErrWSShardBounds = errors.New("ShardID must be less than ShardCount")
 
 const websocketCloseFrameTimeout = time.Second
 
+func gatewayStartupReadTimeout(dialer *websocket.Dialer) time.Duration {
+	if dialer == nil {
+		return 45 * time.Second
+	}
+	return dialer.HandshakeTimeout
+}
+
 func writeWebsocketCloseFrame(conn *websocket.Conn, closeCode int) error {
 	return conn.WriteControl(
 		websocket.CloseMessage,
@@ -128,7 +135,7 @@ func (s *Session) Open() error {
 
 	// The first response from Discord should be an Op 10 (Hello) Packet.
 	// When processed by onEvent the heartbeat goroutine will be started.
-	mt, m, err := s.wsConn.ReadMessage()
+	mt, m, err := s.readGatewayHello(s.wsConn)
 	if err != nil {
 		if shouldStartNewGatewaySessionOnClose(err) {
 			s.resetGatewayResumeStateLocked()
@@ -272,6 +279,21 @@ func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchRepla
 			return e, nil
 		}
 	}
+}
+
+func (s *Session) readGatewayHello(wsConn *websocket.Conn) (messageType int, message []byte, err error) {
+	if timeout := gatewayStartupReadTimeout(s.Dialer); timeout > 0 {
+		if err = wsConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return
+		}
+		defer func() {
+			if clearErr := wsConn.SetReadDeadline(time.Time{}); err == nil && clearErr != nil {
+				err = clearErr
+			}
+		}()
+	}
+
+	return wsConn.ReadMessage()
 }
 
 func (s *Session) openGatewayControlEvent(messageType int, message []byte, expectedOperation int, allowDispatchBeforeExpected bool, expectedEventTypes ...string) error {
