@@ -279,7 +279,12 @@ type MessageCreate struct {
 
 // UnmarshalJSON is a helper function to unmarshal MessageCreate object.
 func (m *MessageCreate) UnmarshalJSON(b []byte) error {
-	return json.Unmarshal(b, &m.Message)
+	if err := json.Unmarshal(b, &m.Message); err != nil {
+		return err
+	}
+
+	linkMessageMemberUser(m.Message)
+	return nil
 }
 
 // MessageUpdate is the data for a MessageUpdate event.
@@ -291,7 +296,24 @@ type MessageUpdate struct {
 
 // UnmarshalJSON is a helper function to unmarshal MessageUpdate object.
 func (m *MessageUpdate) UnmarshalJSON(b []byte) error {
-	return json.Unmarshal(b, &m.Message)
+	if err := json.Unmarshal(b, &m.Message); err != nil {
+		return err
+	}
+
+	linkMessageMemberUser(m.Message)
+	return nil
+}
+
+func linkMessageMemberUser(m *Message) {
+	if m == nil || m.Member == nil {
+		return
+	}
+	if m.Member.User == nil {
+		m.Member.User = m.Author
+	}
+	if m.Member.GuildID == "" {
+		m.Member.GuildID = m.GuildID
+	}
 }
 
 // MessageDelete is the data for a MessageDelete event.
