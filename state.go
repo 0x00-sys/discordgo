@@ -808,7 +808,11 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 	for _, addedMember := range tmu.AddedMembers {
 		thread.Members = append(thread.Members, addedMember.ThreadMember)
 		if s.TrackMembers && addedMember.Member != nil {
-			err = s.memberAdd(addedMember.Member)
+			member := *addedMember.Member
+			if member.GuildID == "" {
+				member.GuildID = tmu.GuildID
+			}
+			err = s.memberAdd(&member)
 			if err != nil {
 				return err
 			}
