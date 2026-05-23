@@ -1013,6 +1013,10 @@ func (s *State) onReady(se *Session, r *Ready) (err error) {
 		for _, c := range g.Channels {
 			s.channelMap[c.ID] = c
 		}
+
+		for _, t := range g.Threads {
+			s.channelMap[t.ID] = t
+		}
 	}
 
 	for _, c := range s.PrivateChannels {

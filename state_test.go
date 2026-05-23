@@ -331,6 +331,55 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	}
 }
 
+func TestReadyIndexesThreads(t *testing.T) {
+	state := NewState()
+	session := &Session{
+		State:        state,
+		StateEnabled: true,
+	}
+
+	session.onInterface(&Ready{
+		Guilds: []*Guild{
+			{
+				ID: "guild",
+				Threads: []*Channel{
+					{
+						ID:       "thread",
+						ParentID: "parent",
+						Type:     ChannelTypeGuildPublicThread,
+					},
+				},
+			},
+		},
+	})
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if thread.GuildID != "guild" {
+		t.Fatalf("thread GuildID = %q, want guild", thread.GuildID)
+	}
+}
+
+func TestSetGuildIDsSetsThreadGuildID(t *testing.T) {
+	guild := &Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:   "thread",
+				Type: ChannelTypeGuildPublicThread,
+			},
+		},
+	}
+
+	setGuildIds(guild)
+
+	if guild.Threads[0].GuildID != "guild" {
+		t.Fatalf("thread GuildID = %q, want guild", guild.Threads[0].GuildID)
+	}
+}
+
 func TestThreadPermissionsUseParentChannelOverwrites(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
