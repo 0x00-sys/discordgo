@@ -133,6 +133,86 @@ func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
 	}
 }
 
+func TestReadyClearsStaleIndexes(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "stale-guild",
+		Channels: []*Channel{
+			{ID: "stale-channel", GuildID: "stale-guild"},
+		},
+		Threads: []*Channel{
+			{
+				ID:             "stale-thread",
+				GuildID:        "stale-guild",
+				Type:           ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{},
+			},
+		},
+		Members: []*Member{
+			{
+				GuildID: "stale-guild",
+				User:    &User{ID: "stale-user"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &Ready{
+		Guilds: []*Guild{
+			{
+				ID: "ready-guild",
+				Channels: []*Channel{
+					{ID: "ready-channel", GuildID: "ready-guild"},
+				},
+				Threads: []*Channel{
+					{
+						ID:             "ready-thread",
+						GuildID:        "ready-guild",
+						Type:           ChannelTypeGuildPublicThread,
+						ThreadMetadata: &ThreadMetadata{},
+					},
+				},
+				Members: []*Member{
+					{
+						GuildID: "ready-guild",
+						User:    &User{ID: "ready-user"},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if _, err := state.Guild("ready-guild"); err != nil {
+		t.Fatalf("ready guild missing after Ready: %v", err)
+	}
+	if _, err := state.Channel("ready-channel"); err != nil {
+		t.Fatalf("ready channel missing after Ready: %v", err)
+	}
+	if _, err := state.Channel("ready-thread"); err != nil {
+		t.Fatalf("ready thread missing after Ready: %v", err)
+	}
+	if _, err := state.Member("ready-guild", "ready-user"); err != nil {
+		t.Fatalf("ready member missing after Ready: %v", err)
+	}
+
+	if _, err := state.Guild("stale-guild"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("stale guild error = %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Channel("stale-channel"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("stale channel error = %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Channel("stale-thread"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("stale thread error = %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err := state.Member("stale-guild", "stale-user"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("stale member error = %v, want %v", err, ErrStateNotFound)
+	}
+}
+
 func TestThreadListSyncHandlesThreadWithoutMetadata(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{

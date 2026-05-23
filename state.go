@@ -1106,6 +1106,10 @@ func (s *State) onReady(se *Session, r *Ready) (err error) {
 	s.Lock()
 	defer s.Unlock()
 
+	s.guildMap = make(map[string]*Guild, len(r.Guilds))
+	s.channelMap = make(map[string]*Channel)
+	s.memberMap = make(map[string]map[string]*Member, len(r.Guilds))
+
 	// We must track at least the current user for Voice, even
 	// if state is disabled, store the bare essentials.
 	if !se.StateEnabled {
