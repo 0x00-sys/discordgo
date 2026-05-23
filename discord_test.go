@@ -214,6 +214,63 @@ func TestAddHandlerOnceConcurrentDispatch(t *testing.T) {
 	}
 }
 
+func TestSyncHandlerPanicDoesNotCrashDispatch(t *testing.T) {
+	handlerCalled := int32(0)
+	panicHandler := func(s *Session, event *MessageCreate) {
+		panic("handler failed")
+	}
+	nextHandler := func(s *Session, event *MessageCreate) {
+		atomic.AddInt32(&handlerCalled, 1)
+	}
+
+	d := Session{SyncEvents: true}
+	d.AddHandler(panicHandler)
+	d.AddHandler(nextHandler)
+
+	d.handleEvent(messageCreateEventType, &MessageCreate{})
+
+	if atomic.LoadInt32(&handlerCalled) != 1 {
+		t.Fatalf("handlerCalled = %d, want 1", handlerCalled)
+	}
+}
+
+func TestAsyncHandlerPanicDoesNotCrashDispatch(t *testing.T) {
+	handlerCalled := int32(0)
+	panicDone := make(chan struct{})
+	nextDone := make(chan struct{})
+
+	panicHandler := func(s *Session, event *MessageCreate) {
+		defer close(panicDone)
+		panic("handler failed")
+	}
+	nextHandler := func(s *Session, event *MessageCreate) {
+		atomic.AddInt32(&handlerCalled, 1)
+		close(nextDone)
+	}
+
+	d := Session{}
+	d.AddHandler(panicHandler)
+	d.AddHandler(nextHandler)
+
+	d.handleEvent(messageCreateEventType, &MessageCreate{})
+
+	select {
+	case <-panicDone:
+	case <-time.After(time.Second):
+		t.Fatal("panic handler was not called")
+	}
+
+	select {
+	case <-nextDone:
+	case <-time.After(time.Second):
+		t.Fatal("next handler was not called")
+	}
+
+	if atomic.LoadInt32(&handlerCalled) != 1 {
+		t.Fatalf("handlerCalled = %d, want 1", handlerCalled)
+	}
+}
+
 func TestScheduledEvents(t *testing.T) {
 	if dgBot == nil {
 		t.Skip("Skipping, dgBot not set.")
