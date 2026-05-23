@@ -89,6 +89,11 @@ func redactedRequest(req *http.Request) *http.Request {
 	if redacted.Header.Get("Authorization") != "" {
 		redacted.Header.Set("Authorization", redactedValue)
 	}
+	if redacted.URL != nil {
+		if u, err := url.Parse(redactedURL(redacted.URL.String())); err == nil {
+			redacted.URL = u
+		}
+	}
 	return redacted
 }
 
