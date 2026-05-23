@@ -154,6 +154,36 @@ func TestVoiceCloseClearsOpusChannels(t *testing.T) {
 	}
 }
 
+func TestVoiceReconnectStopsWhenUnregistered(t *testing.T) {
+	v := &VoiceConnection{
+		GuildID:   "guild",
+		ChannelID: "channel",
+		LogLevel:  -1,
+		session: &Session{
+			VoiceConnections: make(map[string]*VoiceConnection),
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		v.reconnect()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not stop for an unregistered voice connection")
+	}
+
+	v.RLock()
+	reconnecting := v.reconnecting
+	v.RUnlock()
+	if reconnecting {
+		t.Fatal("reconnecting was not cleared")
+	}
+}
+
 func TestVoiceChangeChannelNilSessionWsConn(t *testing.T) {
 	v := &VoiceConnection{
 		GuildID: "guild",
