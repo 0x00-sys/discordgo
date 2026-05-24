@@ -68,3 +68,38 @@ func TestMultipartBodyWithJSONDefaultsInvalidFileContentType(t *testing.T) {
 		t.Fatalf("invalid content type did not use safe default: %q", bodyText)
 	}
 }
+
+func TestMultipartBodyWithJSONRejectsInvalidFiles(t *testing.T) {
+	tests := []struct {
+		name  string
+		files []*File
+		want  string
+	}{
+		{
+			name:  "nil file",
+			files: []*File{nil},
+			want:  "file at index 0 is nil",
+		},
+		{
+			name: "nil file reader",
+			files: []*File{
+				{
+					Name: "transcript.html",
+				},
+			},
+			want: "file reader at index 0 is nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := MultipartBodyWithJSON(map[string]string{"content": "hello"}, tt.files)
+			if err == nil {
+				t.Fatal("MultipartBodyWithJSON returned nil error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("MultipartBodyWithJSON error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}

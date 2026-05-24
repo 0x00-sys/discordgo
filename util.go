@@ -50,6 +50,15 @@ func MultipartBodyWithJSON(data interface{}, files []*File) (requestContentType 
 	}
 
 	for i, file := range files {
+		if file == nil {
+			err = fmt.Errorf("file at index %d is nil", i)
+			return
+		}
+		if file.Reader == nil {
+			err = fmt.Errorf("file reader at index %d is nil", i)
+			return
+		}
+
 		h := make(textproto.MIMEHeader)
 		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[%d]"; filename="%s"`, i, quoteEscaper.Replace(file.Name)))
 		h.Set("Content-Type", safeFileContentType(file.ContentType))
