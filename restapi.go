@@ -324,7 +324,7 @@ func (s *Session) RequestWithLockedBucket(method, urlStr, contentType string, b 
 func (s *Session) requestConfig(method, urlStr, contentType string, b []byte, options ...RequestOption) (*RequestConfig, error) {
 	req, err := http.NewRequest(method, urlStr, bytes.NewBuffer(b))
 	if err != nil {
-		return nil, err
+		return nil, redactedRequestError(err)
 	}
 
 	// Not used on initial login..
@@ -536,7 +536,7 @@ func redactedHeaderValues(key string, values []string) []string {
 func redactedURL(rawurl string) string {
 	u, err := url.Parse(rawurl)
 	if err != nil {
-		return rawurl
+		return redactedURLString(rawurl)
 	}
 
 	parts := strings.Split(u.Path, "/")
@@ -548,6 +548,42 @@ func redactedURL(rawurl string) string {
 	u.Path = strings.Join(parts, "/")
 
 	return u.String()
+}
+
+func redactedURLString(rawurl string) string {
+	for _, marker := range []string{"/webhooks/", "/interactions/"} {
+		rawurl = redactedURLStringSegment(rawurl, marker)
+	}
+	return rawurl
+}
+
+func redactedURLStringSegment(rawurl, marker string) string {
+	searchStart := 0
+	for {
+		markerIndex := strings.Index(rawurl[searchStart:], marker)
+		if markerIndex == -1 {
+			return rawurl
+		}
+
+		idStart := searchStart + markerIndex + len(marker)
+		idEndOffset := strings.Index(rawurl[idStart:], "/")
+		if idEndOffset == -1 {
+			return rawurl
+		}
+
+		tokenStart := idStart + idEndOffset + 1
+		tokenEnd := len(rawurl)
+		if tokenEndOffset := strings.IndexAny(rawurl[tokenStart:], "/?#"); tokenEndOffset != -1 {
+			tokenEnd = tokenStart + tokenEndOffset
+		}
+		if tokenEnd <= tokenStart {
+			searchStart = tokenStart
+			continue
+		}
+
+		rawurl = rawurl[:tokenStart] + redactedURLValue + rawurl[tokenEnd:]
+		searchStart = tokenStart + len(redactedURLValue)
+	}
 }
 
 func redactedRequestError(err error) error {

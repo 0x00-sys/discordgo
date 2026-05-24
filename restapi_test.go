@@ -768,6 +768,57 @@ func TestRequestTransportErrorRedactsTokenURL(t *testing.T) {
 	}
 }
 
+func TestRequestConfigErrorRedactsInvalidTokenURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		call  func(*Session) error
+	}{
+		{
+			name:  "webhook token",
+			token: "secret%zz-token",
+			call: func(session *Session) error {
+				_, err := session.WebhookExecute("webhook", "secret%zz-token", false, &WebhookParams{Content: "hello"})
+				return err
+			},
+		},
+		{
+			name:  "interaction token",
+			token: "interaction%zz-token",
+			call: func(session *Session) error {
+				return session.InteractionRespond(&Interaction{ID: "interaction", Token: "interaction%zz-token"}, &InteractionResponse{Type: InteractionResponsePong})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = tt.call(session)
+			if err == nil {
+				t.Fatal("error = nil, want invalid URL error")
+			}
+			var urlErr *url.Error
+			if !errors.As(err, &urlErr) {
+				t.Fatalf("error = %T %[1]v, want *url.Error", err)
+			}
+			if strings.Contains(err.Error(), tt.token) {
+				t.Fatalf("request config error leaked token: %q", err.Error())
+			}
+			if strings.Contains(urlErr.URL, tt.token) {
+				t.Fatalf("request config error URL leaked token: %q", urlErr.URL)
+			}
+			if !strings.Contains(urlErr.URL, redactedURLValue) {
+				t.Fatalf("request config error URL = %q, want redacted token", urlErr.URL)
+			}
+		})
+	}
+}
+
 func TestRateLimitEventRedactsWebhookToken(t *testing.T) {
 	session, err := New("")
 	if err != nil {
