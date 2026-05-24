@@ -191,6 +191,22 @@ func TestOpenHandlesHeartbeatAckDuringOpen(t *testing.T) {
 	defer session.Close()
 }
 
+func TestOpenRejectsInvalidHeartbeatInterval(t *testing.T) {
+	server := newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":0}}`))
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	err = openWithTimeout(t, session)
+	if err == nil {
+		t.Fatal("Open returned nil error, want invalid heartbeat interval error")
+	}
+	if !strings.Contains(err.Error(), "invalid gateway heartbeat interval") {
+		t.Fatalf("Open returned error %q, want invalid heartbeat interval", err)
+	}
+}
+
 func TestSessionCloseWithLockedWSMutex(t *testing.T) {
 	server := newCloseFrameTestServer(t)
 	defer server.Close()
@@ -789,6 +805,10 @@ func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 }
 
 func newGatewayOpenTestServer(t *testing.T, startupPackets ...[]byte) *httptest.Server {
+	return newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":1000}}`), startupPackets...)
+}
+
+func newGatewayOpenTestServerWithHello(t *testing.T, hello []byte, startupPackets ...[]byte) *httptest.Server {
 	t.Helper()
 
 	upgrader := websocket.Upgrader{}
@@ -799,7 +819,7 @@ func newGatewayOpenTestServer(t *testing.T, startupPackets ...[]byte) *httptest.
 		}
 		defer conn.Close()
 
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":1000}}`)); err != nil {
+		if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
 			return
 		}
 		if _, _, err := conn.ReadMessage(); err != nil {

@@ -162,6 +162,10 @@ func (s *Session) Open() error {
 		err = fmt.Errorf("error unmarshalling helloOp, %s", err)
 		return err
 	}
+	if h.HeartbeatInterval <= 0 || h.HeartbeatInterval > maxGatewayHeartbeatIntervalMsec {
+		err = fmt.Errorf("invalid gateway heartbeat interval %d", h.HeartbeatInterval)
+		return err
+	}
 
 	// Now we send either an Op 2 Identity if this is a brand new
 	// connection or Op 6 Resume if we are resuming an existing connection.
@@ -451,6 +455,8 @@ type heartbeatOp struct {
 type helloOp struct {
 	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
 }
+
+const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecond
 
 // FailedHeartbeatAcks is the Number of heartbeat intervals to wait until forcing a connection restart.
 const FailedHeartbeatAcks time.Duration = 5 * time.Millisecond
