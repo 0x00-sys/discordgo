@@ -451,10 +451,15 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
 		}
 
+		rateLimit := &RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}
 		if cfg.ShouldRetryOnRateLimit {
-			url := redactedURL(urlStr)
+			if rl.RetryAfter <= 0 {
+				err = &RateLimitError{rateLimit}
+				return
+			}
+			url := rateLimit.URL
 			s.log(LogInformational, "Rate Limiting %s, retry in %v", url, rl.RetryAfter)
-			s.handleEvent(rateLimitEventType, &RateLimit{TooManyRequests: &rl, URL: url})
+			s.handleEvent(rateLimitEventType, rateLimit)
 
 			closeResponseBody()
 			err = sleepWithContext(req.Context(), rl.RetryAfter)
@@ -470,7 +475,7 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 			}
 			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, options...)
 		} else {
-			err = &RateLimitError{&RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}}
+			err = &RateLimitError{rateLimit}
 		}
 	case http.StatusUnauthorized:
 		if strings.Index(s.Token, "Bot ") != 0 {
