@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestPresenceAddRequiresUser(t *testing.T) {
@@ -15,6 +17,242 @@ func TestPresenceAddRequiresUser(t *testing.T) {
 
 	if err := state.PresenceAdd("guild", &Presence{}); !errors.Is(err, ErrStateInvalidData) {
 		t.Fatalf("PresenceAdd returned error %v, want %v", err, ErrStateInvalidData)
+	}
+}
+
+func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{
+			name:  "member add missing member",
+			event: &GuildMemberAdd{},
+		},
+		{
+			name: "member add missing user",
+			event: &GuildMemberAdd{
+				Member: &Member{GuildID: "guild"},
+			},
+		},
+		{
+			name: "member update missing user",
+			event: &GuildMemberUpdate{
+				Member: &Member{GuildID: "guild"},
+			},
+		},
+		{
+			name:  "member remove missing member",
+			event: &GuildMemberRemove{},
+		},
+		{
+			name: "member remove missing user",
+			event: &GuildMemberRemove{
+				Member: &Member{GuildID: "guild"},
+			},
+		},
+		{
+			name: "members chunk nil member",
+			event: &GuildMembersChunk{
+				GuildID: "guild",
+				Members: []*Member{nil},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
+func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{
+			name:  "guild delete missing guild",
+			event: &GuildDelete{},
+		},
+		{
+			name: "role create missing role",
+			event: &GuildRoleCreate{
+				GuildRole: &GuildRole{GuildID: "guild"},
+			},
+		},
+		{
+			name: "role update missing role",
+			event: &GuildRoleUpdate{
+				GuildRole: &GuildRole{GuildID: "guild"},
+			},
+		},
+		{
+			name:  "channel create missing channel",
+			event: &ChannelCreate{},
+		},
+		{
+			name:  "channel update missing channel",
+			event: &ChannelUpdate{},
+		},
+		{
+			name:  "channel delete missing channel",
+			event: &ChannelDelete{},
+		},
+		{
+			name:  "thread create missing thread",
+			event: &ThreadCreate{},
+		},
+		{
+			name:  "thread update missing thread",
+			event: &ThreadUpdate{},
+		},
+		{
+			name:  "thread delete missing thread",
+			event: &ThreadDelete{},
+		},
+		{
+			name:  "thread member update missing member",
+			event: &ThreadMemberUpdate{},
+		},
+		{
+			name: "thread list sync nil thread",
+			event: &ThreadListSync{
+				GuildID: "guild",
+				Threads: []*Channel{nil},
+			},
+		},
+		{
+			name: "thread list sync nil member",
+			event: &ThreadListSync{
+				GuildID: "guild",
+				Members: []*ThreadMember{
+					nil,
+				},
+			},
+		},
+		{
+			name: "thread members update missing user",
+			event: &ThreadMembersUpdate{
+				ID:      "thread",
+				GuildID: "guild",
+				AddedMembers: []AddedThreadMember{
+					{
+						ThreadMember: &ThreadMember{
+							ID:     "thread",
+							UserID: "user",
+						},
+						Member: &Member{GuildID: "guild"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newStateForMalformedEventTests(t)
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
+func TestSessionOnInterfaceHandlesMalformedGuildPayloads(t *testing.T) {
+	session := &Session{
+		State:        NewState(),
+		StateEnabled: true,
+	}
+
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{
+			name: "ready nil guild",
+			event: &Ready{
+				Guilds: []*Guild{nil},
+			},
+		},
+		{
+			name:  "guild create missing guild",
+			event: &GuildCreate{},
+		},
+		{
+			name:  "guild update missing guild",
+			event: &GuildUpdate{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("onInterface panicked: %v", r)
+				}
+			}()
+			session.onInterface(tt.event)
+		})
+	}
+}
+
+func TestSessionOnEventHandlesNullStateDispatch(t *testing.T) {
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.State = newStateForMalformedEventTests(t)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("onEvent panicked: %v", r)
+		}
+	}()
+
+	_, err = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"CHANNEL_CREATE","d":null}`))
+	if err != nil {
+		t.Fatalf("onEvent returned error: %v", err)
+	}
+}
+
+func newStateForMalformedEventTests(t *testing.T) *State {
+	t.Helper()
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{ID: "role"},
+		},
+		Channels: []*Channel{
+			{ID: "channel", GuildID: "guild"},
+		},
+		Threads: []*Channel{
+			{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	return state
+}
+
+func assertStateInvalidData(t *testing.T, f func() error) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("OnInterface panicked: %v", r)
+		}
+	}()
+	if err := f(); !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("OnInterface returned error %v, want %v", err, ErrStateInvalidData)
 	}
 }
 
