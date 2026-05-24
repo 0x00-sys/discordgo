@@ -1523,6 +1523,30 @@ func TestRedactedRESTBodyMultipart(t *testing.T) {
 	}
 }
 
+func TestRedactedRESTBodyFormURLEncoded(t *testing.T) {
+	body := []byte("grant_type=authorization_code&client_secret=client-secret-value&access_token=access-value&refresh_token=refresh-value&password=password-value&code=code-value&safe=ok")
+
+	got := redactedRESTBody(body, "application/x-www-form-urlencoded; charset=utf-8")
+	for _, secret := range []string{"client-secret-value", "access-value", "refresh-value", "password-value"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redactedRESTBody() leaked %q in %s", secret, got)
+		}
+	}
+
+	values, err := url.ParseQuery(got)
+	if err != nil {
+		t.Fatalf("redactedRESTBody() returned invalid form body %q: %v", got, err)
+	}
+	for _, key := range []string{"client_secret", "access_token", "refresh_token", "password"} {
+		if values.Get(key) != redactedValue {
+			t.Fatalf("redactedRESTBody() %s = %q, want %q", key, values.Get(key), redactedValue)
+		}
+	}
+	if values.Get("safe") != "ok" || values.Get("code") != "code-value" {
+		t.Fatalf("redactedRESTBody() = %s, want non-secret fields preserved", got)
+	}
+}
+
 // roundTripperFunc implements http.RoundTripper.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
