@@ -679,6 +679,9 @@ func VerifyInteraction(r *http.Request, key ed25519.PublicKey) bool {
 	if len(sig) != ed25519.SignatureSize {
 		return false
 	}
+	if len(key) != ed25519.PublicKeySize {
+		return false
+	}
 
 	timestamp := r.Header.Get("X-Signature-Timestamp")
 	if timestamp == "" {
