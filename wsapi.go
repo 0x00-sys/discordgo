@@ -76,6 +76,8 @@ func (s *Session) Open() error {
 	s.Lock()
 	defer s.Unlock()
 
+	s.ensureReconnectCancelLocked()
+
 	// If the websock is already open, bail out here.
 	if s.wsConn != nil {
 		return ErrWSAlreadyOpen
@@ -1325,6 +1327,12 @@ func (s *Session) reconnectCancelSignal() <-chan struct{} {
 	return s.reconnectCancel
 }
 
+func (s *Session) ensureReconnectCancelLocked() {
+	if s.reconnectCancel == nil || reconnectCanceled(s.reconnectCancel) {
+		s.reconnectCancel = make(chan struct{})
+	}
+}
+
 func reconnectCanceled(cancel <-chan struct{}) bool {
 	if cancel == nil {
 		return false
@@ -1346,7 +1354,6 @@ func (s *Session) cancelReconnectLocked() {
 			close(s.reconnectCancel)
 		}
 	}
-	s.reconnectCancel = make(chan struct{})
 }
 
 // Close closes a websocket and stops all listening/heartbeat goroutines.

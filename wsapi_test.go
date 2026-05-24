@@ -967,6 +967,78 @@ func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 	}
 }
 
+func TestReconnectDoesNotStartAfterClose(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	attempted := make(chan struct{}, 1)
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			select {
+			case attempted <- struct{}{}:
+			default:
+			}
+			return nil, errors.New("dial failed")
+		},
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-attempted:
+		_ = session.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("reconnect did not stop after second Close")
+		}
+		t.Fatal("reconnect dialed after Close")
+	case <-time.After(200 * time.Millisecond):
+		_ = session.Close()
+		t.Fatal("reconnect did not return after Close")
+	}
+}
+
+func TestOpenAfterCloseCanDial(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	var attempts int32
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			atomic.AddInt32(&attempts, 1)
+			return nil, errors.New("dial failed")
+		},
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	if err := session.Open(); err == nil {
+		t.Fatal("Open returned nil error, want dial failure")
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("dial attempts = %d, want 1", got)
+	}
+}
+
 func newGatewayOpenTestServer(t *testing.T, startupPackets ...[]byte) *httptest.Server {
 	return newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":1000}}`), startupPackets...)
 }
