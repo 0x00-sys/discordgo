@@ -14,6 +14,14 @@ import (
 	"time"
 )
 
+func resetSharedUnauthenticatedGlobal(t *testing.T) {
+	t.Helper()
+	atomic.StoreInt64(sharedUnauthenticatedGlobal, 0)
+	t.Cleanup(func() {
+		atomic.StoreInt64(sharedUnauthenticatedGlobal, 0)
+	})
+}
+
 // This test takes ~2 seconds to run
 func TestRatelimitReset(t *testing.T) {
 	rl := NewRatelimiter()
@@ -319,6 +327,8 @@ func TestWebhookTokenEndpointsBypassBotGlobalRateLimit(t *testing.T) {
 }
 
 func TestWebhookTokenGlobalRateLimitDoesNotSetBotGlobal(t *testing.T) {
+	resetSharedUnauthenticatedGlobal(t)
+
 	session, err := New("Bot secret")
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -353,6 +363,154 @@ func TestWebhookTokenGlobalRateLimitDoesNotSetBotGlobal(t *testing.T) {
 
 	if global := atomic.LoadInt64(session.Ratelimiter.global); global != 0 {
 		t.Fatalf("bot global reset = %d, want 0", global)
+	}
+}
+
+func TestWebhookTokenGlobalRateLimitBlocksOtherUnauthenticatedBuckets(t *testing.T) {
+	resetSharedUnauthenticatedGlobal(t)
+
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization header = %q, want empty", got)
+		}
+
+		if atomic.AddInt32(&requests, 1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "60")
+			w.Header().Set("X-RateLimit-Global", "true")
+			w.Header().Set("X-RateLimit-Scope", "global")
+			w.Header().Set("X-RateLimit-Reset-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"rate limited","retry_after":60,"global":true}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	oldEndpointWebhooks := EndpointWebhooks
+	oldEndpointAPI := EndpointAPI
+	EndpointWebhooks = server.URL + "/webhooks/"
+	EndpointAPI = server.URL + "/"
+	defer func() {
+		EndpointWebhooks = oldEndpointWebhooks
+		EndpointAPI = oldEndpointAPI
+	}()
+
+	_, err = session.WebhookExecute("webhook-one", "token-one", false, &WebhookParams{
+		Content: "hello",
+	}, WithRetryOnRatelimit(false))
+	if err == nil {
+		t.Fatal("WebhookExecute returned nil error, want rate limit error")
+	}
+
+	if global := atomic.LoadInt64(session.Ratelimiter.global); global != 0 {
+		t.Fatalf("bot global reset = %d, want 0", global)
+	}
+	if global := atomic.LoadInt64(session.Ratelimiter.unauthenticatedGlobal); global == 0 {
+		t.Fatal("unauthenticated global reset was not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	_, err = session.WebhookExecute("webhook-two", "token-two", false, &WebhookParams{
+		Content: "hello",
+	}, WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WebhookExecute returned %v, want context deadline exceeded", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("HTTP request count = %d, want second request blocked before transport", got)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	err = session.InteractionRespond(&Interaction{
+		ID:    "interaction",
+		Token: "interaction-token",
+	}, &InteractionResponse{
+		Type: InteractionResponsePong,
+	}, WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("InteractionRespond returned %v, want context deadline exceeded", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("HTTP request count = %d, want interaction blocked before transport", got)
+	}
+}
+
+func TestWebhookTokenGlobalRateLimitBlocksOtherSessions(t *testing.T) {
+	resetSharedUnauthenticatedGlobal(t)
+
+	sessionOne, err := New("Bot one")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	sessionTwo, err := New("Bot two")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization header = %q, want empty", got)
+		}
+
+		if atomic.AddInt32(&requests, 1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "60")
+			w.Header().Set("X-RateLimit-Global", "true")
+			w.Header().Set("X-RateLimit-Scope", "global")
+			w.Header().Set("X-RateLimit-Reset-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"rate limited","retry_after":60,"global":true}`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	oldEndpointWebhooks := EndpointWebhooks
+	EndpointWebhooks = server.URL + "/webhooks/"
+	defer func() {
+		EndpointWebhooks = oldEndpointWebhooks
+	}()
+
+	_, err = sessionOne.WebhookExecute("webhook-one", "token-one", false, &WebhookParams{
+		Content: "hello",
+	}, WithRetryOnRatelimit(false))
+	if err == nil {
+		t.Fatal("WebhookExecute returned nil error, want rate limit error")
+	}
+	if global := atomic.LoadInt64(sessionOne.Ratelimiter.global); global != 0 {
+		t.Fatalf("session one bot global reset = %d, want 0", global)
+	}
+	if global := atomic.LoadInt64(sessionTwo.Ratelimiter.global); global != 0 {
+		t.Fatalf("session two bot global reset = %d, want 0", global)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	_, err = sessionTwo.WebhookExecute("webhook-two", "token-two", false, &WebhookParams{
+		Content: "hello",
+	}, WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WebhookExecute returned %v, want context deadline exceeded", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("HTTP request count = %d, want second request blocked before transport", got)
 	}
 }
 
