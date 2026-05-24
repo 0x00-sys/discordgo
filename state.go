@@ -649,6 +649,33 @@ func (s *State) Role(guildID, roleID string) (*Role, error) {
 	return nil, ErrStateNotFound
 }
 
+func (s *State) replaceChannel(oldChannel, newChannel *Channel) {
+	for i, channel := range s.PrivateChannels {
+		if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
+			s.PrivateChannels[i] = newChannel
+			return
+		}
+	}
+
+	for _, guild := range s.Guilds {
+		if guild == nil {
+			continue
+		}
+		for i, channel := range guild.Channels {
+			if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
+				guild.Channels[i] = newChannel
+				return
+			}
+		}
+		for i, thread := range guild.Threads {
+			if thread == oldChannel || (thread != nil && thread.ID == newChannel.ID) {
+				guild.Threads[i] = newChannel
+				return
+			}
+		}
+	}
+}
+
 // ChannelAdd adds a channel to the current world state, or
 // updates it if it already exists.
 // Channels may exist either as PrivateChannels or inside
@@ -663,17 +690,20 @@ func (s *State) ChannelAdd(channel *Channel) error {
 
 	// If the channel exists, replace it
 	if c, ok := s.channelMap[channel.ID]; ok {
-		if channel.Messages == nil {
-			channel.Messages = c.Messages
+		channelCopy := *channel
+		if channelCopy.Messages == nil {
+			channelCopy.Messages = c.Messages
 		}
-		if channel.PermissionOverwrites == nil {
-			channel.PermissionOverwrites = c.PermissionOverwrites
+		if channelCopy.PermissionOverwrites == nil {
+			channelCopy.PermissionOverwrites = c.PermissionOverwrites
 		}
-		if channel.ThreadMetadata == nil {
-			channel.ThreadMetadata = c.ThreadMetadata
+		if channelCopy.ThreadMetadata == nil {
+			channelCopy.ThreadMetadata = c.ThreadMetadata
 		}
 
-		*c = *channel
+		channel = &channelCopy
+		s.channelMap[channel.ID] = channel
+		s.replaceChannel(c, channel)
 		return nil
 	}
 

@@ -1109,6 +1109,173 @@ func TestThreadMessagePermissionsUseThreadSendPermission(t *testing.T) {
 	}
 }
 
+func TestChannelAddReplacesCachedPointer(t *testing.T) {
+	state := NewState()
+	overwrite := &PermissionOverwrite{ID: "role", Type: PermissionOverwriteTypeRole}
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:                   "channel",
+				GuildID:              "guild",
+				Name:                 "old",
+				Type:                 ChannelTypeGuildText,
+				PermissionOverwrites: []*PermissionOverwrite{overwrite},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldChannel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	err = state.ChannelAdd(&Channel{
+		ID:      "channel",
+		GuildID: "guild",
+		Name:    "new",
+		Type:    ChannelTypeGuildText,
+	})
+	if err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+
+	updatedChannel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error after update: %v", err)
+	}
+	if updatedChannel == oldChannel {
+		t.Fatal("ChannelAdd reused the previously cached channel pointer")
+	}
+	if oldChannel.Name != "old" {
+		t.Fatalf("old channel name = %q, want old", oldChannel.Name)
+	}
+	if updatedChannel.Name != "new" {
+		t.Fatalf("updated channel name = %q, want new", updatedChannel.Name)
+	}
+	if len(updatedChannel.PermissionOverwrites) != 1 || updatedChannel.PermissionOverwrites[0] != overwrite {
+		t.Fatal("updated channel did not preserve permission overwrites")
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.Channels) != 1 {
+		t.Fatalf("len(guild.Channels) = %d, want 1", len(guild.Channels))
+	}
+	if guild.Channels[0] != updatedChannel {
+		t.Fatal("guild channel slice does not point at the updated cached channel")
+	}
+}
+
+func TestThreadChannelAddReplacesCachedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:       "thread",
+				GuildID:  "guild",
+				ParentID: "parent",
+				Name:     "old",
+				Type:     ChannelTypeGuildPublicThread,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	err = state.ChannelAdd(&Channel{
+		ID:       "thread",
+		GuildID:  "guild",
+		ParentID: "parent",
+		Name:     "new",
+		Type:     ChannelTypeGuildPublicThread,
+	})
+	if err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+
+	updatedThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error after update: %v", err)
+	}
+	if updatedThread == oldThread {
+		t.Fatal("ChannelAdd reused the previously cached thread pointer")
+	}
+	if oldThread.Name != "old" {
+		t.Fatalf("old thread name = %q, want old", oldThread.Name)
+	}
+	if updatedThread.Name != "new" {
+		t.Fatalf("updated thread name = %q, want new", updatedThread.Name)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.Threads) != 1 {
+		t.Fatalf("len(guild.Threads) = %d, want 1", len(guild.Threads))
+	}
+	if guild.Threads[0] != updatedThread {
+		t.Fatal("guild thread slice does not point at the updated cached thread")
+	}
+}
+
+func TestChannelAddDoesNotRaceReturnedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Name:    "old",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	channel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = channel.Name
+			_ = channel.Topic
+			_ = channel.PermissionOverwrites
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.ChannelAdd(&Channel{
+			ID:      "channel",
+			GuildID: "guild",
+			Name:    strconv.Itoa(i),
+			Topic:   strconv.Itoa(i),
+			Type:    ChannelTypeGuildText,
+		})
+		if err != nil {
+			t.Fatalf("ChannelAdd returned error: %v", err)
+		}
+	}
+	<-done
+}
+
 func TestMessageEventsFillMissingGuildIDFromChannelState(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
