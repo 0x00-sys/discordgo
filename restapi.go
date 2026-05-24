@@ -555,8 +555,12 @@ func redactedRESTBody(body []byte, contentTypes ...string) string {
 	}
 
 	for _, contentType := range contentTypes {
-		if strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		contentType = strings.ToLower(contentType)
+		if strings.HasPrefix(contentType, "multipart/form-data") {
 			return redactedMultipartBody
+		}
+		if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+			return redactedFormBody(body)
 		}
 	}
 
@@ -573,6 +577,24 @@ func redactedRESTBody(body []byte, contentTypes ...string) string {
 	}
 
 	return string(b)
+}
+
+func redactedFormBody(body []byte) string {
+	values, err := url.ParseQuery(string(body))
+	if err != nil {
+		return string(body)
+	}
+
+	for key := range values {
+		if !isRESTSecretKey(key) {
+			continue
+		}
+		for i := range values[key] {
+			values[key][i] = redactedValue
+		}
+	}
+
+	return values.Encode()
 }
 
 func redactRESTValue(v interface{}) {
