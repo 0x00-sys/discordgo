@@ -574,6 +574,110 @@ func TestPresenceReadUsesStateLock(t *testing.T) {
 	}
 }
 
+func TestPresenceAddReplacesCachedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Presences: []*Presence{
+			{
+				User:         &User{ID: "user", Username: "old", Avatar: "avatar"},
+				Status:       StatusOnline,
+				ClientStatus: ClientStatus{Desktop: StatusOnline},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldPresence, err := state.Presence("guild", "user")
+	if err != nil {
+		t.Fatalf("Presence returned error: %v", err)
+	}
+
+	err = state.PresenceAdd("guild", &Presence{
+		User:         &User{ID: "user", Username: "new"},
+		Status:       StatusIdle,
+		ClientStatus: ClientStatus{Mobile: StatusIdle},
+	})
+	if err != nil {
+		t.Fatalf("PresenceAdd returned error: %v", err)
+	}
+
+	updatedPresence, err := state.Presence("guild", "user")
+	if err != nil {
+		t.Fatalf("Presence returned error after update: %v", err)
+	}
+	if updatedPresence == oldPresence {
+		t.Fatal("PresenceAdd reused the previously cached presence pointer")
+	}
+	if updatedPresence.User == oldPresence.User {
+		t.Fatal("PresenceAdd reused the previously cached user pointer")
+	}
+	if oldPresence.Status != StatusOnline {
+		t.Fatalf("old presence status = %q, want %q", oldPresence.Status, StatusOnline)
+	}
+	if oldPresence.User.Username != "old" {
+		t.Fatalf("old presence username = %q, want old", oldPresence.User.Username)
+	}
+	if updatedPresence.Status != StatusIdle {
+		t.Fatalf("updated presence status = %q, want %q", updatedPresence.Status, StatusIdle)
+	}
+	if updatedPresence.User.Username != "new" {
+		t.Fatalf("updated presence username = %q, want new", updatedPresence.User.Username)
+	}
+	if updatedPresence.User.Avatar != "avatar" {
+		t.Fatalf("updated presence avatar = %q, want avatar", updatedPresence.User.Avatar)
+	}
+	if updatedPresence.ClientStatus.Desktop != StatusOnline {
+		t.Fatalf("updated desktop status = %q, want %q", updatedPresence.ClientStatus.Desktop, StatusOnline)
+	}
+	if updatedPresence.ClientStatus.Mobile != StatusIdle {
+		t.Fatalf("updated mobile status = %q, want %q", updatedPresence.ClientStatus.Mobile, StatusIdle)
+	}
+}
+
+func TestPresenceAddDoesNotRaceReturnedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Presences: []*Presence{
+			{
+				User:   &User{ID: "user", Username: "old"},
+				Status: StatusOnline,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	presence, err := state.Presence("guild", "user")
+	if err != nil {
+		t.Fatalf("Presence returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = presence.Status
+			_ = presence.User.Username
+			_ = presence.ClientStatus.Desktop
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.PresenceAdd("guild", &Presence{
+			User:         &User{ID: "user", Username: strconv.Itoa(i)},
+			Status:       StatusIdle,
+			ClientStatus: ClientStatus{Desktop: StatusIdle},
+		})
+		if err != nil {
+			t.Fatalf("PresenceAdd returned error: %v", err)
+		}
+	}
+	<-done
+}
+
 func TestPresenceUpdateRequiresUserForMemberTracking(t *testing.T) {
 	state := NewState()
 	state.TrackPresences = false
@@ -762,6 +866,102 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	if member.User.Username != "new" {
 		t.Fatalf("cached member username = %q, want %q", member.User.Username, "new")
 	}
+}
+
+func TestMemberAddReplacesCachedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user", Username: "old"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldMember, err := state.Member("guild", "user")
+	if err != nil {
+		t.Fatalf("Member returned error: %v", err)
+	}
+
+	err = state.MemberAdd(&Member{
+		GuildID: "guild",
+		User:    &User{ID: "user", Username: "new"},
+	})
+	if err != nil {
+		t.Fatalf("MemberAdd returned error: %v", err)
+	}
+
+	updatedMember, err := state.Member("guild", "user")
+	if err != nil {
+		t.Fatalf("Member returned error after update: %v", err)
+	}
+	if updatedMember == oldMember {
+		t.Fatal("MemberAdd reused the previously cached member pointer")
+	}
+	if updatedMember.User == oldMember.User {
+		t.Fatal("MemberAdd reused the previously cached user pointer")
+	}
+	if oldMember.User.Username != "old" {
+		t.Fatalf("old member username = %q, want old", oldMember.User.Username)
+	}
+	if updatedMember.User.Username != "new" {
+		t.Fatalf("updated member username = %q, want new", updatedMember.User.Username)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.Members) != 1 {
+		t.Fatalf("len(guild.Members) = %d, want 1", len(guild.Members))
+	}
+	if guild.Members[0] != updatedMember {
+		t.Fatal("guild member slice does not point at the updated cached member")
+	}
+}
+
+func TestMemberAddDoesNotRaceReturnedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user", Username: "old"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	member, err := state.Member("guild", "user")
+	if err != nil {
+		t.Fatalf("Member returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = member.JoinedAt
+			_ = member.User.Username
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.MemberAdd(&Member{
+			GuildID: "guild",
+			User:    &User{ID: "user", Username: strconv.Itoa(i)},
+		})
+		if err != nil {
+			t.Fatalf("MemberAdd returned error: %v", err)
+		}
+	}
+	<-done
 }
 
 func TestReadyIndexesThreads(t *testing.T) {

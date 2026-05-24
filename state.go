@@ -151,6 +151,24 @@ func threadWithoutMembers(thread *Channel) *Channel {
 	return &threadCopy
 }
 
+func copyMember(member *Member) *Member {
+	memberCopy := *member
+	if member.User != nil {
+		userCopy := *member.User
+		memberCopy.User = &userCopy
+	}
+	return &memberCopy
+}
+
+func copyPresence(presence *Presence) *Presence {
+	presenceCopy := *presence
+	if presence.User != nil {
+		userCopy := *presence.User
+		presenceCopy.User = &userCopy
+	}
+	return &presenceCopy
+}
+
 // GuildAdd adds a guild to the current world state, or
 // updates it if it already exists.
 func (s *State) GuildAdd(guild *Guild) error {
@@ -333,46 +351,49 @@ func (s *State) presenceAdd(guildID string, presence *Presence) error {
 		if p.User.ID == presence.User.ID {
 			//guild.Presences[i] = presence
 
+			updated := copyPresence(p)
+
 			//Update status
-			guild.Presences[i].Activities = presence.Activities
+			updated.Activities = presence.Activities
 			if presence.Status != "" {
-				guild.Presences[i].Status = presence.Status
+				updated.Status = presence.Status
 			}
 			if presence.ClientStatus.Desktop != "" {
-				guild.Presences[i].ClientStatus.Desktop = presence.ClientStatus.Desktop
+				updated.ClientStatus.Desktop = presence.ClientStatus.Desktop
 			}
 			if presence.ClientStatus.Mobile != "" {
-				guild.Presences[i].ClientStatus.Mobile = presence.ClientStatus.Mobile
+				updated.ClientStatus.Mobile = presence.ClientStatus.Mobile
 			}
 			if presence.ClientStatus.Web != "" {
-				guild.Presences[i].ClientStatus.Web = presence.ClientStatus.Web
+				updated.ClientStatus.Web = presence.ClientStatus.Web
 			}
 
 			//Update the optionally sent user information
 			//ID Is a mandatory field so you should not need to check if it is empty
-			guild.Presences[i].User.ID = presence.User.ID
+			updated.User.ID = presence.User.ID
 
 			if presence.User.Avatar != "" {
-				guild.Presences[i].User.Avatar = presence.User.Avatar
+				updated.User.Avatar = presence.User.Avatar
 			}
 			if presence.User.Discriminator != "" {
-				guild.Presences[i].User.Discriminator = presence.User.Discriminator
+				updated.User.Discriminator = presence.User.Discriminator
 			}
 			if presence.User.Email != "" {
-				guild.Presences[i].User.Email = presence.User.Email
+				updated.User.Email = presence.User.Email
 			}
 			if presence.User.Token != "" {
-				guild.Presences[i].User.Token = presence.User.Token
+				updated.User.Token = presence.User.Token
 			}
 			if presence.User.Username != "" {
-				guild.Presences[i].User.Username = presence.User.Username
+				updated.User.Username = presence.User.Username
 			}
 
+			guild.Presences[i] = updated
 			return nil
 		}
 	}
 
-	guild.Presences = append(guild.Presences, presence)
+	guild.Presences = append(guild.Presences, copyPresence(presence))
 	return nil
 }
 
@@ -461,6 +482,8 @@ func (s *State) memberAdd(member *Member) error {
 		return ErrStateNotFound
 	}
 
+	member = copyMember(member)
+
 	m, ok := members[member.User.ID]
 	if !ok {
 		members[member.User.ID] = member
@@ -471,7 +494,14 @@ func (s *State) memberAdd(member *Member) error {
 		if member.JoinedAt.IsZero() {
 			member.JoinedAt = m.JoinedAt
 		}
-		*m = *member
+		members[member.User.ID] = member
+		for i, guildMember := range guild.Members {
+			if guildMember == m || (guildMember != nil && guildMember.User != nil && guildMember.User.ID == member.User.ID) {
+				guild.Members[i] = member
+				return nil
+			}
+		}
+		guild.Members = append(guild.Members, member)
 	}
 	return nil
 }
