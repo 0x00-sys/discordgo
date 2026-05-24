@@ -1517,6 +1517,9 @@ func (s *Session) GuildRoleCreate(guildID string, data *RoleParams, options ...R
 // roleID    : The ID of a Role.
 // data 		 : Updated Role data.
 func (s *Session) GuildRoleEdit(guildID, roleID string, data *RoleParams, options ...RequestOption) (st *Role, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("role data cannot be nil")
+	}
 
 	// Prevent sending a color int that is too big.
 	if data.Color != nil && *data.Color > 0xFFFFFF {
@@ -2146,10 +2149,26 @@ func (s *Session) ChannelMessageSend(channelID string, content string, options .
 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "%0D", "\n", "%0A")
 
+func setEmbedTypes(embeds []*MessageEmbed) error {
+	for _, embed := range embeds {
+		if embed == nil {
+			return fmt.Errorf("message embed cannot be nil")
+		}
+		if embed.Type == "" {
+			embed.Type = "rich"
+		}
+	}
+	return nil
+}
+
 // ChannelMessageSendComplex sends a message to the given channel.
 // channelID : The ID of a Channel.
 // data      : The message struct to send.
 func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend, options ...RequestOption) (st *Message, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("message send data cannot be nil")
+	}
+
 	// TODO: Remove this when compatibility is not required.
 	if data.Embed != nil {
 		if data.Embeds == nil {
@@ -2160,10 +2179,8 @@ func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend,
 		}
 	}
 
-	for _, embed := range data.Embeds {
-		if embed.Type == "" {
-			embed.Type = "rich"
-		}
+	if err = setEmbedTypes(data.Embeds); err != nil {
+		return
 	}
 	endpoint := EndpointChannelMessages(channelID)
 
@@ -2277,6 +2294,10 @@ func (s *Session) ChannelMessageEdit(channelID, messageID, content string, optio
 // ChannelMessageEditComplex edits an existing message, replacing it entirely with
 // the given MessageEdit struct
 func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOption) (st *Message, err error) {
+	if m == nil {
+		return nil, fmt.Errorf("message edit data cannot be nil")
+	}
+
 	// TODO: Remove this when compatibility is not required.
 	if m.Embed != nil {
 		if m.Embeds == nil {
@@ -2288,10 +2309,8 @@ func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOp
 	}
 
 	if m.Embeds != nil {
-		for _, embed := range *m.Embeds {
-			if embed.Type == "" {
-				embed.Type = "rich"
-			}
+		if err = setEmbedTypes(*m.Embeds); err != nil {
+			return
 		}
 	}
 
@@ -2842,6 +2861,10 @@ func (s *Session) WebhookDeleteWithToken(webhookID, token string, options ...Req
 }
 
 func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID string, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("webhook data cannot be nil")
+	}
+
 	uri := EndpointWebhookToken(webhookID, token)
 	options = withoutAuthorizationOptions(options)
 
@@ -2878,6 +2901,10 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 }
 
 func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("webhook data cannot be nil")
+	}
+
 	uri := EndpointWebhookToken(appID, token)
 	options = withoutAuthorizationOptions(options)
 
@@ -2962,6 +2989,10 @@ func (s *Session) interactionWebhookMessage(appID, token, messageID string, opti
 // token     : The auth token for the webhook
 // messageID : The ID of message to edit
 func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("webhook edit data cannot be nil")
+	}
+
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 	bucketID := webhookMessageBucketID(webhookID)
 	options = withoutAuthorizationOptions(options)
@@ -2990,6 +3021,10 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 }
 
 func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("webhook edit data cannot be nil")
+	}
+
 	uri := EndpointWebhookMessage(appID, token, messageID)
 	bucketID := interactionWebhookMessageBucketID(appID, token)
 	options = withoutAuthorizationOptions(options)
@@ -3214,6 +3249,13 @@ func (s *Session) ThreadStart(channelID, name string, typ ChannelType, archiveDu
 // threadData  : Parameters of the thread.
 // messageData : Parameters of the starting message.
 func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadStart, messageData *MessageSend, options ...RequestOption) (th *Channel, err error) {
+	if threadData == nil {
+		return nil, fmt.Errorf("thread data cannot be nil")
+	}
+	if messageData == nil {
+		return nil, fmt.Errorf("message send data cannot be nil")
+	}
+
 	endpoint := EndpointChannelThreads(channelID)
 
 	// TODO: Remove this when compatibility is not required.
@@ -3226,10 +3268,8 @@ func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadSt
 		}
 	}
 
-	for _, embed := range messageData.Embeds {
-		if embed.Type == "" {
-			embed.Type = "rich"
-		}
+	if err = setEmbedTypes(messageData.Embeds); err != nil {
+		return
 	}
 
 	// TODO: Remove this when compatibility is not required.
@@ -3507,6 +3547,10 @@ func (s *Session) ThreadsPrivateJoinedArchived(channelID string, before *time.Ti
 // guildID     : Guild ID to create guild-specific application command. If empty - creates global application command.
 // cmd         : New application command data.
 func (s *Session) ApplicationCommandCreate(appID string, guildID string, cmd *ApplicationCommand, options ...RequestOption) (ccmd *ApplicationCommand, err error) {
+	if cmd == nil {
+		return nil, fmt.Errorf("application command data cannot be nil")
+	}
+
 	endpoint := EndpointApplicationGlobalCommands(appID)
 	if guildID != "" {
 		endpoint = EndpointApplicationGuildCommands(appID, guildID)
@@ -3528,6 +3572,10 @@ func (s *Session) ApplicationCommandCreate(appID string, guildID string, cmd *Ap
 // guildID     : Guild ID to edit guild-specific application command. If empty - edits global application command.
 // cmd         : Updated application command data.
 func (s *Session) ApplicationCommandEdit(appID, guildID, cmdID string, cmd *ApplicationCommand, options ...RequestOption) (updated *ApplicationCommand, err error) {
+	if cmd == nil {
+		return nil, fmt.Errorf("application command data cannot be nil")
+	}
+
 	endpoint := EndpointApplicationGlobalCommand(appID, cmdID)
 	if guildID != "" {
 		endpoint = EndpointApplicationGuildCommand(appID, guildID, cmdID)
@@ -3680,6 +3728,13 @@ func (s *Session) ApplicationCommandPermissionsBatchEdit(appID, guildID string, 
 // interaction : Interaction instance.
 // resp        : Response message data.
 func (s *Session) InteractionRespond(interaction *Interaction, resp *InteractionResponse, options ...RequestOption) error {
+	if interaction == nil {
+		return fmt.Errorf("interaction cannot be nil")
+	}
+	if resp == nil {
+		return fmt.Errorf("interaction response cannot be nil")
+	}
+
 	endpoint := EndpointInteractionResponse(interaction.ID, interaction.Token)
 	bucketID := interactionResponseBucketID(interaction.ID)
 	options = withoutAuthorizationOptions(options)
@@ -3701,6 +3756,10 @@ func (s *Session) InteractionRespond(interaction *Interaction, resp *Interaction
 // InteractionResponse gets the response to an interaction.
 // interaction : Interaction instance.
 func (s *Session) InteractionResponse(interaction *Interaction, options ...RequestOption) (*Message, error) {
+	if interaction == nil {
+		return nil, fmt.Errorf("interaction cannot be nil")
+	}
+
 	return s.interactionWebhookMessage(interaction.AppID, interaction.Token, "@original", options...)
 }
 
@@ -3708,12 +3767,20 @@ func (s *Session) InteractionResponse(interaction *Interaction, options ...Reque
 // interaction : Interaction instance.
 // newresp     : Updated response message data.
 func (s *Session) InteractionResponseEdit(interaction *Interaction, newresp *WebhookEdit, options ...RequestOption) (*Message, error) {
+	if interaction == nil {
+		return nil, fmt.Errorf("interaction cannot be nil")
+	}
+
 	return s.interactionWebhookMessageEdit(interaction.AppID, interaction.Token, "@original", newresp, options...)
 }
 
 // InteractionResponseDelete deletes the response to an interaction.
 // interaction : Interaction instance.
 func (s *Session) InteractionResponseDelete(interaction *Interaction, options ...RequestOption) error {
+	if interaction == nil {
+		return fmt.Errorf("interaction cannot be nil")
+	}
+
 	return s.interactionWebhookMessageDelete(interaction.AppID, interaction.Token, "@original", options...)
 }
 
@@ -3722,6 +3789,10 @@ func (s *Session) InteractionResponseDelete(interaction *Interaction, options ..
 // wait        : Waits for server confirmation of message send and ensures that the return struct is populated (it is nil otherwise)
 // data        : Data of the message to send.
 func (s *Session) FollowupMessageCreate(interaction *Interaction, wait bool, data *WebhookParams, options ...RequestOption) (*Message, error) {
+	if interaction == nil {
+		return nil, fmt.Errorf("interaction cannot be nil")
+	}
+
 	return s.interactionWebhookExecute(interaction.AppID, interaction.Token, wait, data, options...)
 }
 
@@ -3730,6 +3801,10 @@ func (s *Session) FollowupMessageCreate(interaction *Interaction, wait bool, dat
 // messageID   : The followup message ID.
 // data        : Data to update the message
 func (s *Session) FollowupMessageEdit(interaction *Interaction, messageID string, data *WebhookEdit, options ...RequestOption) (*Message, error) {
+	if interaction == nil {
+		return nil, fmt.Errorf("interaction cannot be nil")
+	}
+
 	return s.interactionWebhookMessageEdit(interaction.AppID, interaction.Token, messageID, data, options...)
 }
 
@@ -3737,6 +3812,10 @@ func (s *Session) FollowupMessageEdit(interaction *Interaction, messageID string
 // interaction : Interaction instance.
 // messageID   : The followup message ID.
 func (s *Session) FollowupMessageDelete(interaction *Interaction, messageID string, options ...RequestOption) error {
+	if interaction == nil {
+		return fmt.Errorf("interaction cannot be nil")
+	}
+
 	return s.interactionWebhookMessageDelete(interaction.AppID, interaction.Token, messageID, options...)
 }
 
