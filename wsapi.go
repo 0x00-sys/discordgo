@@ -449,6 +449,10 @@ func shouldStartNewGatewaySessionOnClose(err error) bool {
 	return websocket.IsCloseError(err, 4003, 4005, 4007, 4009)
 }
 
+func shouldResetGatewayResumeStateOnCloseCode(closeCode int) bool {
+	return closeCode == websocket.CloseNormalClosure || closeCode == websocket.CloseGoingAway
+}
+
 func (s *Session) resetGatewayResumeState() {
 	s.Lock()
 	defer s.Unlock()
@@ -1368,6 +1372,10 @@ func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error)
 	}
 
 	s.DataReady = false
+
+	if shouldResetGatewayResumeStateOnCloseCode(closeCode) {
+		s.resetGatewayResumeStateLocked()
+	}
 
 	if s.listening != nil {
 		s.log(LogInformational, "closing listening channel")
