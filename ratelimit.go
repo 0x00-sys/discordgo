@@ -21,24 +21,27 @@ type customRateLimit struct {
 // RateLimiter holds all ratelimit buckets
 type RateLimiter struct {
 	sync.Mutex
-	global           *int64
-	buckets          map[string]*Bucket
-	lastCleanup      time.Time
-	globalRateLimit  time.Duration
-	customRateLimits []*customRateLimit
+	global                *int64
+	unauthenticatedGlobal *int64
+	buckets               map[string]*Bucket
+	lastCleanup           time.Time
+	globalRateLimit       time.Duration
+	customRateLimits      []*customRateLimit
 }
 
 var (
 	rateLimitBucketTTL             = time.Hour
 	rateLimitBucketCleanupInterval = time.Minute
+	sharedUnauthenticatedGlobal    = new(int64)
 )
 
 // NewRatelimiter returns a new RateLimiter
 func NewRatelimiter() *RateLimiter {
 
 	return &RateLimiter{
-		buckets: make(map[string]*Bucket),
-		global:  new(int64),
+		buckets:               make(map[string]*Bucket),
+		global:                new(int64),
+		unauthenticatedGlobal: sharedUnauthenticatedGlobal,
 		customRateLimits: []*customRateLimit{
 			{
 				suffix:   "//reactions//",
@@ -150,7 +153,7 @@ func (r *RateLimiter) LockBucketContext(ctx context.Context, bucketID string) (*
 func (r *RateLimiter) lockBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
 	globalReset := r.global
 	if !useGlobalRateLimit {
-		globalReset = new(int64)
+		globalReset = r.unauthenticatedGlobal
 	}
 
 	return r.LockBucketObjectContext(ctx, r.getBucket(bucketID, globalReset))
@@ -159,7 +162,7 @@ func (r *RateLimiter) lockBucketContext(ctx context.Context, bucketID string, us
 func (r *RateLimiter) lockEphemeralBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
 	globalReset := r.global
 	if !useGlobalRateLimit {
-		globalReset = new(int64)
+		globalReset = r.unauthenticatedGlobal
 	}
 
 	return r.LockBucketObjectContext(ctx, &Bucket{
