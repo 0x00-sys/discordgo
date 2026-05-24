@@ -2188,6 +2188,36 @@ func setEmbedTypes(embeds []*MessageEmbed) error {
 	return nil
 }
 
+func (s *Session) applyAllowedMentionsToMessage(data *MessageSend) {
+	if data.AllowedMentions == nil && s.AllowedMentions != nil {
+		data.AllowedMentions = s.AllowedMentions
+	}
+}
+
+func (s *Session) applyAllowedMentionsToMessageEdit(data *MessageEdit) {
+	if data.AllowedMentions == nil && s.AllowedMentions != nil {
+		data.AllowedMentions = s.AllowedMentions
+	}
+}
+
+func (s *Session) applyAllowedMentionsToWebhook(data *WebhookParams) {
+	if data.AllowedMentions == nil && s.AllowedMentions != nil {
+		data.AllowedMentions = s.AllowedMentions
+	}
+}
+
+func (s *Session) applyAllowedMentionsToWebhookEdit(data *WebhookEdit) {
+	if data.AllowedMentions == nil && s.AllowedMentions != nil {
+		data.AllowedMentions = s.AllowedMentions
+	}
+}
+
+func (s *Session) applyAllowedMentionsToInteractionResponse(data *InteractionResponseData) {
+	if data.AllowedMentions == nil && s.AllowedMentions != nil {
+		data.AllowedMentions = s.AllowedMentions
+	}
+}
+
 // ChannelMessageSendComplex sends a message to the given channel.
 // channelID : The ID of a Channel.
 // data      : The message struct to send.
@@ -2209,6 +2239,7 @@ func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend,
 	if err = setEmbedTypes(data.Embeds); err != nil {
 		return
 	}
+	s.applyAllowedMentionsToMessage(data)
 	endpoint := EndpointChannelMessages(channelID)
 
 	// TODO: Remove this when compatibility is not required.
@@ -2340,6 +2371,7 @@ func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOp
 			return
 		}
 	}
+	s.applyAllowedMentionsToMessageEdit(m)
 
 	endpoint := EndpointChannelMessage(m.Channel, m.ID)
 
@@ -2891,6 +2923,7 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 	if data == nil {
 		return nil, fmt.Errorf("webhook data cannot be nil")
 	}
+	s.applyAllowedMentionsToWebhook(data)
 
 	uri := EndpointWebhookToken(webhookID, token)
 	options = withoutAuthorizationOptions(options)
@@ -2931,6 +2964,7 @@ func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data
 	if data == nil {
 		return nil, fmt.Errorf("webhook data cannot be nil")
 	}
+	s.applyAllowedMentionsToWebhook(data)
 
 	uri := EndpointWebhookToken(appID, token)
 	options = withoutAuthorizationOptions(options)
@@ -3019,6 +3053,7 @@ func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *W
 	if data == nil {
 		return nil, fmt.Errorf("webhook edit data cannot be nil")
 	}
+	s.applyAllowedMentionsToWebhookEdit(data)
 
 	uri := EndpointWebhookMessage(webhookID, token, messageID)
 	bucketID := webhookMessageBucketID(webhookID)
@@ -3051,6 +3086,7 @@ func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, 
 	if data == nil {
 		return nil, fmt.Errorf("webhook edit data cannot be nil")
 	}
+	s.applyAllowedMentionsToWebhookEdit(data)
 
 	uri := EndpointWebhookMessage(appID, token, messageID)
 	bucketID := interactionWebhookMessageBucketID(appID, token)
@@ -3298,6 +3334,7 @@ func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadSt
 	if err = setEmbedTypes(messageData.Embeds); err != nil {
 		return
 	}
+	s.applyAllowedMentionsToMessage(messageData)
 
 	// TODO: Remove this when compatibility is not required.
 	files := messageData.Files
@@ -3765,6 +3802,10 @@ func (s *Session) InteractionRespond(interaction *Interaction, resp *Interaction
 	endpoint := EndpointInteractionResponse(interaction.ID, interaction.Token)
 	bucketID := interactionResponseBucketID(interaction.ID)
 	options = withoutAuthorizationOptions(options)
+
+	if resp.Data != nil {
+		s.applyAllowedMentionsToInteractionResponse(resp.Data)
+	}
 
 	if resp.Data != nil && len(resp.Data.Files) > 0 {
 		contentType, body, err := MultipartBodyWithJSON(resp, resp.Data.Files)
