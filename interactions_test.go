@@ -90,6 +90,27 @@ func TestVerifyInteraction(t *testing.T) {
 			t.Error("expected false, got true")
 		}
 	})
+
+	t.Run("failure/bad public key length", func(t *testing.T) {
+		body := "body"
+		request := httptest.NewRequest("POST", "http://localhost/interaction", strings.NewReader(body))
+		request.Header.Set("X-Signature-Timestamp", timestamp)
+
+		var msg bytes.Buffer
+		msg.WriteString(timestamp)
+		msg.WriteString(body)
+		signature := ed25519.Sign(privkey, msg.Bytes())
+		request.Header.Set("X-Signature-Ed25519", hex.EncodeToString(signature[:ed25519.SignatureSize]))
+
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("VerifyInteraction panicked with invalid public key: %v", r)
+			}
+		}()
+		if VerifyInteraction(request, ed25519.PublicKey("bad")) {
+			t.Error("expected false, got true")
+		}
+	})
 }
 
 func TestApplicationCommandResolvedMembersLinkUsers(t *testing.T) {
