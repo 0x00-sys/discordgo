@@ -87,6 +87,21 @@ func TestRatelimitGlobal(t *testing.T) {
 	}
 }
 
+func TestRatelimitWaitUsesLongerGlobalReset(t *testing.T) {
+	rl := NewRatelimiter()
+	bucket := rl.GetBucket("/channels/99/messages")
+	bucket.Remaining = 0
+	bucket.reset = time.Now().Add(10 * time.Millisecond)
+	bucket.setReset(bucket.reset)
+
+	atomic.StoreInt64(rl.global, time.Now().Add(time.Minute).UnixNano())
+
+	wait := rl.GetWaitTime(bucket, 1)
+	if wait < 30*time.Second {
+		t.Fatalf("GetWaitTime returned %v, want it to honor longer global reset", wait)
+	}
+}
+
 func TestRatelimitCleansStaleBuckets(t *testing.T) {
 	oldTTL := rateLimitBucketTTL
 	oldInterval := rateLimitBucketCleanupInterval
