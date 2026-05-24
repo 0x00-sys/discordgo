@@ -487,6 +487,9 @@ type ChannelEdit struct {
 	Flags                         *ChannelFlags          `json:"flags,omitempty"`
 	DefaultThreadRateLimitPerUser *int                   `json:"default_thread_rate_limit_per_user,omitempty"`
 
+	// ParentIDNull sends parent_id as null, removing the channel from its parent category.
+	ParentIDNull bool `json:"-"`
+
 	// NOTE: threads only
 
 	Archived            *bool `json:"archived,omitempty"`
@@ -503,6 +506,43 @@ type ChannelEdit struct {
 
 	// NOTE: forum threads only
 	AppliedTags *[]string `json:"applied_tags,omitempty"`
+}
+
+// MarshalJSON ensures nullable ChannelEdit fields can be explicitly cleared.
+func (c ChannelEdit) MarshalJSON() ([]byte, error) {
+	type channelEdit ChannelEdit
+
+	var permissionOverwrites *[]*PermissionOverwrite
+	if c.PermissionOverwrites != nil {
+		permissionOverwrites = &c.PermissionOverwrites
+	}
+
+	if c.ParentIDNull {
+		return json.Marshal(struct {
+			channelEdit
+			PermissionOverwrites *[]*PermissionOverwrite `json:"permission_overwrites,omitempty"`
+			ParentID             interface{}             `json:"parent_id"`
+		}{
+			channelEdit:          channelEdit(c),
+			PermissionOverwrites: permissionOverwrites,
+			ParentID:             nil,
+		})
+	}
+
+	var parentID *string
+	if c.ParentID != "" {
+		parentID = &c.ParentID
+	}
+
+	return json.Marshal(struct {
+		channelEdit
+		PermissionOverwrites *[]*PermissionOverwrite `json:"permission_overwrites,omitempty"`
+		ParentID             *string                 `json:"parent_id,omitempty"`
+	}{
+		channelEdit:          channelEdit(c),
+		PermissionOverwrites: permissionOverwrites,
+		ParentID:             parentID,
+	})
 }
 
 // A ChannelFollow holds data returned after following a news channel
