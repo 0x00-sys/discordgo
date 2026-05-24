@@ -442,6 +442,11 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 			rl.Message = strings.TrimSpace(string(response))
 			rl.RetryAfter = retryAfter
 		}
+		if rl.RetryAfter <= 0 {
+			if retryAfter, parseErr := retryAfterHeader(resp.Header); parseErr == nil && retryAfter > 0 {
+				rl.RetryAfter = retryAfter
+			}
+		}
 		if rl.Global || strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
 			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
 		}
