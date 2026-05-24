@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1622,7 +1623,7 @@ func TestRedactedHeaderValues(t *testing.T) {
 }
 
 func TestNewRestErrorRedactsRequestSecrets(t *testing.T) {
-	req, err := http.NewRequest("GET", EndpointWebhookToken("webhook", "secret-token"), nil)
+	req, err := http.NewRequest("POST", EndpointWebhookToken("webhook", "secret-token"), bytes.NewBufferString("secret request body"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1648,6 +1649,18 @@ func TestNewRestErrorRedactsRequestSecrets(t *testing.T) {
 	if got := restErr.Response.Request.URL.String(); strings.Contains(got, "secret-token") {
 		t.Fatalf("RESTError response request URL leaked webhook token: %q", got)
 	}
+	if restErr.Request.Body != nil {
+		t.Fatal("RESTError request retained body")
+	}
+	if restErr.Request.GetBody != nil {
+		t.Fatal("RESTError request retained GetBody")
+	}
+	if restErr.Response.Request.Body != nil {
+		t.Fatal("RESTError response request retained body")
+	}
+	if restErr.Response.Request.GetBody != nil {
+		t.Fatal("RESTError response request retained GetBody")
+	}
 	if got := restErr.Request.URL.String(); !strings.Contains(got, redactedURLValue) {
 		t.Fatalf("RESTError request URL = %q, want redacted token", got)
 	}
@@ -1659,6 +1672,24 @@ func TestNewRestErrorRedactsRequestSecrets(t *testing.T) {
 	}
 	if got := req.URL.String(); !strings.Contains(got, "secret-token") {
 		t.Fatalf("original request URL = %q, want original token", got)
+	}
+	if req.Body == nil {
+		t.Fatal("original request body was cleared")
+	}
+	if req.GetBody == nil {
+		t.Fatal("original request GetBody was cleared")
+	}
+	originalBody, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("original request GetBody returned error: %v", err)
+	}
+	defer originalBody.Close()
+	body, err := ioutil.ReadAll(originalBody)
+	if err != nil {
+		t.Fatalf("original request body read returned error: %v", err)
+	}
+	if string(body) != "secret request body" {
+		t.Fatalf("original request body = %q, want secret request body", body)
 	}
 }
 

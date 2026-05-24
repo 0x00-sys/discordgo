@@ -88,6 +88,8 @@ func redactedRequest(req *http.Request) *http.Request {
 	}
 
 	redacted := req.Clone(req.Context())
+	redacted.Body = nil
+	redacted.GetBody = nil
 	if redacted.Header.Get("Authorization") != "" {
 		redacted.Header.Set("Authorization", redactedValue)
 	}
