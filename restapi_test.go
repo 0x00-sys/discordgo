@@ -316,6 +316,198 @@ func TestInteractionTokenEndpointsOmitAuthorization(t *testing.T) {
 	}
 }
 
+func TestNilRESTPayloadsReturnErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session) error
+		want string
+	}{
+		{
+			name: "channel message send",
+			call: func(s *Session) error {
+				_, err := s.ChannelMessageSendComplex("channel", nil)
+				return err
+			},
+			want: "message send data cannot be nil",
+		},
+		{
+			name: "channel message edit",
+			call: func(s *Session) error {
+				_, err := s.ChannelMessageEditComplex(nil)
+				return err
+			},
+			want: "message edit data cannot be nil",
+		},
+		{
+			name: "role edit",
+			call: func(s *Session) error {
+				_, err := s.GuildRoleEdit("guild", "role", nil)
+				return err
+			},
+			want: "role data cannot be nil",
+		},
+		{
+			name: "webhook execute",
+			call: func(s *Session) error {
+				_, err := s.WebhookExecute("webhook", "token", false, nil)
+				return err
+			},
+			want: "webhook data cannot be nil",
+		},
+		{
+			name: "webhook message edit",
+			call: func(s *Session) error {
+				_, err := s.WebhookMessageEdit("webhook", "token", "message", nil)
+				return err
+			},
+			want: "webhook edit data cannot be nil",
+		},
+		{
+			name: "interaction response",
+			call: func(s *Session) error {
+				return s.InteractionRespond(&Interaction{ID: "interaction", Token: "token"}, nil)
+			},
+			want: "interaction response cannot be nil",
+		},
+		{
+			name: "interaction",
+			call: func(s *Session) error {
+				return s.InteractionRespond(nil, &InteractionResponse{Type: InteractionResponsePong})
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "interaction response get",
+			call: func(s *Session) error {
+				_, err := s.InteractionResponse(nil)
+				return err
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "interaction response edit interaction",
+			call: func(s *Session) error {
+				_, err := s.InteractionResponseEdit(nil, &WebhookEdit{})
+				return err
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "interaction response edit data",
+			call: func(s *Session) error {
+				_, err := s.InteractionResponseEdit(&Interaction{AppID: "application", Token: "token"}, nil)
+				return err
+			},
+			want: "webhook edit data cannot be nil",
+		},
+		{
+			name: "interaction response delete",
+			call: func(s *Session) error {
+				return s.InteractionResponseDelete(nil)
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "followup message create interaction",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageCreate(nil, false, &WebhookParams{})
+				return err
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "followup message create",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageCreate(&Interaction{AppID: "application", Token: "token"}, false, nil)
+				return err
+			},
+			want: "webhook data cannot be nil",
+		},
+		{
+			name: "followup message edit interaction",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageEdit(nil, "message", &WebhookEdit{})
+				return err
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "followup message edit",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageEdit(&Interaction{AppID: "application", Token: "token"}, "message", nil)
+				return err
+			},
+			want: "webhook edit data cannot be nil",
+		},
+		{
+			name: "followup message delete",
+			call: func(s *Session) error {
+				return s.FollowupMessageDelete(nil, "message")
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "forum thread message",
+			call: func(s *Session) error {
+				_, err := s.ForumThreadStartComplex("channel", &ThreadStart{Name: "thread"}, nil)
+				return err
+			},
+			want: "message send data cannot be nil",
+		},
+		{
+			name: "forum thread data",
+			call: func(s *Session) error {
+				_, err := s.ForumThreadStartComplex("channel", nil, &MessageSend{Content: "hello"})
+				return err
+			},
+			want: "thread data cannot be nil",
+		},
+		{
+			name: "application command create",
+			call: func(s *Session) error {
+				_, err := s.ApplicationCommandCreate("application", "guild", nil)
+				return err
+			},
+			want: "application command data cannot be nil",
+		},
+		{
+			name: "application command edit",
+			call: func(s *Session) error {
+				_, err := s.ApplicationCommandEdit("application", "guild", "command", nil)
+				return err
+			},
+			want: "application command data cannot be nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				t.Fatalf("HTTP transport was called for nil input")
+				return nil, nil
+			})
+
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("%s panicked: %v", tt.name, r)
+				}
+			}()
+
+			err = tt.call(session)
+			if err == nil {
+				t.Fatalf("%s returned nil error", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("%s error = %q, want %q", tt.name, err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestAuthenticatedWebhookEndpointKeepsAuthorization(t *testing.T) {
 	session, err := New("Bot secret")
 	if err != nil {
