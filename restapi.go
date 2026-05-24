@@ -2100,6 +2100,18 @@ func (s *Session) ChannelMessageSend(channelID string, content string, options .
 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "%0D", "\n", "%0A")
 
+func setEmbedTypes(embeds []*MessageEmbed) error {
+	for _, embed := range embeds {
+		if embed == nil {
+			return fmt.Errorf("message embed cannot be nil")
+		}
+		if embed.Type == "" {
+			embed.Type = "rich"
+		}
+	}
+	return nil
+}
+
 // ChannelMessageSendComplex sends a message to the given channel.
 // channelID : The ID of a Channel.
 // data      : The message struct to send.
@@ -2118,10 +2130,8 @@ func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend,
 		}
 	}
 
-	for _, embed := range data.Embeds {
-		if embed.Type == "" {
-			embed.Type = "rich"
-		}
+	if err = setEmbedTypes(data.Embeds); err != nil {
+		return
 	}
 	endpoint := EndpointChannelMessages(channelID)
 
@@ -2250,10 +2260,8 @@ func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOp
 	}
 
 	if m.Embeds != nil {
-		for _, embed := range *m.Embeds {
-			if embed.Type == "" {
-				embed.Type = "rich"
-			}
+		if err = setEmbedTypes(*m.Embeds); err != nil {
+			return
 		}
 	}
 
@@ -3211,10 +3219,8 @@ func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadSt
 		}
 	}
 
-	for _, embed := range messageData.Embeds {
-		if embed.Type == "" {
-			embed.Type = "rich"
-		}
+	if err = setEmbedTypes(messageData.Embeds); err != nil {
+		return
 	}
 
 	// TODO: Remove this when compatibility is not required.

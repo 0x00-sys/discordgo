@@ -331,12 +331,28 @@ func TestNilRESTPayloadsReturnErrors(t *testing.T) {
 			want: "message send data cannot be nil",
 		},
 		{
+			name: "channel message send embed",
+			call: func(s *Session) error {
+				_, err := s.ChannelMessageSendEmbed("channel", nil)
+				return err
+			},
+			want: "message embed cannot be nil",
+		},
+		{
 			name: "channel message edit",
 			call: func(s *Session) error {
 				_, err := s.ChannelMessageEditComplex(nil)
 				return err
 			},
 			want: "message edit data cannot be nil",
+		},
+		{
+			name: "channel message edit embed",
+			call: func(s *Session) error {
+				_, err := s.ChannelMessageEditEmbeds("channel", "message", []*MessageEmbed{nil})
+				return err
+			},
+			want: "message embed cannot be nil",
 		},
 		{
 			name: "role edit",
@@ -453,6 +469,14 @@ func TestNilRESTPayloadsReturnErrors(t *testing.T) {
 				return err
 			},
 			want: "message send data cannot be nil",
+		},
+		{
+			name: "forum thread message embed",
+			call: func(s *Session) error {
+				_, err := s.ForumThreadStartEmbeds("channel", "thread", 60, []*MessageEmbed{nil})
+				return err
+			},
+			want: "message embed cannot be nil",
 		},
 		{
 			name: "forum thread data",
