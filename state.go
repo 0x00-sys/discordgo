@@ -169,6 +169,44 @@ func copyPresence(presence *Presence) *Presence {
 	return &presenceCopy
 }
 
+func copyGuild(guild *Guild) *Guild {
+	guildCopy := *guild
+	guildCopy.Roles = append([]*Role(nil), guild.Roles...)
+	guildCopy.Emojis = append([]*Emoji(nil), guild.Emojis...)
+	guildCopy.Stickers = append([]*Sticker(nil), guild.Stickers...)
+	guildCopy.Members = append([]*Member(nil), guild.Members...)
+	guildCopy.Presences = append([]*Presence(nil), guild.Presences...)
+	guildCopy.Channels = append([]*Channel(nil), guild.Channels...)
+	guildCopy.Threads = append([]*Channel(nil), guild.Threads...)
+	guildCopy.VoiceStates = append([]*VoiceState(nil), guild.VoiceStates...)
+	guildCopy.Features = append([]GuildFeature(nil), guild.Features...)
+	guildCopy.StageInstances = append([]*StageInstance(nil), guild.StageInstances...)
+	return &guildCopy
+}
+
+func (s *State) replaceGuild(oldGuild, newGuild *Guild) {
+	s.guildMap[newGuild.ID] = newGuild
+	for i, guild := range s.Guilds {
+		if guild == oldGuild || (guild != nil && guild.ID == newGuild.ID) {
+			s.Guilds[i] = newGuild
+			return
+		}
+	}
+	s.Guilds = append(s.Guilds, newGuild)
+}
+
+func (s *State) updateGuildMemberCount(guildID string, delta int) error {
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	updated.MemberCount += delta
+	s.replaceGuild(guild, updated)
+	return nil
+}
+
 // GuildAdd adds a guild to the current world state, or
 // updates it if it already exists.
 func (s *State) GuildAdd(guild *Guild) error {
@@ -218,32 +256,32 @@ func (s *State) GuildAdd(guild *Guild) error {
 			guild.MemberCount = g.MemberCount
 		}
 		if guild.Roles == nil && s.TrackRoles {
-			guild.Roles = g.Roles
+			guild.Roles = append([]*Role(nil), g.Roles...)
 		}
 		if guild.Emojis == nil && s.TrackEmojis {
-			guild.Emojis = g.Emojis
+			guild.Emojis = append([]*Emoji(nil), g.Emojis...)
 		}
 		if guild.Stickers == nil && s.TrackStickers {
-			guild.Stickers = g.Stickers
+			guild.Stickers = append([]*Sticker(nil), g.Stickers...)
 		}
 		if guild.Members == nil && s.TrackMembers {
-			guild.Members = g.Members
+			guild.Members = append([]*Member(nil), g.Members...)
 		}
 		if guild.Presences == nil && s.TrackPresences {
-			guild.Presences = g.Presences
+			guild.Presences = append([]*Presence(nil), g.Presences...)
 		}
 		if guild.Channels == nil && s.TrackChannels {
-			guild.Channels = g.Channels
+			guild.Channels = append([]*Channel(nil), g.Channels...)
 		}
 		if guild.Threads == nil && s.TrackThreads {
 			if s.TrackThreadMembers {
-				guild.Threads = g.Threads
+				guild.Threads = append([]*Channel(nil), g.Threads...)
 			} else {
 				guild.Threads = threadsWithoutMembers(g.Threads)
 			}
 		}
 		if guild.VoiceStates == nil && s.TrackVoice {
-			guild.VoiceStates = g.VoiceStates
+			guild.VoiceStates = append([]*VoiceState(nil), g.VoiceStates...)
 		}
 		for _, c := range guild.Channels {
 			if c != nil {
@@ -269,7 +307,7 @@ func (s *State) GuildAdd(guild *Guild) error {
 				}
 			}
 		}
-		*g = *guild
+		s.replaceGuild(g, guild)
 		return nil
 	}
 
@@ -583,22 +621,27 @@ func (s *State) RoleAdd(guildID string, role *Role) error {
 		return ErrNilState
 	}
 
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		return err
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	roleCopy := *role
+	role = &roleCopy
+	updated := copyGuild(guild)
 	for i, r := range guild.Roles {
 		if r.ID == role.ID {
-			guild.Roles[i] = role
+			updated.Roles[i] = role
+			s.replaceGuild(guild, updated)
 			return nil
 		}
 	}
 
-	guild.Roles = append(guild.Roles, role)
+	updated.Roles = append(updated.Roles, role)
+	s.replaceGuild(guild, updated)
 	return nil
 }
 
@@ -608,17 +651,19 @@ func (s *State) RoleRemove(guildID, roleID string) error {
 		return ErrNilState
 	}
 
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		return err
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
 	for i, r := range guild.Roles {
 		if r.ID == roleID {
-			guild.Roles = append(guild.Roles[:i], guild.Roles[i+1:]...)
+			updated.Roles = append(updated.Roles[:i], updated.Roles[i+1:]...)
+			s.replaceGuild(guild, updated)
 			return nil
 		}
 	}
@@ -663,13 +708,17 @@ func (s *State) replaceChannel(oldChannel, newChannel *Channel) {
 		}
 		for i, channel := range guild.Channels {
 			if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
-				guild.Channels[i] = newChannel
+				updated := copyGuild(guild)
+				updated.Channels[i] = newChannel
+				s.replaceGuild(guild, updated)
 				return
 			}
 		}
 		for i, thread := range guild.Threads {
 			if thread == oldChannel || (thread != nil && thread.ID == newChannel.ID) {
-				guild.Threads[i] = newChannel
+				updated := copyGuild(guild)
+				updated.Threads[i] = newChannel
+				s.replaceGuild(guild, updated)
 				return
 			}
 		}
@@ -718,13 +767,15 @@ func (s *State) ChannelAdd(channel *Channel) error {
 		return ErrStateNotFound
 	}
 
+	updated := copyGuild(guild)
 	if channel.IsThread() {
-		guild.Threads = append(guild.Threads, channel)
+		updated.Threads = append(updated.Threads, channel)
 	} else {
-		guild.Channels = append(guild.Channels, channel)
+		updated.Channels = append(updated.Channels, channel)
 	}
 
 	s.channelMap[channel.ID] = channel
+	s.replaceGuild(guild, updated)
 
 	return nil
 }
@@ -735,15 +786,15 @@ func (s *State) ChannelRemove(channel *Channel) error {
 		return ErrNilState
 	}
 
-	_, err := s.Channel(channel.ID)
-	if err != nil {
-		return err
+	s.Lock()
+	defer s.Unlock()
+
+	cached, ok := s.channelMap[channel.ID]
+	if !ok {
+		return ErrStateNotFound
 	}
 
-	if channel.Type == ChannelTypeDM || channel.Type == ChannelTypeGroupDM {
-		s.Lock()
-		defer s.Unlock()
-
+	if cached.Type == ChannelTypeDM || cached.Type == ChannelTypeGroupDM {
 		for i, c := range s.PrivateChannels {
 			if c.ID == channel.ID {
 				s.PrivateChannels = append(s.PrivateChannels[:i], s.PrivateChannels[i+1:]...)
@@ -754,31 +805,30 @@ func (s *State) ChannelRemove(channel *Channel) error {
 		return nil
 	}
 
-	guild, err := s.Guild(channel.GuildID)
-	if err != nil {
-		return err
+	guild, ok := s.guildMap[cached.GuildID]
+	if !ok {
+		return ErrStateNotFound
 	}
 
-	s.Lock()
-	defer s.Unlock()
-
-	if channel.IsThread() {
+	updated := copyGuild(guild)
+	if cached.IsThread() {
 		for i, t := range guild.Threads {
 			if t.ID == channel.ID {
-				guild.Threads = append(guild.Threads[:i], guild.Threads[i+1:]...)
+				updated.Threads = append(updated.Threads[:i], updated.Threads[i+1:]...)
 				break
 			}
 		}
 	} else {
 		for i, c := range guild.Channels {
 			if c.ID == channel.ID {
-				guild.Channels = append(guild.Channels[:i], guild.Channels[i+1:]...)
+				updated.Channels = append(updated.Channels[:i], updated.Channels[i+1:]...)
 				break
 			}
 		}
 	}
 
 	delete(s.channelMap, channel.ID)
+	s.replaceGuild(guild, updated)
 
 	return nil
 }
@@ -1304,13 +1354,11 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 
 		// Updates the MemberCount of the guild.
 		s.Lock()
-		guild, ok := s.guildMap[t.Member.GuildID]
-		if !ok {
-			s.Unlock()
-			return ErrStateNotFound
-		}
-		guild.MemberCount++
+		err = s.updateGuildMemberCount(t.Member.GuildID, 1)
 		s.Unlock()
+		if err != nil {
+			return err
+		}
 
 		// Caches member if tracking is enabled.
 		if s.TrackMembers {
@@ -1345,13 +1393,11 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 
 		// Updates the MemberCount of the guild.
 		s.Lock()
-		guild, ok := s.guildMap[t.Member.GuildID]
-		if !ok {
-			s.Unlock()
-			return ErrStateNotFound
-		}
-		guild.MemberCount--
+		err = s.updateGuildMemberCount(t.Member.GuildID, -1)
 		s.Unlock()
+		if err != nil {
+			return err
+		}
 
 		// Removes member from the cache if tracking is enabled.
 		if s.TrackMembers {

@@ -371,6 +371,254 @@ func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
 	}
 }
 
+func TestGuildAddReplacesCachedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		Name:        "old",
+		MemberCount: 1,
+		Roles: []*Role{
+			{ID: "role", Name: "old-role"},
+		},
+		Channels: []*Channel{
+			{ID: "channel", GuildID: "guild"},
+		},
+		Members: []*Member{
+			{
+				GuildID: "guild",
+				User:    &User{ID: "user"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.GuildAdd(&Guild{
+		ID:   "guild",
+		Name: "new",
+	})
+	if err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after update: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("GuildAdd reused the previously cached guild pointer")
+	}
+	if oldGuild.Name != "old" {
+		t.Fatalf("old guild name = %q, want old", oldGuild.Name)
+	}
+	if updatedGuild.Name != "new" {
+		t.Fatalf("updated guild name = %q, want new", updatedGuild.Name)
+	}
+	if updatedGuild.MemberCount != 1 {
+		t.Fatalf("updated guild member count = %d, want 1", updatedGuild.MemberCount)
+	}
+	if len(updatedGuild.Roles) != 1 || updatedGuild.Roles[0].Name != "old-role" {
+		t.Fatalf("updated guild roles = %#v, want preserved old role", updatedGuild.Roles)
+	}
+	if len(updatedGuild.Channels) != 1 || updatedGuild.Channels[0].ID != "channel" {
+		t.Fatalf("updated guild channels = %#v, want preserved channel", updatedGuild.Channels)
+	}
+	if len(updatedGuild.Members) != 1 || updatedGuild.Members[0].User.ID != "user" {
+		t.Fatalf("updated guild members = %#v, want preserved member", updatedGuild.Members)
+	}
+
+	if err := state.RoleAdd("guild", &Role{ID: "role", Name: "new-role"}); err != nil {
+		t.Fatalf("RoleAdd returned error: %v", err)
+	}
+	if oldGuild.Roles[0].Name != "old-role" {
+		t.Fatalf("old guild role name = %q, want old-role", oldGuild.Roles[0].Name)
+	}
+}
+
+func TestGuildAddDoesNotRaceReturnedPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		Name:        "old",
+		MemberCount: 1,
+		Roles: []*Role{
+			{ID: "role", Name: "old-role"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = guild.Name
+			_ = guild.MemberCount
+			if len(guild.Roles) != 0 {
+				_ = guild.Roles[0].Name
+			}
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.GuildAdd(&Guild{
+			ID:          "guild",
+			Name:        strconv.Itoa(i),
+			MemberCount: i,
+		})
+		if err != nil {
+			t.Fatalf("GuildAdd returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func TestGuildMemberAddReplacesCachedGuildPointer(t *testing.T) {
+	state := NewState()
+	state.TrackMembers = false
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		Name:        "old",
+		MemberCount: 1,
+		Roles: []*Role{
+			{ID: "role", Name: "old-role"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.OnInterface(&Session{StateEnabled: true}, &GuildMemberAdd{
+		Member: &Member{
+			GuildID: "guild",
+			User:    &User{ID: "user"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after update: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("GuildMemberAdd reused the previously cached guild pointer")
+	}
+	if oldGuild.MemberCount != 1 {
+		t.Fatalf("old guild member count = %d, want 1", oldGuild.MemberCount)
+	}
+	if updatedGuild.MemberCount != 2 {
+		t.Fatalf("updated guild member count = %d, want 2", updatedGuild.MemberCount)
+	}
+
+	if err := state.RoleAdd("guild", &Role{ID: "role", Name: "new-role"}); err != nil {
+		t.Fatalf("RoleAdd returned error: %v", err)
+	}
+	if oldGuild.Roles[0].Name != "old-role" {
+		t.Fatalf("old guild role name = %q, want old-role", oldGuild.Roles[0].Name)
+	}
+}
+
+func TestGuildMemberRemoveReplacesCachedGuildPointer(t *testing.T) {
+	state := NewState()
+	state.TrackMembers = false
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		MemberCount: 2,
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.OnInterface(&Session{StateEnabled: true}, &GuildMemberRemove{
+		Member: &Member{
+			GuildID: "guild",
+			User:    &User{ID: "user"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after update: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("GuildMemberRemove reused the previously cached guild pointer")
+	}
+	if oldGuild.MemberCount != 2 {
+		t.Fatalf("old guild member count = %d, want 2", oldGuild.MemberCount)
+	}
+	if updatedGuild.MemberCount != 1 {
+		t.Fatalf("updated guild member count = %d, want 1", updatedGuild.MemberCount)
+	}
+}
+
+func TestGuildMemberAddDoesNotRaceReturnedGuildPointer(t *testing.T) {
+	state := NewState()
+	state.TrackMembers = false
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		Name:        "old",
+		MemberCount: 1,
+		Roles: []*Role{
+			{ID: "role", Name: "old-role"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = guild.Name
+			_ = guild.MemberCount
+			if len(guild.Roles) != 0 {
+				_ = guild.Roles[0].Name
+			}
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.OnInterface(&Session{StateEnabled: true}, &GuildMemberAdd{
+			Member: &Member{
+				GuildID: "guild",
+				User:    &User{ID: strconv.Itoa(i)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	}
+	<-done
+}
+
 func TestReadyClearsStaleIndexes(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
@@ -1274,6 +1522,507 @@ func TestChannelAddDoesNotRaceReturnedPointer(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+func TestChannelAddReplacesParentGuildPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Name:    "old",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.ChannelAdd(&Channel{
+		ID:      "new-channel",
+		GuildID: "guild",
+		Name:    "new",
+		Type:    ChannelTypeGuildText,
+	})
+	if err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after ChannelAdd: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("ChannelAdd reused the previously cached parent guild pointer")
+	}
+	if len(oldGuild.Channels) != 1 {
+		t.Fatalf("len(oldGuild.Channels) = %d, want 1", len(oldGuild.Channels))
+	}
+	if len(updatedGuild.Channels) != 2 {
+		t.Fatalf("len(updatedGuild.Channels) = %d, want 2", len(updatedGuild.Channels))
+	}
+}
+
+func TestChannelAddKeepsReturnedGuildCategoryCountSnapshot(t *testing.T) {
+	state := NewState()
+	channels := []*Channel{
+		{
+			ID:      "category",
+			GuildID: "guild",
+			Name:    "category",
+			Type:    ChannelTypeGuildCategory,
+		},
+	}
+	for i := 0; i < 49; i++ {
+		channels = append(channels, &Channel{
+			ID:       "channel-" + strconv.Itoa(i),
+			GuildID:  "guild",
+			ParentID: "category",
+			Name:     strconv.Itoa(i),
+			Type:     ChannelTypeGuildText,
+		})
+	}
+
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: channels,
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if countChannelsInCategory(oldGuild, "category") != 49 {
+		t.Fatalf("old category count before ChannelAdd = %d, want 49", countChannelsInCategory(oldGuild, "category"))
+	}
+
+	err = state.ChannelAdd(&Channel{
+		ID:       "channel-49",
+		GuildID:  "guild",
+		ParentID: "category",
+		Name:     "49",
+		Type:     ChannelTypeGuildText,
+	})
+	if err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after ChannelAdd: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("ChannelAdd reused the previously cached parent guild pointer")
+	}
+	if countChannelsInCategory(oldGuild, "category") != 49 {
+		t.Fatalf("old category count after ChannelAdd = %d, want 49", countChannelsInCategory(oldGuild, "category"))
+	}
+	if countChannelsInCategory(updatedGuild, "category") != 50 {
+		t.Fatalf("updated category count after ChannelAdd = %d, want 50", countChannelsInCategory(updatedGuild, "category"))
+	}
+}
+
+func TestChannelUpdateKeepsReturnedGuildCategoryCountSnapshot(t *testing.T) {
+	state := NewState()
+	channels := []*Channel{
+		{
+			ID:      "category",
+			GuildID: "guild",
+			Name:    "category",
+			Type:    ChannelTypeGuildCategory,
+		},
+		{
+			ID:      "ticket-channel",
+			GuildID: "guild",
+			Name:    "ticket",
+			Type:    ChannelTypeGuildText,
+		},
+	}
+	for i := 0; i < 49; i++ {
+		channels = append(channels, &Channel{
+			ID:       "channel-" + strconv.Itoa(i),
+			GuildID:  "guild",
+			ParentID: "category",
+			Name:     strconv.Itoa(i),
+			Type:     ChannelTypeGuildText,
+		})
+	}
+
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: channels,
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if countChannelsInCategory(oldGuild, "category") != 49 {
+		t.Fatalf("old category count before ChannelAdd = %d, want 49", countChannelsInCategory(oldGuild, "category"))
+	}
+
+	err = state.ChannelAdd(&Channel{
+		ID:       "ticket-channel",
+		GuildID:  "guild",
+		ParentID: "category",
+		Name:     "ticket",
+		Type:     ChannelTypeGuildText,
+	})
+	if err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after ChannelAdd: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("ChannelAdd reused the previously cached parent guild pointer")
+	}
+	if countChannelsInCategory(oldGuild, "category") != 49 {
+		t.Fatalf("old category count after ChannelAdd = %d, want 49", countChannelsInCategory(oldGuild, "category"))
+	}
+	if countChannelsInCategory(updatedGuild, "category") != 50 {
+		t.Fatalf("updated category count after ChannelAdd = %d, want 50", countChannelsInCategory(updatedGuild, "category"))
+	}
+}
+
+func TestChannelRemoveReplacesParentGuildPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Name:    "old",
+				Type:    ChannelTypeGuildText,
+			},
+			{
+				ID:      "removed-channel",
+				GuildID: "guild",
+				Name:    "remove me",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.ChannelRemove(&Channel{
+		ID:      "removed-channel",
+		GuildID: "guild",
+		Type:    ChannelTypeGuildText,
+	})
+	if err != nil {
+		t.Fatalf("ChannelRemove returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after ChannelRemove: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("ChannelRemove reused the previously cached parent guild pointer")
+	}
+	if len(oldGuild.Channels) != 2 {
+		t.Fatalf("len(oldGuild.Channels) = %d, want 2", len(oldGuild.Channels))
+	}
+	if len(updatedGuild.Channels) != 1 {
+		t.Fatalf("len(updatedGuild.Channels) = %d, want 1", len(updatedGuild.Channels))
+	}
+	if updatedGuild.Channels[0].ID != "channel" {
+		t.Fatalf("remaining channel ID = %q, want channel", updatedGuild.Channels[0].ID)
+	}
+}
+
+func TestChannelAddDoesNotRaceReturnedGuildChannels(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Name:    "old",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			for _, channel := range guild.Channels {
+				if channel != nil {
+					_ = channel.ID
+					_ = channel.ParentID
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.ChannelAdd(&Channel{
+			ID:       "new-channel-" + strconv.Itoa(i),
+			GuildID:  "guild",
+			ParentID: "category",
+			Name:     strconv.Itoa(i),
+			Type:     ChannelTypeGuildText,
+		})
+		if err != nil {
+			t.Fatalf("ChannelAdd returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func TestChannelUpdateDoesNotRaceReturnedGuildChannels(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{
+				ID:      "category",
+				GuildID: "guild",
+				Name:    "category",
+				Type:    ChannelTypeGuildCategory,
+			},
+			{
+				ID:      "ticket-channel",
+				GuildID: "guild",
+				Name:    "ticket",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = countChannelsInCategory(guild, "category")
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		parentID := ""
+		if i%2 == 0 {
+			parentID = "category"
+		}
+		err := state.ChannelAdd(&Channel{
+			ID:       "ticket-channel",
+			GuildID:  "guild",
+			ParentID: parentID,
+			Name:     strconv.Itoa(i),
+			Type:     ChannelTypeGuildText,
+		})
+		if err != nil {
+			t.Fatalf("ChannelAdd returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func TestRoleUpdateKeepsReturnedGuildPermissionSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: 0,
+			},
+			{
+				ID:          "staff",
+				Permissions: 0,
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	channel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if permissions := memberPermissions(oldGuild, channel, "user", []string{"staff"}); permissions&PermissionManageChannels != 0 {
+		t.Fatalf("old permissions before RoleAdd = %d, want no ManageChannels", permissions)
+	}
+
+	err = state.RoleAdd("guild", &Role{
+		ID:          "staff",
+		Permissions: PermissionManageChannels,
+	})
+	if err != nil {
+		t.Fatalf("RoleAdd returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after RoleAdd: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("RoleAdd reused the previously cached parent guild pointer")
+	}
+	if permissions := memberPermissions(oldGuild, channel, "user", []string{"staff"}); permissions&PermissionManageChannels != 0 {
+		t.Fatalf("old permissions after RoleAdd = %d, want no ManageChannels", permissions)
+	}
+	if permissions := memberPermissions(updatedGuild, channel, "user", []string{"staff"}); permissions&PermissionManageChannels == 0 {
+		t.Fatalf("updated permissions after RoleAdd = %d, want ManageChannels", permissions)
+	}
+}
+
+func TestRoleRemoveReplacesParentGuildPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: 0,
+			},
+			{
+				ID:          "staff",
+				Permissions: PermissionManageChannels,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.RoleRemove("guild", "staff")
+	if err != nil {
+		t.Fatalf("RoleRemove returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after RoleRemove: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("RoleRemove reused the previously cached parent guild pointer")
+	}
+	if len(oldGuild.Roles) != 2 {
+		t.Fatalf("len(oldGuild.Roles) = %d, want 2", len(oldGuild.Roles))
+	}
+	if len(updatedGuild.Roles) != 1 {
+		t.Fatalf("len(updatedGuild.Roles) = %d, want 1", len(updatedGuild.Roles))
+	}
+	if updatedGuild.Roles[0].ID != "guild" {
+		t.Fatalf("remaining role ID = %q, want guild", updatedGuild.Roles[0].ID)
+	}
+}
+
+func TestRoleUpdateDoesNotRaceReturnedGuildPermissions(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{
+				ID:          "guild",
+				Permissions: 0,
+			},
+			{
+				ID:          "staff",
+				Permissions: 0,
+			},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildText,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	channel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = memberPermissions(guild, channel, "user", []string{"staff"})
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.RoleAdd("guild", &Role{
+			ID:          "staff",
+			Permissions: int64(i),
+		})
+		if err != nil {
+			t.Fatalf("RoleAdd returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func countChannelsInCategory(guild *Guild, categoryID string) int {
+	count := 0
+	for _, channel := range guild.Channels {
+		if channel != nil && channel.ParentID == categoryID {
+			count++
+		}
+	}
+	return count
 }
 
 func TestMessageEventsFillMissingGuildIDFromChannelState(t *testing.T) {
