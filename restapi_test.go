@@ -492,6 +492,40 @@ func TestMemberPermissionsAdministratorIncludesCurrentChannelPermissions(t *test
 	}
 }
 
+func TestMemberPermissionsAdministratorBypassesChannelOverwrites(t *testing.T) {
+	guild := &Guild{
+		ID:      "guild",
+		OwnerID: "owner",
+		Roles: []*Role{
+			{ID: "guild"},
+			{ID: "admin", Permissions: PermissionAdministrator},
+		},
+	}
+	channel := &Channel{
+		GuildID: "guild",
+		PermissionOverwrites: []*PermissionOverwrite{
+			{
+				ID:   "guild",
+				Type: PermissionOverwriteTypeRole,
+				Deny: PermissionAdministrator | PermissionViewChannel | PermissionSendMessages,
+			},
+			{
+				ID:   "member",
+				Type: PermissionOverwriteTypeMember,
+				Deny: PermissionManageChannels,
+			},
+		},
+	}
+
+	permissions := memberPermissions(guild, channel, "member", []string{"admin"})
+	if permissions&PermissionAdministrator != PermissionAdministrator {
+		t.Fatalf("administrator bit was removed by overwrites: got %d", permissions)
+	}
+	if permissions&PermissionAllChannel != PermissionAllChannel {
+		t.Fatalf("administrator channel permissions missing: got %d, want all channel permissions", permissions)
+	}
+}
+
 func TestGateway(t *testing.T) {
 
 	if dg == nil {
