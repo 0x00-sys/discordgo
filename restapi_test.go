@@ -1161,6 +1161,33 @@ func TestRequestWithLockedBucketJSONRateLimitUsesRetryAfterHeaderFallback(t *tes
 	}
 }
 
+func TestRequestWithLockedBucketRateLimitWithoutRetryAfterDoesNotRetry(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requests := int32(0)
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&requests, 1)
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Body:       io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":0}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway)
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RateLimitError", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
 func TestRateLimitErrorRedactsWebhookToken(t *testing.T) {
 	session, err := New("")
 	if err != nil {
@@ -1318,7 +1345,7 @@ func TestRateLimitEventRedactsWebhookToken(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusTooManyRequests,
 				Status:     "429 Too Many Requests",
-				Body:       io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":0}`)),
+				Body:       io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":0.001}`)),
 				Request:    r,
 			}, nil
 		}
