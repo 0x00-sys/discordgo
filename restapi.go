@@ -896,6 +896,7 @@ func memberPermissions(guild *Guild, channel *Channel, userID string, roles []st
 
 	if apermissions&PermissionAdministrator == PermissionAdministrator {
 		apermissions |= PermissionAll
+		return
 	}
 
 	// Apply @everyone overrides from the channel.
