@@ -180,7 +180,7 @@ func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*
 
 	atomic.AddInt32(&b.activeRequests, 1)
 	b.touch(time.Now())
-	if err := lockMutexWithContext(ctx, &b.Mutex); err != nil {
+	if err := b.lockContext(ctx); err != nil {
 		atomic.AddInt32(&b.activeRequests, -1)
 		return nil, err
 	}
@@ -188,6 +188,7 @@ func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*
 	if err := ctx.Err(); err != nil {
 		atomic.AddInt32(&b.activeRequests, -1)
 		b.Unlock()
+		b.unlockContext()
 		return nil, err
 	}
 
@@ -195,36 +196,13 @@ func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*
 		if err := sleepWithContext(ctx, wait); err != nil {
 			atomic.AddInt32(&b.activeRequests, -1)
 			b.Unlock()
+			b.unlockContext()
 			return nil, err
 		}
 	}
 
 	b.Remaining--
 	return b, nil
-}
-
-func lockMutexWithContext(ctx context.Context, m *sync.Mutex) error {
-	if ctx.Done() == nil {
-		m.Lock()
-		return nil
-	}
-
-	locked := make(chan struct{}, 1)
-	go func() {
-		m.Lock()
-		locked <- struct{}{}
-	}()
-
-	select {
-	case <-locked:
-		return nil
-	case <-ctx.Done():
-		go func() {
-			<-locked
-			m.Unlock()
-		}()
-		return ctx.Err()
-	}
 }
 
 // Bucket represents a ratelimit bucket, each bucket gets ratelimited individually (-global ratelimits)
@@ -236,12 +214,49 @@ type Bucket struct {
 	reset     time.Time
 	global    *int64
 
+	lockOnce        sync.Once
+	lockQueue       chan struct{}
 	lastReset       time.Time
 	resetAt         int64
 	lastUsed        int64
 	activeRequests  int32
 	customRateLimit *customRateLimit
 	Userdata        interface{}
+}
+
+func (b *Bucket) contextLock() chan struct{} {
+	b.lockOnce.Do(func() {
+		b.lockQueue = make(chan struct{}, 1)
+	})
+	return b.lockQueue
+}
+
+func (b *Bucket) lockContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	lockQueue := b.contextLock()
+	select {
+	case lockQueue <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	if err := ctx.Err(); err != nil {
+		b.unlockContext()
+		return err
+	}
+
+	b.Lock()
+	return nil
+}
+
+func (b *Bucket) unlockContext() {
+	select {
+	case <-b.contextLock():
+	default:
+	}
 }
 
 func (b *Bucket) setReset(reset time.Time) {
@@ -262,6 +277,7 @@ func (b *Bucket) Release(headers http.Header) error {
 	defer func() {
 		atomic.AddInt32(&b.activeRequests, -1)
 		b.Unlock()
+		b.unlockContext()
 	}()
 
 	// Check if the bucket uses a custom ratelimiter
