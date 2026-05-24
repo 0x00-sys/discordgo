@@ -361,6 +361,107 @@ func TestVoiceSpeakingHandlersConcurrentDispatch(t *testing.T) {
 	wg.Wait()
 }
 
+func TestVoiceHeartbeatIgnoresInvalidInterval(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		vc := &VoiceConnection{LogLevel: -1}
+		vc.wsHeartbeat(&websocket.Conn{}, make(chan struct{}), 0)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("wsHeartbeat did not return for invalid interval")
+	}
+}
+
+func TestVoiceHelloStartsHeartbeat(t *testing.T) {
+	messages := make(chan []byte, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+
+		_, message, err := c.ReadMessage()
+		if err == nil {
+			messages <- message
+		}
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	closeChan := make(chan struct{})
+	defer close(closeChan)
+
+	vc := &VoiceConnection{
+		LogLevel: -1,
+		close:    closeChan,
+		wsConn:   conn,
+	}
+
+	vc.onEvent([]byte(`{"op":8,"d":{"heartbeat_interval":1}}`))
+
+	select {
+	case message := <-messages:
+		if !strings.Contains(string(message), `"op":3`) {
+			t.Fatalf("heartbeat message = %s, want op 3", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("voice Hello did not start heartbeat")
+	}
+}
+
+func TestVoiceReadyDoesNotStartHeartbeat(t *testing.T) {
+	messages := make(chan []byte, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+		_, message, err := c.ReadMessage()
+		if err == nil {
+			messages <- message
+		}
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	vc := &VoiceConnection{
+		LogLevel: -1,
+		close:    make(chan struct{}),
+		wsConn:   conn,
+	}
+	defer close(vc.close)
+
+	vc.onEvent([]byte(`{"op":2,"d":{"ssrc":1,"ip":"127.0.0.1","port":1,"modes":["aead_aes256_gcm_rtpsize"],"heartbeat_interval":1}}`))
+
+	select {
+	case message := <-messages:
+		t.Fatalf("voice Ready started heartbeat %s", message)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestVoiceWsListenManualCloseDoesNotReconnect(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
