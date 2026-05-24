@@ -111,10 +111,13 @@ func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
 
 // GetWaitTime returns the duration you should wait for a Bucket
 func (r *RateLimiter) GetWaitTime(b *Bucket, minRemaining int) time.Duration {
+	now := time.Now()
+	wait := time.Duration(0)
+
 	// If we ran out of calls and the reset time is still ahead of us
 	// then we need to take it easy and relax a little
-	if b.Remaining < minRemaining && b.reset.After(time.Now()) {
-		return b.reset.Sub(time.Now())
+	if b.Remaining < minRemaining && b.reset.After(now) {
+		wait = b.reset.Sub(now)
 	}
 
 	// Check for global ratelimits
@@ -123,11 +126,14 @@ func (r *RateLimiter) GetWaitTime(b *Bucket, minRemaining int) time.Duration {
 		global = b.global
 	}
 	sleepTo := time.Unix(0, atomic.LoadInt64(global))
-	if now := time.Now(); now.Before(sleepTo) {
-		return sleepTo.Sub(now)
+	if now.Before(sleepTo) {
+		globalWait := sleepTo.Sub(now)
+		if globalWait > wait {
+			wait = globalWait
+		}
 	}
 
-	return 0
+	return wait
 }
 
 // LockBucket Locks until a request can be made
