@@ -90,6 +90,14 @@ func TestOpenClearsResumeStateOnNewSessionCloseCodes(t *testing.T) {
 			name: "session timed out",
 			code: 4009,
 		},
+		{
+			name: "not authenticated",
+			code: 4003,
+		},
+		{
+			name: "already authenticated",
+			code: 4005,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1026,6 +1034,16 @@ func TestShouldStartNewGatewaySessionOnClose(t *testing.T) {
 		{
 			name: "session timed out",
 			err:  &websocket.CloseError{Code: 4009},
+			want: true,
+		},
+		{
+			name: "not authenticated",
+			err:  &websocket.CloseError{Code: 4003},
+			want: true,
+		},
+		{
+			name: "already authenticated",
+			err:  &websocket.CloseError{Code: 4005},
 			want: true,
 		},
 		{

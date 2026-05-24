@@ -428,7 +428,7 @@ func shouldReconnectOnGatewayClose(err error) bool {
 }
 
 func shouldStartNewGatewaySessionOnClose(err error) bool {
-	return websocket.IsCloseError(err, 4007, 4009)
+	return websocket.IsCloseError(err, 4003, 4005, 4007, 4009)
 }
 
 func (s *Session) resetGatewayResumeState() {
