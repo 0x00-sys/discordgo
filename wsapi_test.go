@@ -136,6 +136,68 @@ func TestOpenClearsResumeStateOnNewSessionCloseCodes(t *testing.T) {
 	}
 }
 
+func TestCloseWithCodeClearsResumeStateOnNormalCloseCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+	}{
+		{
+			name: "normal closure",
+			code: websocket.CloseNormalClosure,
+		},
+		{
+			name: "going away",
+			code: websocket.CloseGoingAway,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := &Session{
+				sessionID:        "old-session",
+				resumeGatewayURL: "wss://resume.gateway",
+				sequence:         new(int64),
+			}
+			atomic.StoreInt64(session.sequence, 42)
+
+			if err := session.CloseWithCode(tt.code); err != nil {
+				t.Fatalf("CloseWithCode() error = %v", err)
+			}
+			if session.sessionID != "" {
+				t.Fatalf("sessionID = %q, want empty", session.sessionID)
+			}
+			if session.resumeGatewayURL != "" {
+				t.Fatalf("resumeGatewayURL = %q, want empty", session.resumeGatewayURL)
+			}
+			if sequence := atomic.LoadInt64(session.sequence); sequence != 0 {
+				t.Fatalf("sequence = %d, want 0", sequence)
+			}
+		})
+	}
+}
+
+func TestCloseWithCodePreservesResumeStateOnReconnectableCloseCode(t *testing.T) {
+	session := &Session{
+		sessionID:        "old-session",
+		resumeGatewayURL: "wss://resume.gateway",
+		sequence:         new(int64),
+	}
+	atomic.StoreInt64(session.sequence, 42)
+
+	if err := session.CloseWithCode(websocket.CloseServiceRestart); err != nil {
+		t.Fatalf("CloseWithCode() error = %v", err)
+	}
+	if session.sessionID != "old-session" {
+		t.Fatalf("sessionID = %q, want old-session", session.sessionID)
+	}
+	if session.resumeGatewayURL != "wss://resume.gateway" {
+		t.Fatalf("resumeGatewayURL = %q, want wss://resume.gateway", session.resumeGatewayURL)
+	}
+	if sequence := atomic.LoadInt64(session.sequence); sequence != 42 {
+		t.Fatalf("sequence = %d, want 42", sequence)
+	}
+}
+
 func TestInvalidSessionClearsResumeStateConcurrentRead(t *testing.T) {
 	session := &Session{
 		ShouldReconnectOnError: false,
