@@ -48,6 +48,10 @@ type Session struct {
 	// Should the session retry requests when rate limited.
 	ShouldRetryOnRateLimit bool
 
+	// AllowedMentions sets the default allowed mentions for message, webhook,
+	// and interaction response payloads when the payload does not set its own.
+	AllowedMentions *MessageAllowedMentions
+
 	// Identify is sent during initial handshake with the discord gateway.
 	// https://discord.com/developers/docs/topics/gateway#identify
 	Identify Identify

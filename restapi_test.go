@@ -2,6 +2,7 @@ package discordgo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/ioutil"
@@ -314,6 +315,200 @@ func TestInteractionTokenEndpointsOmitAuthorization(t *testing.T) {
 				t.Fatal("HTTP transport was not called")
 			}
 		})
+	}
+}
+
+func TestSessionAllowedMentionsAppliedToRESTPayloads(t *testing.T) {
+	content := "@everyone hello"
+
+	tests := []struct {
+		name    string
+		call    func(*Session) error
+		payload func(map[string]interface{}) map[string]interface{}
+	}{
+		{
+			name: "channel message send",
+			call: func(s *Session) error {
+				_, err := s.ChannelMessageSendComplex("channel", &MessageSend{Content: content})
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} { return body },
+		},
+		{
+			name: "channel message edit",
+			call: func(s *Session) error {
+				_, err := s.ChannelMessageEditComplex(NewMessageEdit("channel", "message").SetContent(content))
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} { return body },
+		},
+		{
+			name: "forum thread start",
+			call: func(s *Session) error {
+				_, err := s.ForumThreadStartComplex("forum", &ThreadStart{Name: "post", AutoArchiveDuration: 60}, &MessageSend{Content: content})
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} {
+				message, ok := body["message"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("message payload = %#v, want object", body["message"])
+				}
+				return message
+			},
+		},
+		{
+			name: "webhook execute",
+			call: func(s *Session) error {
+				_, err := s.WebhookExecute("webhook", "token", true, &WebhookParams{Content: content})
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} { return body },
+		},
+		{
+			name: "webhook message edit",
+			call: func(s *Session) error {
+				_, err := s.WebhookMessageEdit("webhook", "token", "message", &WebhookEdit{Content: &content})
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} { return body },
+		},
+		{
+			name: "interaction response",
+			call: func(s *Session) error {
+				return s.InteractionRespond(&Interaction{ID: "interaction", Token: "token"}, &InteractionResponse{
+					Type: InteractionResponseChannelMessageWithSource,
+					Data: &InteractionResponseData{Content: content},
+				})
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} {
+				data, ok := body["data"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("data payload = %#v, want object", body["data"])
+				}
+				return data
+			},
+		},
+		{
+			name: "followup create",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageCreate(&Interaction{AppID: "application", Token: "token"}, true, &WebhookParams{Content: content})
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} { return body },
+		},
+		{
+			name: "followup edit",
+			call: func(s *Session) error {
+				_, err := s.FollowupMessageEdit(&Interaction{AppID: "application", Token: "token"}, "message", &WebhookEdit{Content: &content})
+				return err
+			},
+			payload: func(body map[string]interface{}) map[string]interface{} { return body },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.AllowedMentions = &MessageAllowedMentions{Parse: []AllowedMentionType{}}
+
+			called := false
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				body, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("ReadAll returned error: %v", err)
+				}
+
+				var payload map[string]interface{}
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("request body is not JSON: %v\n%s", err, body)
+				}
+				assertAllowedMentionsParse(t, tt.payload(payload), []string{})
+
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"channel"}`)),
+					Request:    r,
+				}, nil
+			})
+
+			if err := tt.call(session); err != nil {
+				t.Fatalf("%s returned error: %v", tt.name, err)
+			}
+			if !called {
+				t.Fatal("HTTP transport was not called")
+			}
+		})
+	}
+}
+
+func TestSessionAllowedMentionsDoesNotOverridePayload(t *testing.T) {
+	content := "@everyone hello"
+
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.AllowedMentions = &MessageAllowedMentions{Parse: []AllowedMentionType{}}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("request body is not JSON: %v\n%s", err, body)
+		}
+		assertAllowedMentionsParse(t, payload, []string{"users"})
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"channel"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.ChannelMessageSendComplex("channel", &MessageSend{
+		Content: content,
+		AllowedMentions: &MessageAllowedMentions{
+			Parse: []AllowedMentionType{AllowedMentionTypeUsers},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChannelMessageSendComplex returned error: %v", err)
+	}
+}
+
+func assertAllowedMentionsParse(t *testing.T, payload map[string]interface{}, want []string) {
+	t.Helper()
+
+	allowedMentions, ok := payload["allowed_mentions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("allowed_mentions = %#v, want object", payload["allowed_mentions"])
+	}
+
+	parse, ok := allowedMentions["parse"].([]interface{})
+	if !ok {
+		t.Fatalf("allowed_mentions.parse = %#v, want array", allowedMentions["parse"])
+	}
+	if len(parse) != len(want) {
+		t.Fatalf("len(allowed_mentions.parse) = %d, want %d", len(parse), len(want))
+	}
+	for i := range want {
+		got, ok := parse[i].(string)
+		if !ok {
+			t.Fatalf("allowed_mentions.parse[%d] = %#v, want string", i, parse[i])
+		}
+		if got != want[i] {
+			t.Fatalf("allowed_mentions.parse[%d] = %q, want %q", i, got, want[i])
+		}
 	}
 }
 
