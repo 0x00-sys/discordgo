@@ -219,9 +219,10 @@ func (s *Session) Open() error {
 
 	// Start sending heartbeats after Hello while waiting for READY/RESUMED.
 	go s.heartbeat(wsConn, s.listening, h.HeartbeatInterval)
+	startupReadTimeout := gatewayStartupReadTimeout(s.Dialer)
 
 	s.Unlock()
-	e, err = s.waitForGatewayReady(wsConn, resuming)
+	e, err = s.waitForGatewayReady(wsConn, resuming, startupReadTimeout)
 	s.Lock()
 	if err != nil {
 		return err
@@ -259,7 +260,18 @@ func (s *Session) Open() error {
 	return nil
 }
 
-func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchReplay bool) (*Event, error) {
+func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchReplay bool, startupReadTimeout time.Duration) (event *Event, err error) {
+	if startupReadTimeout > 0 {
+		if err = wsConn.SetReadDeadline(time.Now().Add(startupReadTimeout)); err != nil {
+			return nil, err
+		}
+		defer func() {
+			if clearErr := wsConn.SetReadDeadline(time.Time{}); err == nil && clearErr != nil {
+				err = clearErr
+			}
+		}()
+	}
+
 	for {
 		mt, m, err := wsConn.ReadMessage()
 		if err != nil {

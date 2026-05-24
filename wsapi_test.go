@@ -1035,6 +1035,35 @@ func newGatewayStalledOpenTestServer(t *testing.T) *httptest.Server {
 	return server
 }
 
+func newGatewayStalledReadyTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	done := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":1000}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+
+		<-done
+	}))
+
+	t.Cleanup(func() {
+		close(done)
+		server.Close()
+	})
+	return server
+}
+
 func newGatewayOpenTestSession(server *httptest.Server, token string) (*Session, error) {
 	session, err := New(token)
 	if err != nil {
@@ -1081,6 +1110,27 @@ func TestOpenReturnsWhenGatewayHelloStalls(t *testing.T) {
 	}
 	if session.wsConn != nil {
 		t.Fatal("Open left wsConn set after startup timeout")
+	}
+}
+
+func TestOpenReturnsWhenGatewayReadyStalls(t *testing.T) {
+	server := newGatewayStalledReadyTestServer(t)
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Dialer = &websocket.Dialer{HandshakeTimeout: 25 * time.Millisecond}
+
+	start := time.Now()
+	err = openWithTimeout(t, session)
+	if err == nil {
+		t.Fatal("Open returned nil error, want startup read timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Open returned after %v, want bounded startup timeout", elapsed)
+	}
+	if session.wsConn != nil {
+		t.Fatal("Open left wsConn set after gateway ready timeout")
 	}
 }
 
