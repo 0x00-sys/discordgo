@@ -519,7 +519,11 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		return
 
 	case 5:
-		if len(v.voiceSpeakingUpdateHandlers) == 0 {
+		v.RLock()
+		handlers := append([]VoiceSpeakingUpdateHandler(nil), v.voiceSpeakingUpdateHandlers...)
+		v.RUnlock()
+
+		if len(handlers) == 0 {
 			return
 		}
 
@@ -529,8 +533,8 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
-		for _, h := range v.voiceSpeakingUpdateHandlers {
-			h(v, voiceSpeakingUpdate)
+		for _, h := range handlers {
+			v.callVoiceSpeakingUpdateHandler(h, voiceSpeakingUpdate)
 		}
 
 	default:
@@ -538,6 +542,16 @@ func (v *VoiceConnection) onEvent(message []byte) {
 	}
 
 	return
+}
+
+func (v *VoiceConnection) callVoiceSpeakingUpdateHandler(h VoiceSpeakingUpdateHandler, vs *VoiceSpeakingUpdate) {
+	defer func() {
+		if err := recover(); err != nil {
+			v.log(LogError, "panic in VoiceSpeakingUpdate handler, %v", err)
+		}
+	}()
+
+	h(v, vs)
 }
 
 func redactedVoiceData(data []byte) string {
