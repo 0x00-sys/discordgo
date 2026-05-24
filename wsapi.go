@@ -1376,9 +1376,6 @@ func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error)
 			s.log(LogInformational, "error closing websocket, %s", err)
 		}
 
-		// TODO: Wait for Discord to actually close the connection.
-		time.Sleep(1 * time.Second)
-
 		s.log(LogInformational, "closing gateway websocket")
 		err = s.wsConn.Close()
 		if err != nil {

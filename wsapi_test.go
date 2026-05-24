@@ -236,6 +236,43 @@ func TestSessionCloseWithLockedWSMutex(t *testing.T) {
 	}, done)
 }
 
+func TestCloseWithCodeDoesNotSleepAfterCloseFrame(t *testing.T) {
+	closeCodes := make(chan int, 1)
+	server := newCloseCodeTestServer(t, closeCodes)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{
+		LogLevel:  -1,
+		wsConn:    conn,
+		listening: make(chan interface{}),
+		sequence:  new(int64),
+	}
+
+	start := time.Now()
+	if err := session.CloseWithCode(websocket.CloseServiceRestart); err != nil {
+		t.Fatalf("CloseWithCode() error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("CloseWithCode() took %v, want under 500ms", elapsed)
+	}
+
+	select {
+	case code := <-closeCodes:
+		if code != websocket.CloseServiceRestart {
+			t.Fatalf("close code = %d, want %d", code, websocket.CloseServiceRestart)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive websocket close frame")
+	}
+}
+
 func TestGatewayWriteDoesNotBlockCloseWithLockedWSMutex(t *testing.T) {
 	server := newCloseFrameTestServer(t)
 	defer server.Close()
@@ -1190,6 +1227,30 @@ func newCloseFrameTestServer(t *testing.T) *httptest.Server {
 
 		for {
 			if _, _, err = c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+}
+
+func newCloseCodeTestServer(t *testing.T, closeCodes chan<- int) *httptest.Server {
+	t.Helper()
+
+	upgrader := websocket.Upgrader{}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade() error = %v", err)
+			return
+		}
+		defer c.Close()
+
+		for {
+			if _, _, err = c.ReadMessage(); err != nil {
+				var closeErr *websocket.CloseError
+				if errors.As(err, &closeErr) {
+					closeCodes <- closeErr.Code
+				}
 				return
 			}
 		}
