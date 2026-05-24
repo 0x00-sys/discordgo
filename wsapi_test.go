@@ -261,6 +261,38 @@ func TestOpenSendsHeartbeatsBeforeReady(t *testing.T) {
 	}
 }
 
+func TestOpenIdentifyWriteDoesNotBlockCloseWithLockedWSMutex(t *testing.T) {
+	server := newGatewayOpenTestServer(t)
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	session.wsMutex.Lock()
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- session.Open()
+	}()
+
+	waitForWSConn(t, session)
+	time.Sleep(50 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- session.Close()
+	}()
+
+	requireCloseDoneWhileWSMutexLocked(t, func() {
+		session.wsMutex.Unlock()
+	}, closeDone)
+
+	select {
+	case <-openDone:
+	case <-time.After(time.Second):
+		t.Fatal("Open did not return after close")
+	}
+}
+
 func TestOpenReturnsOnUnexpectedDispatchDuringIdentify(t *testing.T) {
 	server := newGatewayOpenTestServer(t, []byte(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"guild","user":{"id":"user"},"status":"online","activities":[],"client_status":{}}}`))
 	session, err := newGatewayOpenTestSession(server, "Bot test")
@@ -1063,5 +1095,28 @@ func requireCloseDoneWhileWSMutexLocked(t *testing.T, unlock func(), done <-chan
 		case <-time.After(2 * time.Second):
 		}
 		t.Fatal("Close did not return while wsMutex was locked")
+	}
+}
+
+func waitForWSConn(t *testing.T, session *Session) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.After(time.Second)
+	for {
+		session.RLock()
+		ready := session.wsConn != nil
+		session.RUnlock()
+		if ready {
+			return
+		}
+
+		select {
+		case <-ticker.C:
+		case <-timeout:
+			t.Fatal("session websocket was not opened")
+		}
 	}
 }
