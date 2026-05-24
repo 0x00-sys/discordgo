@@ -249,6 +249,10 @@ type voiceOP2 struct {
 	IP                string        `json:"ip"`
 }
 
+type voiceOP8 struct {
+	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
+}
+
 // WaitUntilConnected waits for the Voice Connection to
 // become ready, if it does not become ready it returns an err
 func (v *VoiceConnection) waitUntilConnected() error {
@@ -452,15 +456,6 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
-		v.RLock()
-		wsConn := v.wsConn
-		closeChan := v.close
-		v.RUnlock()
-
-		// Start the voice websocket heartbeat to keep the connection alive
-		go v.wsHeartbeat(wsConn, closeChan, v.op2.HeartbeatInterval)
-		// TODO monitor a chan/bool to verify this was successful
-
 		// Start the UDP connection
 		err := v.udpOpen()
 		if err != nil {
@@ -476,7 +471,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			v.OpusSend = make(chan []byte, 2)
 		}
 		udpConn := v.udpConn
-		closeChan = v.close
+		closeChan := v.close
 		opusSend := v.OpusSend
 		deaf := v.deaf
 
@@ -536,6 +531,22 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		for _, h := range handlers {
 			v.callVoiceSpeakingUpdateHandler(h, voiceSpeakingUpdate)
 		}
+
+	case 8:
+		hello := voiceOP8{}
+		if err := json.Unmarshal(e.RawData, &hello); err != nil {
+			v.log(LogError, "OP8 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
+			return
+		}
+
+		v.RLock()
+		wsConn := v.wsConn
+		closeChan := v.close
+		v.RUnlock()
+
+		// Start the voice websocket heartbeat to keep the connection alive
+		go v.wsHeartbeat(wsConn, closeChan, hello.HeartbeatInterval)
+		// TODO monitor a chan/bool to verify this was successful
 
 	default:
 		v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, redactedVoiceData(e.RawData))
@@ -609,7 +620,7 @@ type voiceHeartbeatOp struct {
 // disconnect the websocket connection after a few seconds.
 func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struct{}, i time.Duration) {
 
-	if close == nil || wsConn == nil {
+	if close == nil || wsConn == nil || i <= 0 {
 		return
 	}
 
