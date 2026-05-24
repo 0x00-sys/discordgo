@@ -24,6 +24,21 @@ func TestOnEventOp1NilWsConn(t *testing.T) {
 	}
 }
 
+func TestOnEventRejectsNullEvent(t *testing.T) {
+	s := &Session{}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("onEvent() panicked: %v", r)
+		}
+	}()
+
+	_, err := s.onEvent(websocket.TextMessage, []byte(`null`))
+	if err == nil {
+		t.Fatal("onEvent() error = nil, want non-nil")
+	}
+}
+
 func TestChannelVoiceJoinManualNilWsConn(t *testing.T) {
 	s := &Session{}
 

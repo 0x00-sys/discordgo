@@ -821,6 +821,11 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		s.log(LogError, "error decoding websocket message, %s", err)
 		return e, err
 	}
+	if e == nil {
+		err = fmt.Errorf("invalid gateway event")
+		s.log(LogError, "error decoding websocket message, %s", err)
+		return nil, err
+	}
 
 	s.log(LogDebug, "Op: %d, Seq: %d, Type: %s, Data: %s\n\n", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData))
 
