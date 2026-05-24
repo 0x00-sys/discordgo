@@ -2520,6 +2520,309 @@ func TestThreadListSyncRespectsThreadMemberTracking(t *testing.T) {
 	}
 }
 
+func TestThreadListSyncReplacesParentGuildPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:       "old-thread",
+				GuildID:  "guild",
+				ParentID: "parent",
+				Type:     ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{
+					Archived: false,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.ThreadListSync(&ThreadListSync{
+		GuildID:    "guild",
+		ChannelIDs: []string{"parent"},
+		Threads: []*Channel{
+			{
+				ID:       "new-thread",
+				GuildID:  "guild",
+				ParentID: "parent",
+				Type:     ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{
+					Archived: false,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ThreadListSync returned error: %v", err)
+	}
+
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after sync: %v", err)
+	}
+	if updatedGuild == oldGuild {
+		t.Fatal("ThreadListSync reused the previously cached parent guild pointer")
+	}
+	if len(oldGuild.Threads) != 1 {
+		t.Fatalf("len(oldGuild.Threads) = %d, want 1", len(oldGuild.Threads))
+	}
+	if oldGuild.Threads[0].ID != "old-thread" {
+		t.Fatalf("old guild thread ID = %q, want old-thread", oldGuild.Threads[0].ID)
+	}
+	if len(updatedGuild.Threads) != 1 {
+		t.Fatalf("len(updatedGuild.Threads) = %d, want 1", len(updatedGuild.Threads))
+	}
+	if updatedGuild.Threads[0].ID != "new-thread" {
+		t.Fatalf("updated guild thread ID = %q, want new-thread", updatedGuild.Threads[0].ID)
+	}
+	if _, err := state.Channel("old-thread"); err == nil {
+		t.Fatal("old thread remained in channel cache")
+	}
+	if _, err := state.Channel("new-thread"); err != nil {
+		t.Fatalf("new thread missing from channel cache: %v", err)
+	}
+}
+
+func TestThreadListSyncDoesNotRaceReturnedGuildThreads(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:       "thread",
+				GuildID:  "guild",
+				ParentID: "parent",
+				Type:     ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{
+					Archived: false,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			for _, thread := range guild.Threads {
+				if thread != nil {
+					_ = thread.ID
+					_ = thread.ParentID
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.ThreadListSync(&ThreadListSync{
+			GuildID:    "guild",
+			ChannelIDs: []string{"parent"},
+			Threads: []*Channel{
+				{
+					ID:       "thread-" + strconv.Itoa(i),
+					GuildID:  "guild",
+					ParentID: "parent",
+					Type:     ChannelTypeGuildPublicThread,
+					ThreadMetadata: &ThreadMetadata{
+						Archived: false,
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ThreadListSync returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func TestThreadMembersUpdateReplacesCachedThreadPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+				Members: []*ThreadMember{
+					{ID: "thread", UserID: "remove"},
+					{ID: "thread", UserID: "keep"},
+				},
+				MemberCount: 2,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	err = state.ThreadMembersUpdate(&ThreadMembersUpdate{
+		ID:             "thread",
+		GuildID:        "guild",
+		MemberCount:    1,
+		RemovedMembers: []string{"remove"},
+	})
+	if err != nil {
+		t.Fatalf("ThreadMembersUpdate returned error: %v", err)
+	}
+
+	updatedThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error after update: %v", err)
+	}
+	if updatedThread == oldThread {
+		t.Fatal("ThreadMembersUpdate reused the previously cached thread pointer")
+	}
+	if len(oldThread.Members) != 2 {
+		t.Fatalf("len(oldThread.Members) = %d, want 2", len(oldThread.Members))
+	}
+	if oldThread.MemberCount != 2 {
+		t.Fatalf("oldThread.MemberCount = %d, want 2", oldThread.MemberCount)
+	}
+	if len(updatedThread.Members) != 1 {
+		t.Fatalf("len(updatedThread.Members) = %d, want 1", len(updatedThread.Members))
+	}
+	if updatedThread.Members[0].UserID != "keep" {
+		t.Fatalf("updated member user ID = %q, want keep", updatedThread.Members[0].UserID)
+	}
+	if updatedThread.MemberCount != 1 {
+		t.Fatalf("updatedThread.MemberCount = %d, want 1", updatedThread.MemberCount)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if guild.Threads[0] != updatedThread {
+		t.Fatal("guild thread slice does not point at the updated cached thread")
+	}
+}
+
+func TestThreadMembersUpdateDoesNotRaceReturnedThreadMembers(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+				Members: []*ThreadMember{
+					{ID: "thread", UserID: "member"},
+				},
+				MemberCount: 1,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10000; i++ {
+			_ = thread.MemberCount
+			for _, member := range thread.Members {
+				if member != nil {
+					_ = member.UserID
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		err := state.ThreadMembersUpdate(&ThreadMembersUpdate{
+			ID:             "thread",
+			GuildID:        "guild",
+			MemberCount:    1,
+			RemovedMembers: []string{"member-" + strconv.Itoa(i-1)},
+			AddedMembers: []AddedThreadMember{
+				{
+					ThreadMember: &ThreadMember{
+						ID:     "thread",
+						UserID: "member-" + strconv.Itoa(i),
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ThreadMembersUpdate returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func TestThreadMemberUpdateReplacesCachedThreadPointer(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+				Member:  &ThreadMember{ID: "thread", UserID: "old"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	err = state.ThreadMemberUpdate(&ThreadMemberUpdate{
+		GuildID: "guild",
+		ThreadMember: &ThreadMember{
+			ID:     "thread",
+			UserID: "new",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ThreadMemberUpdate returned error: %v", err)
+	}
+
+	updatedThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error after update: %v", err)
+	}
+	if updatedThread == oldThread {
+		t.Fatal("ThreadMemberUpdate reused the previously cached thread pointer")
+	}
+	if oldThread.Member == nil || oldThread.Member.UserID != "old" {
+		t.Fatalf("old thread member = %#v, want old", oldThread.Member)
+	}
+	if updatedThread.Member == nil || updatedThread.Member.UserID != "new" {
+		t.Fatalf("updated thread member = %#v, want new", updatedThread.Member)
+	}
+}
+
 func TestGuildMemberAddMemberCountUsesStateLock(t *testing.T) {
 	state := NewState()
 	state.TrackMembers = false

@@ -169,6 +169,17 @@ func copyPresence(presence *Presence) *Presence {
 	return &presenceCopy
 }
 
+func copyChannel(channel *Channel) *Channel {
+	channelCopy := *channel
+	channelCopy.Recipients = append([]*User(nil), channel.Recipients...)
+	channelCopy.Messages = append([]*Message(nil), channel.Messages...)
+	channelCopy.PermissionOverwrites = append([]*PermissionOverwrite(nil), channel.PermissionOverwrites...)
+	channelCopy.Members = append([]*ThreadMember(nil), channel.Members...)
+	channelCopy.AvailableTags = append([]ForumTag(nil), channel.AvailableTags...)
+	channelCopy.AppliedTags = append([]string(nil), channel.AppliedTags...)
+	return &channelCopy
+}
+
 func copyGuild(guild *Guild) *Guild {
 	guildCopy := *guild
 	guildCopy.Roles = append([]*Role(nil), guild.Roles...)
@@ -833,13 +844,18 @@ func (s *State) ChannelRemove(channel *Channel) error {
 	return nil
 }
 
+func replaceThreadInGuild(guild *Guild, oldThread, newThread *Channel) bool {
+	for i, thread := range guild.Threads {
+		if thread == oldThread || (thread != nil && thread.ID == newThread.ID) {
+			guild.Threads[i] = newThread
+			return true
+		}
+	}
+	return false
+}
+
 // ThreadListSync syncs guild threads with provided ones.
 func (s *State) ThreadListSync(tls *ThreadListSync) error {
-	guild, err := s.Guild(tls.GuildID)
-	if err != nil {
-		return err
-	}
-
 	for _, t := range tls.Threads {
 		if t == nil {
 			return ErrStateInvalidData
@@ -856,10 +872,16 @@ func (s *State) ThreadListSync(tls *ThreadListSync) error {
 	s.Lock()
 	defer s.Unlock()
 
+	guild, ok := s.guildMap[tls.GuildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
 	// This algorithm filters out archived or
 	// threads which are children of channels in channelIDs
 	// and then it adds all synced threads to guild threads and cache
-	index := 0
+	updated := copyGuild(guild)
+	updated.Threads = updated.Threads[:0]
 outer:
 	for _, t := range guild.Threads {
 		if t == nil {
@@ -873,38 +895,41 @@ outer:
 					continue outer
 				}
 			}
-			guild.Threads[index] = t
-			index++
+			updated.Threads = append(updated.Threads, t)
 		} else {
 			delete(s.channelMap, t.ID)
 		}
 	}
-	guild.Threads = guild.Threads[:index]
+	syncedThreads := make(map[string]*Channel, len(tls.Threads))
 	for _, t := range tls.Threads {
+		syncedThreads[t.ID] = t
 		if !s.TrackThreadMembers {
 			t = threadWithoutMembers(t)
 		}
 		s.channelMap[t.ID] = t
-		guild.Threads = append(guild.Threads, t)
+		updated.Threads = append(updated.Threads, t)
 	}
 
 	if s.TrackThreadMembers {
 		for _, m := range tls.Members {
 			if c, ok := s.channelMap[m.ID]; ok {
-				c.Member = m
+				if synced := syncedThreads[m.ID]; synced != nil {
+					synced.Member = m
+				}
+				copied := copyChannel(c)
+				copied.Member = m
+				s.channelMap[m.ID] = copied
+				replaceThreadInGuild(updated, c, copied)
 			}
 		}
 	}
 
+	s.replaceGuild(guild, updated)
 	return nil
 }
 
 // ThreadMembersUpdate updates thread members list
 func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
-	thread, err := s.Channel(tmu.ID)
-	if err != nil {
-		return err
-	}
 	for _, addedMember := range tmu.AddedMembers {
 		if s.TrackMembers && addedMember.Member != nil && addedMember.Member.User == nil {
 			return ErrStateInvalidData
@@ -914,14 +939,20 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 	s.Lock()
 	defer s.Unlock()
 
+	thread, ok := s.channelMap[tmu.ID]
+	if !ok {
+		return ErrStateNotFound
+	}
+	updated := copyChannel(thread)
+
 	if len(tmu.RemovedMembers) > 0 {
 		removedMembers := make(map[string]struct{}, len(tmu.RemovedMembers))
 		for _, removedMember := range tmu.RemovedMembers {
 			removedMembers[removedMember] = struct{}{}
 		}
 
-		members := thread.Members[:0]
-		for _, member := range thread.Members {
+		members := updated.Members[:0]
+		for _, member := range updated.Members {
 			if member == nil {
 				members = append(members, member)
 				continue
@@ -931,29 +962,29 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 			}
 			members = append(members, member)
 		}
-		thread.Members = members
+		updated.Members = members
 	}
 
 	for _, addedMember := range tmu.AddedMembers {
-		thread.Members = append(thread.Members, addedMember.ThreadMember)
+		updated.Members = append(updated.Members, addedMember.ThreadMember)
 		if s.TrackMembers && addedMember.Member != nil {
 			member := *addedMember.Member
 			if member.GuildID == "" {
 				member.GuildID = tmu.GuildID
 			}
-			err = s.memberAdd(&member)
-			if err != nil {
+			if err := s.memberAdd(&member); err != nil {
 				return err
 			}
 		}
 		if s.TrackPresences && addedMember.Presence != nil {
-			err = s.presenceAdd(tmu.GuildID, addedMember.Presence)
-			if err != nil {
+			if err := s.presenceAdd(tmu.GuildID, addedMember.Presence); err != nil {
 				return err
 			}
 		}
 	}
-	thread.MemberCount = tmu.MemberCount
+	updated.MemberCount = tmu.MemberCount
+	s.channelMap[tmu.ID] = updated
+	s.replaceChannel(thread, updated)
 
 	return nil
 }
@@ -971,7 +1002,10 @@ func (s *State) ThreadMemberUpdate(mu *ThreadMemberUpdate) error {
 	if !ok {
 		return ErrStateNotFound
 	}
-	thread.Member = mu.ThreadMember
+	updated := copyChannel(thread)
+	updated.Member = mu.ThreadMember
+	s.channelMap[mu.ID] = updated
+	s.replaceChannel(thread, updated)
 	return nil
 }
 
