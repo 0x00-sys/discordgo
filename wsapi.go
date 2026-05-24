@@ -13,10 +13,12 @@ package discordgo
 import (
 	"bytes"
 	"compress/zlib"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -461,6 +463,8 @@ const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecon
 // FailedHeartbeatAcks is the Number of heartbeat intervals to wait until forcing a connection restart.
 const FailedHeartbeatAcks time.Duration = 5 * time.Millisecond
 
+var gatewayHeartbeatInitialJitter = randomGatewayHeartbeatInitialJitter
+
 // HeartbeatLatency returns the latency between heartbeat acknowledgement and heartbeat send.
 func (s *Session) HeartbeatLatency() time.Duration {
 
@@ -482,8 +486,13 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		return
 	}
 
+	heartbeatInterval := heartbeatIntervalMsec * time.Millisecond
+	if !waitForInitialHeartbeat(listening, heartbeatInterval) {
+		return
+	}
+
 	var err error
-	ticker := time.NewTicker(heartbeatIntervalMsec * time.Millisecond)
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -526,6 +535,36 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			return
 		}
 	}
+}
+
+func waitForInitialHeartbeat(listening <-chan interface{}, heartbeatInterval time.Duration) bool {
+	delay := gatewayHeartbeatInitialJitter(heartbeatInterval)
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-listening:
+		return false
+	}
+}
+
+func randomGatewayHeartbeatInitialJitter(heartbeatInterval time.Duration) time.Duration {
+	if heartbeatInterval <= 0 {
+		return 0
+	}
+
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(heartbeatInterval)))
+	if err != nil {
+		return 0
+	}
+
+	return time.Duration(n.Int64())
 }
 
 func isListeningClosed(listening <-chan interface{}) bool {

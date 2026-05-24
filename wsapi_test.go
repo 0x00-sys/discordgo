@@ -695,6 +695,70 @@ func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 	<-done
 }
 
+func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter
+	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration {
+		return 50 * time.Millisecond
+	}
+	defer func() {
+		gatewayHeartbeatInitialJitter = oldJitter
+	}()
+
+	heartbeatRead := make(chan struct{}, 1)
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		for {
+			if _, _, err = conn.ReadMessage(); err != nil {
+				return
+			}
+			select {
+			case heartbeatRead <- struct{}{}:
+			default:
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	listening := make(chan interface{})
+	t.Cleanup(func() {
+		close(listening)
+	})
+
+	session := &Session{
+		LastHeartbeatAck: time.Now().Add(time.Hour).UTC(),
+		sequence:         new(int64),
+	}
+
+	go session.heartbeat(conn, listening, 1000)
+
+	select {
+	case <-heartbeatRead:
+		t.Fatal("heartbeat was written before initial jitter")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	select {
+	case <-heartbeatRead:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat was not written after initial jitter")
+	}
+}
+
 func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
 	closeCode := make(chan int, 1)
 
