@@ -367,6 +367,7 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 	resp, err := cfg.Client.Do(req)
 	if err != nil {
 		bucket.Release(nil)
+		err = redactedRequestError(err)
 		return
 	}
 	respBodyClosed := false
@@ -547,6 +548,17 @@ func redactedURL(rawurl string) string {
 	u.Path = strings.Join(parts, "/")
 
 	return u.String()
+}
+
+func redactedRequestError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+
+	redacted := *urlErr
+	redacted.URL = redactedURL(urlErr.URL)
+	return &redacted
 }
 
 func redactedRESTBody(body []byte, contentTypes ...string) string {
