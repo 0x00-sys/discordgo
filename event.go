@@ -225,19 +225,35 @@ func (s *Session) handleEvent(t string, i interface{}) {
 // setGuildIds will set the GuildID on all the members of a guild.
 // This is done as event data does not have it set.
 func setGuildIds(g *Guild) {
+	if g == nil {
+		return
+	}
+
 	for _, c := range g.Channels {
+		if c == nil {
+			continue
+		}
 		c.GuildID = g.ID
 	}
 
 	for _, t := range g.Threads {
+		if t == nil {
+			continue
+		}
 		t.GuildID = g.ID
 	}
 
 	for _, m := range g.Members {
+		if m == nil {
+			continue
+		}
 		m.GuildID = g.ID
 	}
 
 	for _, vs := range g.VoiceStates {
+		if vs == nil {
+			continue
+		}
 		vs.GuildID = g.ID
 	}
 }
