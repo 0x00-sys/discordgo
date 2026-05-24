@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -308,6 +309,56 @@ func TestVoiceSpeakingConcurrentClose(t *testing.T) {
 	vc.Close()
 	close(stop)
 	<-done
+}
+
+func TestVoiceSpeakingHandlerPanicDoesNotAbortDispatch(t *testing.T) {
+	vc := &VoiceConnection{LogLevel: -1}
+	vc.AddHandler(func(*VoiceConnection, *VoiceSpeakingUpdate) {
+		panic("boom")
+	})
+
+	called := make(chan struct{})
+	vc.AddHandler(func(*VoiceConnection, *VoiceSpeakingUpdate) {
+		close(called)
+	})
+
+	vc.onEvent([]byte(`{"op":5,"d":{"user_id":"user","ssrc":1,"speaking":true}}`))
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("second speaking handler was not called")
+	}
+}
+
+func TestVoiceSpeakingHandlersConcurrentDispatch(t *testing.T) {
+	vc := &VoiceConnection{LogLevel: -1}
+	vc.AddHandler(func(*VoiceConnection, *VoiceSpeakingUpdate) {})
+
+	payload := []byte(`{"op":5,"d":{"user_id":"user","ssrc":1,"speaking":true}}`)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					vc.onEvent(payload)
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 1000; i++ {
+		vc.AddHandler(func(*VoiceConnection, *VoiceSpeakingUpdate) {})
+	}
+	close(done)
+	wg.Wait()
 }
 
 func TestVoiceWsListenManualCloseDoesNotReconnect(t *testing.T) {
