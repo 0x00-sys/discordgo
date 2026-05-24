@@ -58,6 +58,10 @@ func (r *RateLimiter) GetBucket(key string) *Bucket {
 }
 
 func (r *RateLimiter) getBucket(key string, global *int64) *Bucket {
+	return r.getBucketWithTTL(key, global, 0)
+}
+
+func (r *RateLimiter) getBucketWithTTL(key string, global *int64, ttl time.Duration) *Bucket {
 	r.Lock()
 	defer r.Unlock()
 
@@ -65,6 +69,9 @@ func (r *RateLimiter) getBucket(key string, global *int64) *Bucket {
 	r.cleanupStaleBuckets(now)
 
 	if bucket, ok := r.buckets[key]; ok {
+		if ttl > 0 {
+			bucket.ttl = ttl
+		}
 		bucket.touch(now)
 		return bucket
 	}
@@ -73,6 +80,7 @@ func (r *RateLimiter) getBucket(key string, global *int64) *Bucket {
 		Remaining: 1,
 		Key:       key,
 		global:    global,
+		ttl:       ttl,
 	}
 	b.touch(now)
 
@@ -97,7 +105,6 @@ func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
 	}
 
 	r.lastCleanup = now
-	expiresBefore := now.Add(-rateLimitBucketTTL).UnixNano()
 	nowUnix := now.UnixNano()
 	for key, bucket := range r.buckets {
 		if atomic.LoadInt32(&bucket.activeRequests) != 0 {
@@ -106,6 +113,11 @@ func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
 		if reset := atomic.LoadInt64(&bucket.resetAt); reset > nowUnix {
 			continue
 		}
+		ttl := rateLimitBucketTTL
+		if bucket.ttl > 0 {
+			ttl = bucket.ttl
+		}
+		expiresBefore := now.Add(-ttl).UnixNano()
 		if atomic.LoadInt64(&bucket.lastUsed) < expiresBefore {
 			delete(r.buckets, key)
 		}
@@ -151,12 +163,16 @@ func (r *RateLimiter) LockBucketContext(ctx context.Context, bucketID string) (*
 }
 
 func (r *RateLimiter) lockBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
+	return r.lockBucketContextWithTTL(ctx, bucketID, useGlobalRateLimit, 0)
+}
+
+func (r *RateLimiter) lockBucketContextWithTTL(ctx context.Context, bucketID string, useGlobalRateLimit bool, ttl time.Duration) (*Bucket, error) {
 	globalReset := r.global
 	if !useGlobalRateLimit {
 		globalReset = r.unauthenticatedGlobal
 	}
 
-	return r.LockBucketObjectContext(ctx, r.getBucket(bucketID, globalReset))
+	return r.LockBucketObjectContext(ctx, r.getBucketWithTTL(bucketID, globalReset, ttl))
 }
 
 func (r *RateLimiter) lockEphemeralBucketContext(ctx context.Context, bucketID string, useGlobalRateLimit bool) (*Bucket, error) {
@@ -229,6 +245,7 @@ type Bucket struct {
 	resetAt         int64
 	lastUsed        int64
 	activeRequests  int32
+	ttl             time.Duration
 	customRateLimit *customRateLimit
 	Userdata        interface{}
 }

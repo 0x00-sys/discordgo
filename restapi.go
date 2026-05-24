@@ -281,6 +281,10 @@ func (s *Session) requestRawWithEphemeralBucket(method, urlStr, contentType stri
 }
 
 func (s *Session) requestWithBucketIDNoGlobal(method, urlStr string, data interface{}, bucketID string, options ...RequestOption) (response []byte, err error) {
+	return s.requestWithBucketIDNoGlobalTTL(method, urlStr, data, bucketID, 0, options...)
+}
+
+func (s *Session) requestWithBucketIDNoGlobalTTL(method, urlStr string, data interface{}, bucketID string, bucketTTL time.Duration, options ...RequestOption) (response []byte, err error) {
 	var body []byte
 	if data != nil {
 		body, err = Marshal(data)
@@ -289,10 +293,14 @@ func (s *Session) requestWithBucketIDNoGlobal(method, urlStr string, data interf
 		}
 	}
 
-	return s.requestRawWithBucketIDNoGlobal(method, urlStr, "application/json", body, bucketID, 0, options...)
+	return s.requestRawWithBucketIDNoGlobalTTL(method, urlStr, "application/json", body, bucketID, 0, bucketTTL, options...)
 }
 
 func (s *Session) requestRawWithBucketIDNoGlobal(method, urlStr, contentType string, b []byte, bucketID string, sequence int, options ...RequestOption) (response []byte, err error) {
+	return s.requestRawWithBucketIDNoGlobalTTL(method, urlStr, contentType, b, bucketID, sequence, 0, options...)
+}
+
+func (s *Session) requestRawWithBucketIDNoGlobalTTL(method, urlStr, contentType string, b []byte, bucketID string, sequence int, bucketTTL time.Duration, options ...RequestOption) (response []byte, err error) {
 	if bucketID == "" {
 		bucketID = strings.SplitN(urlStr, "?", 2)[0]
 	}
@@ -302,7 +310,7 @@ func (s *Session) requestRawWithBucketIDNoGlobal(method, urlStr, contentType str
 		return
 	}
 
-	bucket, err := s.Ratelimiter.lockBucketContext(cfg.Request.Context(), bucketID, false)
+	bucket, err := s.Ratelimiter.lockBucketContextWithTTL(cfg.Request.Context(), bucketID, false, bucketTTL)
 	if err != nil {
 		return
 	}
@@ -534,6 +542,8 @@ const (
 	redactedURLValue      = "REDACTED"
 	redactedMultipartBody = "[MULTIPART BODY REDACTED]"
 )
+
+const interactionWebhookBucketTTL = 20 * time.Minute
 
 func redactedHeaderValues(key string, values []string) []string {
 	if strings.EqualFold(key, "Authorization") {
@@ -2988,9 +2998,9 @@ func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data
 			return st, encodeErr
 		}
 
-		response, err = s.requestRawWithBucketIDNoGlobal("POST", uri, contentType, body, bucketID, 0, options...)
+		response, err = s.requestRawWithBucketIDNoGlobalTTL("POST", uri, contentType, body, bucketID, 0, interactionWebhookBucketTTL, options...)
 	} else {
-		response, err = s.requestWithBucketIDNoGlobal("POST", uri, data, bucketID, options...)
+		response, err = s.requestWithBucketIDNoGlobalTTL("POST", uri, data, bucketID, interactionWebhookBucketTTL, options...)
 	}
 	if !wait || err != nil {
 		return
@@ -3040,7 +3050,7 @@ func (s *Session) interactionWebhookMessage(appID, token, messageID string, opti
 	bucketID := interactionWebhookMessageBucketID(appID, token)
 
 	options = withoutAuthorizationOptions(options)
-	body, err := s.requestWithBucketIDNoGlobal("GET", uri, nil, bucketID, options...)
+	body, err := s.requestWithBucketIDNoGlobalTTL("GET", uri, nil, bucketID, interactionWebhookBucketTTL, options...)
 	if err != nil {
 		return
 	}
@@ -3104,12 +3114,12 @@ func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, 
 			return nil, err
 		}
 
-		response, err = s.requestRawWithBucketIDNoGlobal("PATCH", uri, contentType, body, bucketID, 0, options...)
+		response, err = s.requestRawWithBucketIDNoGlobalTTL("PATCH", uri, contentType, body, bucketID, 0, interactionWebhookBucketTTL, options...)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		response, err = s.requestWithBucketIDNoGlobal("PATCH", uri, data, bucketID, options...)
+		response, err = s.requestWithBucketIDNoGlobalTTL("PATCH", uri, data, bucketID, interactionWebhookBucketTTL, options...)
 
 		if err != nil {
 			return nil, err
@@ -3136,7 +3146,7 @@ func (s *Session) interactionWebhookMessageDelete(appID, token, messageID string
 	uri := EndpointWebhookMessage(appID, token, messageID)
 
 	options = withoutAuthorizationOptions(options)
-	_, err = s.requestWithBucketIDNoGlobal("DELETE", uri, nil, interactionWebhookMessageBucketID(appID, token), options...)
+	_, err = s.requestWithBucketIDNoGlobalTTL("DELETE", uri, nil, interactionWebhookMessageBucketID(appID, token), interactionWebhookBucketTTL, options...)
 	return
 }
 

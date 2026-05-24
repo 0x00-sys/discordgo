@@ -182,6 +182,32 @@ func TestRatelimitDoesNotCleanBucketsBeforeReset(t *testing.T) {
 	}
 }
 
+func TestRatelimitCleansBucketWithCustomTTL(t *testing.T) {
+	oldTTL := rateLimitBucketTTL
+	oldInterval := rateLimitBucketCleanupInterval
+	rateLimitBucketTTL = time.Hour
+	rateLimitBucketCleanupInterval = 0
+	defer func() {
+		rateLimitBucketTTL = oldTTL
+		rateLimitBucketCleanupInterval = oldInterval
+	}()
+
+	rl := NewRatelimiter()
+	shortLived := rl.getBucketWithTTL("/webhooks/application/token", rl.unauthenticatedGlobal, time.Minute)
+	defaultLived := rl.GetBucket("/channels/default/messages")
+	shortLived.touch(time.Now().Add(-2 * time.Minute))
+	defaultLived.touch(time.Now().Add(-2 * time.Minute))
+
+	rl.GetBucket("/channels/fresh/messages")
+
+	if _, ok := rl.buckets["/webhooks/application/token"]; ok {
+		t.Fatal("custom TTL bucket was not cleaned up")
+	}
+	if _, ok := rl.buckets["/channels/default/messages"]; !ok {
+		t.Fatal("default TTL bucket was unexpectedly removed")
+	}
+}
+
 func TestLockBucketObjectContextRespectsContextWhileWaitingForLock(t *testing.T) {
 	rl := NewRatelimiter()
 	bucket := rl.LockBucket("/channels/99/messages")
@@ -614,8 +640,12 @@ func TestInteractionResponseDeleteUsesMessageRouteBucket(t *testing.T) {
 	}
 
 	want := interactionWebhookMessageBucketID("application", "secret-token")
-	if _, ok := session.Ratelimiter.buckets[want]; !ok {
+	bucket, ok := session.Ratelimiter.buckets[want]
+	if !ok {
 		t.Fatalf("bucket %q was not created", want)
+	}
+	if bucket.ttl != interactionWebhookBucketTTL {
+		t.Fatalf("bucket ttl = %v, want %v", bucket.ttl, interactionWebhookBucketTTL)
 	}
 	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
 }
@@ -653,12 +683,37 @@ func TestInteractionFollowupCreateUsesTokenScopedNoGlobalBucket(t *testing.T) {
 		t.Fatal("interaction tokens mapped to the same bucket")
 	}
 	for _, want := range []string{wantOne, wantTwo} {
-		if _, ok := session.Ratelimiter.buckets[want]; !ok {
+		bucket, ok := session.Ratelimiter.buckets[want]
+		if !ok {
 			t.Fatalf("bucket %q was not created", want)
+		}
+		if bucket.ttl != interactionWebhookBucketTTL {
+			t.Fatalf("bucket %q ttl = %v, want %v", want, bucket.ttl, interactionWebhookBucketTTL)
 		}
 	}
 	assertRateLimitBucketsDoNotContain(t, session, "secret-one")
 	assertRateLimitBucketsDoNotContain(t, session, "secret-two")
+}
+
+func TestWebhookExecuteUsesDefaultBucketTTL(t *testing.T) {
+	session := newTestWebhookSession(t)
+
+	_, err := session.WebhookExecute("webhook", "secret-token", false, &WebhookParams{
+		Content: "hello",
+	})
+	if err != nil {
+		t.Fatalf("WebhookExecute returned error: %v", err)
+	}
+
+	want := webhookTokenBucketID("webhook")
+	bucket, ok := session.Ratelimiter.buckets[want]
+	if !ok {
+		t.Fatalf("bucket %q was not created", want)
+	}
+	if bucket.ttl != 0 {
+		t.Fatalf("bucket ttl = %v, want default ttl", bucket.ttl)
+	}
+	assertRateLimitBucketsDoNotContain(t, session, "secret-token")
 }
 
 func TestThreadRoutesUseStableBuckets(t *testing.T) {
