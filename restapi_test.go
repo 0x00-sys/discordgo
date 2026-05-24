@@ -680,6 +680,41 @@ func TestRequestWithLockedBucketNonJSONRateLimitUsesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestRequestWithLockedBucketJSONRateLimitUsesRetryAfterHeaderFallback(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header: http.Header{
+				"Retry-After":       []string{"2"},
+				"X-RateLimit-Scope": []string{"global"},
+			},
+			Body:    io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":0,"global":true}`)),
+			Request: r,
+		}, nil
+	})
+
+	before := time.Now()
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RateLimitError", err)
+	}
+	if rateLimitErr.RetryAfter != 2*time.Second {
+		t.Fatalf("RetryAfter = %v, want %v", rateLimitErr.RetryAfter, 2*time.Second)
+	}
+
+	reset := time.Unix(0, atomic.LoadInt64(session.Ratelimiter.global))
+	if !reset.After(before) {
+		t.Fatalf("global reset = %v, want after %v", reset, before)
+	}
+}
+
 func TestRateLimitErrorRedactsWebhookToken(t *testing.T) {
 	session, err := New("")
 	if err != nil {
