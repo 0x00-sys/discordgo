@@ -356,8 +356,20 @@ func (b *Bucket) Release(headers http.Header) error {
 		}
 
 		whole, frac := math.Modf(unix)
-		b.reset = time.Unix(int64(whole), 0).Add(time.Duration(frac * float64(time.Second)))
-		b.setReset(b.reset)
+		resetAt := time.Unix(int64(whole), 0).Add(time.Duration(frac * float64(time.Second)))
+
+		// The reset epoch is in the server's clock domain. When the
+		// Date header is available, apply the server-relative delta to
+		// the local clock so client clock skew cannot shorten or
+		// stretch the wait; the 250ms pad absorbs sub-second
+		// disagreement between the two headers. Without a parseable
+		// Date header, fall back to the raw epoch.
+		if discordTime, dateErr := http.ParseTime(headers.Get("Date")); dateErr == nil {
+			resetAt = time.Now().Add(resetAt.Sub(discordTime) + 250*time.Millisecond)
+		}
+
+		b.reset = resetAt
+		b.setReset(resetAt)
 	}
 
 	// Udpate remaining if header is present
