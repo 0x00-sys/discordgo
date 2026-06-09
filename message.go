@@ -86,7 +86,8 @@ type Message struct {
 	Attachments []*MessageAttachment `json:"attachments"`
 
 	// A list of components attached to the message.
-	Components []MessageComponent `json:"-"`
+	// Filled by UnmarshalJSON below; the json tag only affects marshaling.
+	Components []MessageComponent `json:"components,omitempty"`
 
 	// A list of embeds present in the message.
 	Embeds []*MessageEmbed `json:"embeds"`
@@ -196,18 +197,6 @@ func linkMessageInteractionMemberUser(m *Message) {
 	if m.Interaction.Member.GuildID == "" {
 		m.Interaction.Member.GuildID = m.GuildID
 	}
-}
-
-// MarshalJSON is a helper function to marshal the Message.
-func (m Message) MarshalJSON() ([]byte, error) {
-	type message Message
-	return json.Marshal(struct {
-		message
-		Components []MessageComponent `json:"components,omitempty"`
-	}{
-		message:    message(m),
-		Components: m.Components,
-	})
 }
 
 // GetCustomEmojis pulls out all the custom (Non-unicode) emojis from a message and returns a Slice of the Emoji struct.
