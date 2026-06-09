@@ -478,7 +478,10 @@ type helloOp struct {
 	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
 }
 
-const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecond
+// maxGatewayHeartbeatIntervalMsec bounds the raw millisecond interval so
+// that neither the interval conversion nor the missed-ACK deadline
+// (interval * FailedHeartbeatAcks) can overflow time.Duration.
+const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecond / (FailedHeartbeatAcks / time.Millisecond)
 
 // FailedHeartbeatAcks is the Number of heartbeat intervals to wait until forcing a connection restart.
 const FailedHeartbeatAcks time.Duration = 5 * time.Millisecond

@@ -290,6 +290,35 @@ func TestOpenRejectsInvalidHeartbeatInterval(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsHeartbeatIntervalOverflowingAckDeadline(t *testing.T) {
+	// 3e12 msec passes a bound that only protects the msec-to-Duration
+	// conversion, but interval*FailedHeartbeatAcks overflows int64 and
+	// turns the missed-ACK deadline negative.
+	server := newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":3000000000000}}`))
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	err = openWithTimeout(t, session)
+	if err == nil {
+		session.Close()
+		t.Fatal("Open returned nil error, want invalid heartbeat interval error")
+	}
+	if !strings.Contains(err.Error(), "invalid gateway heartbeat interval") {
+		t.Fatalf("Open returned error %q, want invalid heartbeat interval", err)
+	}
+}
+
+func TestMaxGatewayHeartbeatIntervalCannotOverflowAckDeadline(t *testing.T) {
+	if maxGatewayHeartbeatIntervalMsec > time.Duration(1<<63-1)/FailedHeartbeatAcks {
+		t.Fatalf("maxGatewayHeartbeatIntervalMsec %d allows interval*FailedHeartbeatAcks to overflow", maxGatewayHeartbeatIntervalMsec)
+	}
+	if maxGatewayHeartbeatIntervalMsec > time.Duration(1<<63-1)/time.Millisecond {
+		t.Fatalf("maxGatewayHeartbeatIntervalMsec %d allows interval*time.Millisecond to overflow", maxGatewayHeartbeatIntervalMsec)
+	}
+}
+
 func TestSessionCloseWithLockedWSMutex(t *testing.T) {
 	server := newCloseFrameTestServer(t)
 	defer server.Close()
