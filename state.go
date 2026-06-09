@@ -1491,7 +1491,20 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 
 		if t.Unavailable {
-			err = s.GuildAdd(t.Guild)
+			// An unavailable delete carries only {ID, Unavailable};
+			// merging it through GuildAdd would zero every other field
+			// of the cached guild. Keep the cached data and only flag
+			// the guild as unavailable.
+			s.Lock()
+			if guild, ok := s.guildMap[t.ID]; ok {
+				updated := copyGuild(guild)
+				updated.Unavailable = true
+				s.replaceGuild(guild, updated)
+				s.Unlock()
+			} else {
+				s.Unlock()
+				err = s.GuildAdd(t.Guild)
+			}
 		} else {
 			err = s.GuildRemove(t.Guild)
 		}
