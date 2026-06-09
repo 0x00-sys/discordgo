@@ -388,6 +388,18 @@ func (s *State) presenceAdd(guildID string, presence *Presence) error {
 		return ErrStateNotFound
 	}
 
+	updated := copyGuild(guild)
+	if err := presenceAddToGuild(updated, presence); err != nil {
+		return err
+	}
+	s.replaceGuild(guild, updated)
+	return nil
+}
+
+// presenceAddToGuild adds or merges a presence into a guild that was
+// already copied for replacement; it must not be called on a guild
+// pointer that has been handed out to callers.
+func presenceAddToGuild(guild *Guild, presence *Presence) error {
 	if presence == nil || presence.User == nil || presence.User.ID == "" {
 		return ErrStateInvalidData
 	}
@@ -469,21 +481,26 @@ func (s *State) PresenceRemove(guildID string, presence *Presence) error {
 		return ErrStateInvalidData
 	}
 
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		return err
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
-	for i, p := range guild.Presences {
+	// Fetch the guild under the write lock; a pointer obtained earlier
+	// could have been replaced by a concurrent update, losing this
+	// removal in an orphaned snapshot.
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	for i, p := range updated.Presences {
 		if p == nil || p.User == nil {
 			continue
 		}
 
 		if p.User.ID == presence.User.ID {
-			guild.Presences = append(guild.Presences[:i], guild.Presences[i+1:]...)
+			updated.Presences = append(updated.Presences[:i], updated.Presences[i+1:]...)
+			s.replaceGuild(guild, updated)
 			return nil
 		}
 	}
@@ -531,28 +548,36 @@ func (s *State) memberAdd(member *Member) error {
 		return ErrStateNotFound
 	}
 
-	member = copyMember(member)
+	updated := copyGuild(guild)
+	memberAddToGuild(members, updated, copyMember(member))
+	s.replaceGuild(guild, updated)
+	return nil
+}
 
+// memberAddToGuild adds or replaces a member in the member map and in a
+// guild that was already copied for replacement; it must not be called
+// on a guild pointer that has been handed out to callers.
+func memberAddToGuild(members map[string]*Member, guild *Guild, member *Member) {
 	m, ok := members[member.User.ID]
 	if !ok {
 		members[member.User.ID] = member
 		guild.Members = append(guild.Members, member)
-	} else {
-		// We are about to replace `m` in the state with `member`, but first we need to
-		// make sure we preserve any fields that the `member` doesn't contain from `m`.
-		if member.JoinedAt.IsZero() {
-			member.JoinedAt = m.JoinedAt
-		}
-		members[member.User.ID] = member
-		for i, guildMember := range guild.Members {
-			if guildMember == m || (guildMember != nil && guildMember.User != nil && guildMember.User.ID == member.User.ID) {
-				guild.Members[i] = member
-				return nil
-			}
-		}
-		guild.Members = append(guild.Members, member)
+		return
 	}
-	return nil
+
+	// We are about to replace `m` in the state with `member`, but first we need to
+	// make sure we preserve any fields that the `member` doesn't contain from `m`.
+	if member.JoinedAt.IsZero() {
+		member.JoinedAt = m.JoinedAt
+	}
+	members[member.User.ID] = member
+	for i, guildMember := range guild.Members {
+		if guildMember == m || (guildMember != nil && guildMember.User != nil && guildMember.User.ID == member.User.ID) {
+			guild.Members[i] = member
+			return
+		}
+	}
+	guild.Members = append(guild.Members, member)
 }
 
 // MemberAdd adds a member to the current world state, or
@@ -574,13 +599,20 @@ func (s *State) MemberRemove(member *Member) error {
 		return ErrNilState
 	}
 
-	guild, err := s.Guild(member.GuildID)
-	if err != nil {
-		return err
+	if member == nil || member.User == nil {
+		return ErrStateInvalidData
 	}
 
 	s.Lock()
 	defer s.Unlock()
+
+	// Fetch the guild under the write lock; a pointer obtained earlier
+	// could have been replaced by a concurrent update, losing this
+	// removal in an orphaned snapshot.
+	guild, ok := s.guildMap[member.GuildID]
+	if !ok {
+		return ErrStateNotFound
+	}
 
 	members, ok := s.memberMap[member.GuildID]
 	if !ok {
@@ -593,9 +625,14 @@ func (s *State) MemberRemove(member *Member) error {
 	}
 	delete(members, member.User.ID)
 
-	for i, m := range guild.Members {
+	updated := copyGuild(guild)
+	for i, m := range updated.Members {
+		if m == nil || m.User == nil {
+			continue
+		}
 		if m.User.ID == member.User.ID {
-			guild.Members = append(guild.Members[:i], guild.Members[i+1:]...)
+			updated.Members = append(updated.Members[:i], updated.Members[i+1:]...)
+			s.replaceGuild(guild, updated)
 			return nil
 		}
 	}
@@ -1453,16 +1490,40 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 					return ErrStateInvalidData
 				}
 			}
-			for i := range t.Members {
-				t.Members[i].GuildID = t.GuildID
-				err = s.MemberAdd(t.Members[i])
+
+			// Copy the guild once for the whole chunk; copying per
+			// member would churn through one guild snapshot per entry.
+			s.Lock()
+			guild, gok := s.guildMap[t.GuildID]
+			members, mok := s.memberMap[t.GuildID]
+			if gok && mok {
+				updated := copyGuild(guild)
+				for i := range t.Members {
+					t.Members[i].GuildID = t.GuildID
+					memberAddToGuild(members, updated, copyMember(t.Members[i]))
+				}
+				s.replaceGuild(guild, updated)
+			} else {
+				err = ErrStateNotFound
 			}
+			s.Unlock()
 		}
 
 		if s.TrackPresences {
-			for _, p := range t.Presences {
-				err = s.PresenceAdd(t.GuildID, p)
+			s.Lock()
+			guild, ok := s.guildMap[t.GuildID]
+			if ok {
+				updated := copyGuild(guild)
+				for _, p := range t.Presences {
+					if perr := presenceAddToGuild(updated, p); perr != nil {
+						err = perr
+					}
+				}
+				s.replaceGuild(guild, updated)
+			} else {
+				err = ErrStateNotFound
 			}
+			s.Unlock()
 		}
 	case *GuildRoleCreate:
 		if s.TrackRoles {
@@ -1664,7 +1725,10 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 					User:    t.User,
 				}
 			} else {
-				if t.User.Username != "" {
+				// The cached member is a shared snapshot; mutate a
+				// copy and let MemberAdd replace it.
+				m = copyMember(m)
+				if m.User != nil && t.User.Username != "" {
 					m.User.Username = t.User.Username
 				}
 			}
