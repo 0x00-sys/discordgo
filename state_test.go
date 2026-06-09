@@ -3143,3 +3143,278 @@ func TestThreadMemberTrackingFlagKeepsThread(t *testing.T) {
 		t.Fatalf("thread.Member = %#v, want nil", thread.Member)
 	}
 }
+
+func TestMemberAddDoesNotMutateGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "user-0", Username: "zero"}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	initial := len(snapshot.Members)
+
+	for i := 0; i < 50; i++ {
+		err := state.MemberAdd(&Member{
+			GuildID: "guild",
+			User:    &User{ID: "user-" + strconv.Itoa(i+1), Username: strconv.Itoa(i + 1)},
+		})
+		if err != nil {
+			t.Fatalf("MemberAdd returned error: %v", err)
+		}
+	}
+
+	if len(snapshot.Members) != initial {
+		t.Fatalf("snapshot.Members len = %d, want %d (snapshot mutated in place)", len(snapshot.Members), initial)
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.Members) != initial+50 {
+		t.Fatalf("current.Members len = %d, want %d", len(current.Members), initial+50)
+	}
+}
+
+func TestPresenceAddDoesNotMutateGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		err := state.PresenceAdd("guild", &Presence{
+			User:   &User{ID: "user-" + strconv.Itoa(i)},
+			Status: StatusOnline,
+		})
+		if err != nil {
+			t.Fatalf("PresenceAdd returned error: %v", err)
+		}
+	}
+
+	if len(snapshot.Presences) != 0 {
+		t.Fatalf("snapshot.Presences len = %d, want 0 (snapshot mutated in place)", len(snapshot.Presences))
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.Presences) != 50 {
+		t.Fatalf("current.Presences len = %d, want 50", len(current.Presences))
+	}
+}
+
+func TestPresenceUpdateDoesNotMutateMemberSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "user", Username: "old"}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Member("guild", "user")
+	if err != nil {
+		t.Fatalf("Member returned error: %v", err)
+	}
+
+	err = state.OnInterface(&Session{StateEnabled: true}, &PresenceUpdate{
+		GuildID: "guild",
+		Presence: Presence{
+			User:   &User{ID: "user", Username: "new"},
+			Status: StatusOnline,
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if snapshot.User.Username != "old" {
+		t.Fatalf("snapshot username = %q, want old (snapshot mutated in place)", snapshot.User.Username)
+	}
+
+	current, err := state.Member("guild", "user")
+	if err != nil {
+		t.Fatalf("Member returned error: %v", err)
+	}
+	if current.User.Username != "new" {
+		t.Fatalf("current username = %q, want new", current.User.Username)
+	}
+}
+
+func TestMemberRemoveSurvivesConcurrentGuildReplace(t *testing.T) {
+	for iter := 0; iter < 500; iter++ {
+		state := NewState()
+		if err := state.GuildAdd(&Guild{
+			ID: "guild",
+			Members: []*Member{
+				{GuildID: "guild", User: &User{ID: "user"}},
+			},
+		}); err != nil {
+			t.Fatalf("GuildAdd returned error: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := state.MemberRemove(&Member{GuildID: "guild", User: &User{ID: "user"}}); err != nil {
+				t.Errorf("MemberRemove returned error: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := state.RoleAdd("guild", &Role{ID: "role-" + strconv.Itoa(iter)}); err != nil {
+				t.Errorf("RoleAdd returned error: %v", err)
+			}
+		}()
+		wg.Wait()
+
+		if _, err := state.Member("guild", "user"); !errors.Is(err, ErrStateNotFound) {
+			t.Fatalf("iteration %d: Member returned error %v, want %v", iter, err, ErrStateNotFound)
+		}
+
+		guild, err := state.Guild("guild")
+		if err != nil {
+			t.Fatalf("Guild returned error: %v", err)
+		}
+		for _, m := range guild.Members {
+			if m != nil && m.User != nil && m.User.ID == "user" {
+				t.Fatalf("iteration %d: removed member still present in guild.Members", iter)
+			}
+		}
+	}
+}
+
+func TestMemberPresenceMutatorsDoNotRaceGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "keep", Username: "keep"}},
+		},
+		Presences: []*Presence{
+			{User: &User{ID: "keep"}, Status: StatusOnline},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			current, err := state.Guild("guild")
+			if err != nil {
+				return
+			}
+			for _, m := range current.Members {
+				if m != nil && m.User != nil {
+					_ = m.User.Username
+				}
+			}
+			for _, p := range current.Presences {
+				if p != nil && p.User != nil {
+					_ = p.User.ID
+				}
+			}
+			for _, m := range guild.Members {
+				if m != nil && m.User != nil {
+					_ = m.User.Username
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 2000; i++ {
+		id := "user-" + strconv.Itoa(i)
+		member := &Member{GuildID: "guild", User: &User{ID: id, Username: id}}
+		if err := state.MemberAdd(member); err != nil {
+			t.Fatalf("MemberAdd returned error: %v", err)
+		}
+		if err := state.PresenceAdd("guild", &Presence{User: &User{ID: id}, Status: StatusOnline}); err != nil {
+			t.Fatalf("PresenceAdd returned error: %v", err)
+		}
+		if err := state.PresenceRemove("guild", &Presence{User: &User{ID: id}}); err != nil {
+			t.Fatalf("PresenceRemove returned error: %v", err)
+		}
+		if err := state.MemberRemove(member); err != nil {
+			t.Fatalf("MemberRemove returned error: %v", err)
+		}
+	}
+	<-done
+}
+
+func TestGuildMembersChunkBatchUpdatesState(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	chunk := &GuildMembersChunk{
+		GuildID: "guild",
+		Members: []*Member{
+			{User: &User{ID: "user-a", Username: "a"}},
+			{User: &User{ID: "user-b", Username: "b"}},
+			{User: &User{ID: "user-a", Username: "a2"}},
+		},
+		Presences: []*Presence{
+			{User: &User{ID: "user-a"}, Status: StatusOnline},
+		},
+	}
+	if err := state.OnInterface(&Session{StateEnabled: true}, chunk); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if len(snapshot.Members) != 0 || len(snapshot.Presences) != 0 {
+		t.Fatalf("snapshot mutated in place: members=%d presences=%d", len(snapshot.Members), len(snapshot.Presences))
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.Members) != 2 {
+		t.Fatalf("current.Members len = %d, want 2", len(current.Members))
+	}
+	if len(current.Presences) != 1 {
+		t.Fatalf("current.Presences len = %d, want 1", len(current.Presences))
+	}
+
+	member, err := state.Member("guild", "user-a")
+	if err != nil {
+		t.Fatalf("Member returned error: %v", err)
+	}
+	if member.User.Username != "a2" {
+		t.Fatalf("member username = %q, want a2 (duplicate entry should win)", member.User.Username)
+	}
+	if member.GuildID != "guild" {
+		t.Fatalf("member guild ID = %q, want guild", member.GuildID)
+	}
+}
