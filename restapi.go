@@ -502,7 +502,7 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 
 func shouldRetryRESTRequest(method string) bool {
 	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete:
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodPatch, http.MethodDelete:
 		return true
 	default:
 		return false
