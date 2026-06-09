@@ -2,6 +2,7 @@ package discordgo
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -269,5 +270,59 @@ func TestMessageMarshalJSONIncludesComponents(t *testing.T) {
 	}
 	if button.CustomID != "open-ticket" {
 		t.Fatalf("button.CustomID = %q, want open-ticket", button.CustomID)
+	}
+}
+
+func TestMessageValueMarshalJSONIncludesComponents(t *testing.T) {
+	m := Message{
+		ID: "811736565172011001",
+		Components: []MessageComponent{
+			ActionsRow{
+				Components: []MessageComponent{
+					Button{
+						Label:    "Open",
+						Style:    PrimaryButton,
+						CustomID: "open-ticket",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"custom_id":"open-ticket"`) {
+		t.Fatalf("Marshal() = %s, want components included", data)
+	}
+}
+
+func TestEventStructsMarshalWithNilMessage(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{name: "message create", event: &MessageCreate{}},
+		{name: "message update", event: &MessageUpdate{}},
+		{name: "message delete", event: &MessageDelete{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("Marshal panicked: %v", r)
+				}
+			}()
+
+			data, err := json.Marshal(tt.event)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			if string(data) != "{}" {
+				t.Fatalf("Marshal() = %s, want {}", data)
+			}
+		})
 	}
 }
