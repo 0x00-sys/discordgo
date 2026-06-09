@@ -152,6 +152,15 @@ func (v *VoiceConnection) Disconnect() (err error) {
 	// Close websocket and udp connections
 	v.Close()
 
+	// The connection is being torn down for good; drop the opus
+	// channels so a future join starts fresh. Internal reconnects go
+	// through Close() directly and must keep the channels stable for
+	// any user pipelines attached to them.
+	v.Lock()
+	v.OpusSend = nil
+	v.OpusRecv = nil
+	v.Unlock()
+
 	v.log(LogInformational, "Deleting VoiceConnection %s", v.GuildID)
 
 	v.session.Lock()
@@ -208,9 +217,6 @@ func (v *VoiceConnection) Close() {
 
 		v.wsConn = nil
 	}
-
-	v.OpusSend = nil
-	v.OpusRecv = nil
 }
 
 // AddHandler adds a Handler for VoiceSpeakingUpdate events.

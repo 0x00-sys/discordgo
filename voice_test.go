@@ -136,22 +136,52 @@ func TestUDPOpenReadTimeout(t *testing.T) {
 	}
 }
 
-func TestVoiceCloseClearsOpusChannels(t *testing.T) {
+func TestVoiceCloseKeepsOpusChannels(t *testing.T) {
+	// Close runs on every internal reconnect (voice server updates,
+	// websocket errors, 4014 channel moves); user pipelines hold these
+	// channels and must survive it.
+	opusSend := make(chan []byte)
+	opusRecv := make(chan *Packet)
 	voice := &VoiceConnection{
+		OpusSend: opusSend,
+		OpusRecv: opusRecv,
+	}
+
+	voice.Close()
+
+	if voice.OpusSend != opusSend {
+		t.Fatal("OpusSend was replaced by Close")
+	}
+	if voice.OpusRecv != opusRecv {
+		t.Fatal("OpusRecv was replaced by Close")
+	}
+}
+
+func TestVoiceDisconnectClearsOpusChannels(t *testing.T) {
+	session := &Session{VoiceConnections: map[string]*VoiceConnection{}}
+	voice := &VoiceConnection{
+		session:  session,
+		GuildID:  "guild",
 		OpusSend: make(chan []byte),
 		OpusRecv: make(chan *Packet),
 	}
+	session.VoiceConnections["guild"] = voice
 
 	close(voice.OpusSend)
 	close(voice.OpusRecv)
 
-	voice.Close()
+	if err := voice.Disconnect(); err != nil {
+		t.Fatalf("Disconnect returned error: %v", err)
+	}
 
 	if voice.OpusSend != nil {
 		t.Fatal("OpusSend was not cleared")
 	}
 	if voice.OpusRecv != nil {
 		t.Fatal("OpusRecv was not cleared")
+	}
+	if _, ok := session.VoiceConnections["guild"]; ok {
+		t.Fatal("voice connection was not removed from session")
 	}
 }
 
