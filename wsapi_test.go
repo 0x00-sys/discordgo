@@ -1180,6 +1180,58 @@ func newGatewayOpenTestServerWithHello(t *testing.T, hello []byte, startupPacket
 	return server
 }
 
+func newGatewayTricklingStartupTestServer(t *testing.T, gap time.Duration, trickleCount int) *httptest.Server {
+	t.Helper()
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		for i := 0; i < trickleCount; i++ {
+			time.Sleep(gap)
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":11,"d":null}`)); err != nil {
+				return
+			}
+		}
+		time.Sleep(gap)
+		ready := []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`)
+		if err := conn.WriteMessage(websocket.TextMessage, ready); err != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}))
+
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestOpenSurvivesSlowStartupReplayWithinPerReadDeadline(t *testing.T) {
+	// Total startup traffic takes ~500ms, exceeding the 200ms startup
+	// read timeout, but every individual gap stays well below it. The
+	// deadline must bound time-without-data, not the whole replay.
+	server := newGatewayTricklingStartupTestServer(t, 100*time.Millisecond, 4)
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.Dialer = &websocket.Dialer{HandshakeTimeout: 200 * time.Millisecond}
+
+	if err = openWithTimeout(t, session); err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	session.Close()
+}
+
 func newGatewayOpenAfterHeartbeatTestServer(t *testing.T, heartbeatRead chan<- struct{}) *httptest.Server {
 	t.Helper()
 
