@@ -3686,3 +3686,190 @@ func TestVoiceEmojiStickerMutatorsDoNotRaceGuildSnapshot(t *testing.T) {
 	}
 	<-done
 }
+
+func TestMessageAddDoesNotMutateChannelSnapshot(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel", Content: "old"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	if len(snapshot.Messages) != 0 {
+		t.Fatalf("snapshot.Messages len = %d, want 0 (snapshot mutated in place)", len(snapshot.Messages))
+	}
+
+	current, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(current.Messages) != 1 {
+		t.Fatalf("current.Messages len = %d, want 1", len(current.Messages))
+	}
+}
+
+func TestMessageAddMergeDoesNotMutateMessageSnapshot(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel", Content: "old"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel", Content: "new"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	if snapshot.Content != "old" {
+		t.Fatalf("snapshot content = %q, want old (snapshot mutated in place)", snapshot.Content)
+	}
+
+	current, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if current.Content != "new" {
+		t.Fatalf("current content = %q, want new", current.Content)
+	}
+}
+
+func TestMessageRemoveDoesNotMutateChannelSnapshot(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel", Content: "old"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	if err := state.MessageRemove(&Message{ID: "message", ChannelID: "channel"}); err != nil {
+		t.Fatalf("MessageRemove returned error: %v", err)
+	}
+
+	if len(snapshot.Messages) != 1 {
+		t.Fatalf("snapshot.Messages len = %d, want 1 (snapshot mutated in place)", len(snapshot.Messages))
+	}
+
+	current, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(current.Messages) != 0 {
+		t.Fatalf("current.Messages len = %d, want 0", len(current.Messages))
+	}
+
+	if _, err := state.Message("channel", "message"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Message returned error %v, want %v", err, ErrStateNotFound)
+	}
+}
+
+func TestMessageAddKeepsMaxMessageCount(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 2
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		err := state.MessageAdd(&Message{ID: "message-" + strconv.Itoa(i), ChannelID: "channel"})
+		if err != nil {
+			t.Fatalf("MessageAdd returned error: %v", err)
+		}
+	}
+
+	current, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(current.Messages) != 2 {
+		t.Fatalf("current.Messages len = %d, want 2", len(current.Messages))
+	}
+	if current.Messages[0].ID != "message-1" || current.Messages[1].ID != "message-2" {
+		t.Fatalf("kept messages = %q, %q; want message-1, message-2", current.Messages[0].ID, current.Messages[1].ID)
+	}
+}
+
+func TestMessageMutatorsDoNotRaceChannelSnapshot(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 5
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{ID: "keep", ChannelID: "channel", Content: "keep"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	channel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			current, err := state.Channel("channel")
+			if err != nil {
+				return
+			}
+			for _, c := range []*Channel{channel, current} {
+				for _, m := range c.Messages {
+					if m != nil {
+						_ = m.Content
+					}
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 2000; i++ {
+		id := "message-" + strconv.Itoa(i)
+		if err := state.MessageAdd(&Message{ID: id, ChannelID: "channel", Content: "a"}); err != nil {
+			t.Fatalf("MessageAdd returned error: %v", err)
+		}
+		if err := state.MessageAdd(&Message{ID: id, ChannelID: "channel", Content: "b"}); err != nil {
+			t.Fatalf("MessageAdd (merge) returned error: %v", err)
+		}
+		if err := state.MessageRemove(&Message{ID: id, ChannelID: "channel"}); err != nil {
+			t.Fatalf("MessageRemove returned error: %v", err)
+		}
+	}
+	<-done
+}
