@@ -1166,52 +1166,71 @@ func (s *State) MessageAdd(message *Message) error {
 		return ErrNilState
 	}
 
-	c, err := s.Channel(message.ChannelID)
-	if err != nil {
-		return err
+	if message == nil {
+		return ErrStateInvalidData
 	}
 
 	s.Lock()
 	defer s.Unlock()
 
-	// If the message exists, merge in the new message contents.
-	for _, m := range c.Messages {
+	// Fetch the channel under the write lock; a pointer obtained
+	// earlier could have been replaced by a concurrent update, losing
+	// this change in an orphaned snapshot.
+	c, ok := s.channelMap[message.ChannelID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyChannel(c)
+
+	// If the message exists, merge in the new message contents into a
+	// copy; the cached message is a shared snapshot.
+	for i, m := range updated.Messages {
+		if m == nil {
+			continue
+		}
 		if m.ID == message.ID {
+			merged := *m
 			if message.Content != "" {
-				m.Content = message.Content
+				merged.Content = message.Content
 			}
 			if message.EditedTimestamp != nil {
-				m.EditedTimestamp = message.EditedTimestamp
+				merged.EditedTimestamp = message.EditedTimestamp
 			}
 			if message.Mentions != nil {
-				m.Mentions = message.Mentions
+				merged.Mentions = message.Mentions
 			}
 			if message.Embeds != nil {
-				m.Embeds = message.Embeds
+				merged.Embeds = message.Embeds
 			}
 			if message.Attachments != nil {
-				m.Attachments = message.Attachments
+				merged.Attachments = message.Attachments
 			}
 			if !message.Timestamp.IsZero() {
-				m.Timestamp = message.Timestamp
+				merged.Timestamp = message.Timestamp
 			}
 			if message.Author != nil {
-				m.Author = message.Author
+				merged.Author = message.Author
 			}
 			if message.Components != nil {
-				m.Components = message.Components
+				merged.Components = message.Components
 			}
 
+			updated.Messages[i] = &merged
+			s.channelMap[updated.ID] = updated
+			s.replaceChannel(c, updated)
 			return nil
 		}
 	}
 
-	c.Messages = append(c.Messages, message)
+	updated.Messages = append(updated.Messages, message)
 
-	if len(c.Messages) > s.MaxMessageCount {
-		c.Messages = c.Messages[len(c.Messages)-s.MaxMessageCount:]
+	if len(updated.Messages) > s.MaxMessageCount {
+		updated.Messages = updated.Messages[len(updated.Messages)-s.MaxMessageCount:]
 	}
 
+	s.channelMap[updated.ID] = updated
+	s.replaceChannel(c, updated)
 	return nil
 }
 
@@ -1226,18 +1245,26 @@ func (s *State) MessageRemove(message *Message) error {
 
 // messageRemoveByID removes a message by channelID and messageID from the world state.
 func (s *State) messageRemoveByID(channelID, messageID string) error {
-	c, err := s.Channel(channelID)
-	if err != nil {
-		return err
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
-	for i, m := range c.Messages {
-		if m.ID == messageID {
-			c.Messages = append(c.Messages[:i], c.Messages[i+1:]...)
+	// Fetch the channel under the write lock; a pointer obtained
+	// earlier could have been replaced by a concurrent update, losing
+	// this removal in an orphaned snapshot.
+	c, ok := s.channelMap[channelID]
+	if !ok {
+		return ErrStateNotFound
+	}
 
+	updated := copyChannel(c)
+	for i, m := range updated.Messages {
+		if m == nil {
+			continue
+		}
+		if m.ID == messageID {
+			updated.Messages = append(updated.Messages[:i], updated.Messages[i+1:]...)
+			s.channelMap[updated.ID] = updated
+			s.replaceChannel(c, updated)
 			return nil
 		}
 	}
