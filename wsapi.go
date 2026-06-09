@@ -266,9 +266,6 @@ func (s *Session) Open() error {
 
 func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchReplay bool, startupReadTimeout time.Duration) (event *Event, err error) {
 	if startupReadTimeout > 0 {
-		if err = wsConn.SetReadDeadline(time.Now().Add(startupReadTimeout)); err != nil {
-			return nil, err
-		}
 		defer func() {
 			if clearErr := wsConn.SetReadDeadline(time.Time{}); err == nil && clearErr != nil {
 				err = clearErr
@@ -277,6 +274,16 @@ func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchRepla
 	}
 
 	for {
+		// Refresh the deadline for every message so it bounds the time
+		// without data from the gateway rather than the total startup
+		// duration; a healthy resume can replay events for longer than
+		// the timeout.
+		if startupReadTimeout > 0 {
+			if err = wsConn.SetReadDeadline(time.Now().Add(startupReadTimeout)); err != nil {
+				return nil, err
+			}
+		}
+
 		mt, m, err := wsConn.ReadMessage()
 		if err != nil {
 			if shouldStartNewGatewaySessionOnClose(err) {
