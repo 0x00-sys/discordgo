@@ -273,6 +273,46 @@ func TestMessageMarshalJSONIncludesComponents(t *testing.T) {
 	}
 }
 
+func TestMessageNonceUnmarshal(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "large integer nonce", data: `{"id":"1","nonce":1234567890123456789}`, want: "1234567890123456789"},
+		{name: "string nonce", data: `{"id":"1","nonce":"ticket-123"}`, want: "ticket-123"},
+		{name: "missing nonce", data: `{"id":"1"}`, want: ""},
+		{name: "null nonce", data: `{"id":"1","nonce":null}`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m Message
+			if err := json.Unmarshal([]byte(tt.data), &m); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if m.Nonce != tt.want {
+				t.Fatalf("Nonce = %q, want %q", m.Nonce, tt.want)
+			}
+		})
+	}
+}
+
+func TestMessageNonceMarshalRoundTrip(t *testing.T) {
+	var m Message
+	if err := json.Unmarshal([]byte(`{"id":"1","nonce":1234567890123456789}`), &m); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	data, err := json.Marshal(&m)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"nonce":"1234567890123456789"`) {
+		t.Fatalf("Marshal() = %s, want lossless nonce", data)
+	}
+}
+
 func TestMessageValueMarshalJSONIncludesComponents(t *testing.T) {
 	m := Message{
 		ID: "811736565172011001",

@@ -99,7 +99,10 @@ type Message struct {
 	Reactions []*MessageReactions `json:"reactions"`
 
 	// The nonce used for validating that the message was sent.
-	Nonce interface{} `json:"nonce,omitempty"`
+	// Discord sends it as either a string or an integer; it is
+	// normalized to a string by UnmarshalJSON below to avoid losing
+	// precision on large integer nonces.
+	Nonce string `json:"nonce,omitempty"`
 
 	// Whether the message is pinned or not.
 	Pinned bool `json:"pinned"`
@@ -173,6 +176,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	var v struct {
 		message
 		RawComponents []unmarshalableMessageComponent `json:"components"`
+		RawNonce      stringNumber                    `json:"nonce"`
 	}
 	err := json.Unmarshal(data, &v)
 	if err != nil {
@@ -183,6 +187,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	for i, v := range v.RawComponents {
 		m.Components[i] = v.MessageComponent
 	}
+	m.Nonce = string(v.RawNonce)
 	linkMessageInteractionMemberUser(m)
 	return err
 }
