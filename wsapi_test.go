@@ -3,6 +3,7 @@ package discordgo
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,63 @@ func TestGatewayStartupReadTimeout(t *testing.T) {
 				t.Fatalf("gatewayStartupReadTimeout() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOnEventSkipsRedactionWhenDebugDisabled(t *testing.T) {
+	payload := strings.Builder{}
+	payload.WriteString(`{"op":11,"d":{`)
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			payload.WriteString(",")
+		}
+		fmt.Fprintf(&payload, `"field%d":"value%d"`, i, i)
+	}
+	payload.WriteString(`}}`)
+	message := []byte(payload.String())
+
+	s := &Session{} // default LogLevel is LogError
+
+	allocs := testing.AllocsPerRun(20, func() {
+		if _, err := s.onEvent(websocket.TextMessage, message); err != nil {
+			t.Fatalf("onEvent() error = %v", err)
+		}
+	})
+
+	// Redacting the payload unmarshals and re-marshals every field
+	// (thousands of allocations); the plain envelope decode stays far
+	// below that.
+	if allocs > 500 {
+		t.Fatalf("onEvent() allocations = %v with debug logging disabled, want <= 500", allocs)
+	}
+}
+
+func TestOnEventLogsRedactedDataWhenDebugEnabled(t *testing.T) {
+	oldLogger := Logger
+	defer func() { Logger = oldLogger }()
+
+	var logged []string
+	Logger = func(msgL, caller int, format string, a ...interface{}) {
+		logged = append(logged, fmt.Sprintf(format, a...))
+	}
+
+	s := &Session{LogLevel: LogDebug}
+	message := []byte(`{"op":11,"d":{"token":"secret-token"}}`)
+	if _, err := s.onEvent(websocket.TextMessage, message); err != nil {
+		t.Fatalf("onEvent() error = %v", err)
+	}
+
+	found := false
+	for _, line := range logged {
+		if strings.Contains(line, "field is redacted") || strings.Contains(line, "REDACTED") {
+			found = true
+		}
+		if strings.Contains(line, "secret-token") {
+			t.Fatalf("debug log leaked token: %q", line)
+		}
+	}
+	if !found {
+		t.Fatalf("debug log did not include redacted gateway data: %q", logged)
 	}
 }
 
