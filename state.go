@@ -931,6 +931,9 @@ outer:
 // ThreadMembersUpdate updates thread members list
 func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 	for _, addedMember := range tmu.AddedMembers {
+		if addedMember.ThreadMember == nil {
+			return ErrStateInvalidData
+		}
 		if s.TrackMembers && addedMember.Member != nil && addedMember.Member.User == nil {
 			return ErrStateInvalidData
 		}

@@ -155,6 +155,21 @@ func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "thread members update nil thread member",
+			event: &ThreadMembersUpdate{
+				ID:      "thread",
+				GuildID: "guild",
+				AddedMembers: []AddedThreadMember{
+					{
+						Member: &Member{
+							GuildID: "guild",
+							User:    &User{ID: "user"},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2360,6 +2375,58 @@ func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
 	}
 	if thread.MemberCount != 1 {
 		t.Fatalf("MemberCount = %d, want 1", thread.MemberCount)
+	}
+}
+
+func TestThreadMembersUpdateRejectsNilThreadMember(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{
+				ID:      "thread",
+				GuildID: "guild",
+				Type:    ChannelTypeGuildPublicThread,
+				Members: []*ThreadMember{
+					{
+						ID:     "thread",
+						UserID: "existing",
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.ThreadMembersUpdate(&ThreadMembersUpdate{
+		ID:          "thread",
+		GuildID:     "guild",
+		MemberCount: 2,
+		AddedMembers: []AddedThreadMember{
+			{
+				Member: &Member{
+					GuildID: "guild",
+					User:    &User{ID: "user"},
+				},
+			},
+		},
+	})
+	if !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("ThreadMembersUpdate returned error %v, want %v", err, ErrStateInvalidData)
+	}
+
+	thread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if len(thread.Members) != 1 {
+		t.Fatalf("len(thread.Members) = %d, want 1", len(thread.Members))
+	}
+	for i, member := range thread.Members {
+		if member == nil {
+			t.Fatalf("thread.Members[%d] is nil", i)
+		}
 	}
 }
 
