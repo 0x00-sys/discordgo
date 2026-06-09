@@ -875,7 +875,34 @@ func newTestInteractionSession(t *testing.T) *Session {
 	}
 }
 
-func TestRatelimitResetUsesEpoch(t *testing.T) {
+func TestRatelimitResetUsesServerDateForSkewedClocks(t *testing.T) {
+	rl := NewRatelimiter()
+	bucket := rl.LockBucket("/channels/99/messages")
+
+	// Server clock runs 30s ahead of ours; Date and Reset are both in
+	// server time, with the reset 2s after server-now. The local wait
+	// must be ~2s, not the 32s the raw epoch implies.
+	serverNow := time.Now().Add(30 * time.Second)
+	resetAt := serverNow.Add(2 * time.Second)
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Remaining", "0")
+	headers.Set("X-RateLimit-Reset", fmt.Sprintf("%.3f", float64(resetAt.UnixNano())/float64(time.Second)))
+	headers.Set("Date", serverNow.UTC().Format(http.TimeFormat))
+
+	err := bucket.Release(headers)
+	if err != nil {
+		t.Fatalf("Release returned error: %v", err)
+	}
+
+	// The Date header only has second resolution and the computation
+	// pads by 250ms, so accept ~2s to ~3.5s.
+	wait := time.Until(bucket.reset)
+	if wait < 1500*time.Millisecond || wait > 3500*time.Millisecond {
+		t.Fatalf("wait = %v, want roughly 2s despite the 30s clock skew", wait)
+	}
+}
+
+func TestRatelimitResetIgnoresMalformedDateHeader(t *testing.T) {
 	rl := NewRatelimiter()
 	bucket := rl.LockBucket("/channels/99/messages")
 
@@ -883,7 +910,7 @@ func TestRatelimitResetUsesEpoch(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("X-RateLimit-Remaining", "0")
 	headers.Set("X-RateLimit-Reset", fmt.Sprintf("%.3f", float64(resetAt.UnixNano())/float64(time.Second)))
-	headers.Set("Date", time.Now().Add(-time.Hour).Format(time.RFC1123))
+	headers.Set("Date", "not a date")
 
 	err := bucket.Release(headers)
 	if err != nil {
