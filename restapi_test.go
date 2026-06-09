@@ -1495,6 +1495,43 @@ func TestRequestWithLockedBucketRetriesGetServerError(t *testing.T) {
 	}
 }
 
+func TestRequestWithLockedBucketRetriesPatchServerError(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Status:     "502 Bad Gateway",
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`server error`)),
+				Request:    r,
+			}, nil
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("PATCH", EndpointGateway, map[string]string{"name": "updated"}, EndpointGateway)
+	if err != nil {
+		t.Fatalf("RequestWithBucketID() returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestRequestWithLockedBucketDoesNotRetryPostServerError(t *testing.T) {
 	session, err := New("")
 	if err != nil {
