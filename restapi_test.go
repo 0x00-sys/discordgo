@@ -1563,7 +1563,7 @@ func TestRequestWithLockedBucketGlobalRateLimitSetsGlobalReset(t *testing.T) {
 	}
 }
 
-func TestChannelMessagesPinnedUsesGlobalBucket(t *testing.T) {
+func TestChannelMessagesPinnedUsesPerChannelBucket(t *testing.T) {
 	session, err := New("")
 	if err != nil {
 		t.Fatal(err)
@@ -1593,19 +1593,20 @@ func TestChannelMessagesPinnedUsesGlobalBucket(t *testing.T) {
 	session.Ratelimiter.Lock()
 	defer session.Ratelimiter.Unlock()
 
-	want := EndpointChannelMessagesPins("")
-	if _, ok := session.Ratelimiter.buckets[want]; !ok {
-		t.Fatalf("bucket %q was not created", want)
+	for _, want := range []string{
+		EndpointChannelMessagesPins("channel-a"),
+		EndpointChannelMessagesPins("channel-b"),
+	} {
+		if _, ok := session.Ratelimiter.buckets[want]; !ok {
+			t.Fatalf("bucket %q was not created", want)
+		}
 	}
-	if len(session.Ratelimiter.buckets) != 1 {
-		t.Fatalf("bucket count = %d, want 1", len(session.Ratelimiter.buckets))
+	if len(session.Ratelimiter.buckets) != 2 {
+		t.Fatalf("bucket count = %d, want 2", len(session.Ratelimiter.buckets))
 	}
 	for key := range session.Ratelimiter.buckets {
 		if strings.Contains(key, "?") {
 			t.Fatalf("bucket %q includes query parameters", key)
-		}
-		if strings.Contains(key, "channel-a") || strings.Contains(key, "channel-b") {
-			t.Fatalf("bucket %q includes channel ID", key)
 		}
 	}
 }

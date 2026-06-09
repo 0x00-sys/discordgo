@@ -2501,7 +2501,7 @@ func (s *Session) ChannelMessagesPinned(channelID string, before *time.Time, lim
 		uri += "?" + v.Encode()
 	}
 
-	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointChannelMessagesPins(""), options...)
+	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointChannelMessagesPins(channelID), options...)
 	if err != nil {
 		return
 	}
