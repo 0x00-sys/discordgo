@@ -3873,3 +3873,43 @@ func TestMessageMutatorsDoNotRaceChannelSnapshot(t *testing.T) {
 	}
 	<-done
 }
+
+func TestGuildRemoveCleansChannelsAddedConcurrently(t *testing.T) {
+	for iter := 0; iter < 500; iter++ {
+		state := NewState()
+		if err := state.GuildAdd(&Guild{
+			ID:       "guild",
+			Channels: []*Channel{{ID: "channel-a", GuildID: "guild"}},
+		}); err != nil {
+			t.Fatalf("GuildAdd returned error: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := state.GuildRemove(&Guild{ID: "guild"}); err != nil {
+				t.Errorf("GuildRemove returned error: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			// The guild may already be gone; only the leak matters.
+			_ = state.ChannelAdd(&Channel{ID: "channel-b", GuildID: "guild", Type: ChannelTypeGuildText})
+		}()
+		wg.Wait()
+
+		for _, channelID := range []string{"channel-a", "channel-b"} {
+			if _, err := state.Channel(channelID); !errors.Is(err, ErrStateNotFound) {
+				t.Fatalf("iteration %d: Channel(%q) returned error %v, want %v (channelMap leak)", iter, channelID, err, ErrStateNotFound)
+			}
+		}
+	}
+}
+
+func TestGuildRemoveRejectsNilGuild(t *testing.T) {
+	state := NewState()
+	if err := state.GuildRemove(nil); !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("GuildRemove(nil) returned error %v, want %v", err, ErrStateInvalidData)
+	}
+}
