@@ -3913,3 +3913,73 @@ func TestGuildRemoveRejectsNilGuild(t *testing.T) {
 		t.Fatalf("GuildRemove(nil) returned error %v, want %v", err, ErrStateInvalidData)
 	}
 }
+
+func TestGuildDeleteUnavailablePreservesGuildData(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		Name:        "guild-name",
+		Icon:        "guild-icon",
+		OwnerID:     "owner",
+		MemberCount: 42,
+		Channels: []*Channel{
+			{ID: "channel", GuildID: "guild"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.OnInterface(&Session{StateEnabled: true}, &GuildDelete{Guild: &Guild{
+		ID:          "guild",
+		Unavailable: true,
+	}})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if snapshot.Unavailable {
+		t.Fatal("held snapshot was mutated in place")
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after unavailable delete: %v", err)
+	}
+	if !guild.Unavailable {
+		t.Fatal("guild unavailable flag was not set")
+	}
+	if guild.Name != "guild-name" || guild.Icon != "guild-icon" || guild.OwnerID != "owner" {
+		t.Fatalf("guild data lost during outage: name=%q icon=%q owner=%q", guild.Name, guild.Icon, guild.OwnerID)
+	}
+	if guild.MemberCount != 42 {
+		t.Fatalf("guild member count = %d, want 42", guild.MemberCount)
+	}
+	if len(guild.Channels) != 1 {
+		t.Fatalf("guild channels len = %d, want 1", len(guild.Channels))
+	}
+}
+
+func TestGuildDeleteUnavailableCachesUnknownGuildStub(t *testing.T) {
+	state := NewState()
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &GuildDelete{Guild: &Guild{
+		ID:          "guild",
+		Unavailable: true,
+	}})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if !guild.Unavailable {
+		t.Fatal("guild unavailable flag was not set on stub")
+	}
+}
