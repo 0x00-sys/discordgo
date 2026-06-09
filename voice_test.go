@@ -619,3 +619,99 @@ func TestVoiceReadyConcurrentClose(t *testing.T) {
 		t.Fatal("voice READY handling did not finish after Close")
 	}
 }
+
+// textFrameBlockingConn blocks websocket text-frame writes until released,
+// while letting the HTTP handshake and control frames (e.g. close) pass
+// through, to simulate a stalled TCP send.
+type textFrameBlockingConn struct {
+	net.Conn
+	block       bool
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func (c *textFrameBlockingConn) Write(p []byte) (int, error) {
+	if c.block && len(p) > 0 && int(p[0]&0x0f) == websocket.TextMessage {
+		c.enteredOnce.Do(func() { close(c.entered) })
+		<-c.release
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *textFrameBlockingConn) releaseWrites() {
+	c.releaseOnce.Do(func() { close(c.release) })
+}
+
+func TestVoiceSpeakingStalledWriteDoesNotBlockClose(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			if _, _, err = c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	blocking := &textFrameBlockingConn{
+		block:   true,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer blocking.releaseWrites()
+
+	dialer := websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			blocking.Conn = conn
+			return blocking, nil
+		},
+	}
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := dialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+
+	vc := &VoiceConnection{LogLevel: -1, wsConn: conn}
+
+	speakingDone := make(chan struct{})
+	go func() {
+		defer close(speakingDone)
+		_ = vc.Speaking(true)
+	}()
+
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Speaking never reached the websocket write")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		vc.Close()
+		close(closeDone)
+	}()
+
+	// Close sleeps one second after the close frame by design; anything
+	// well beyond that means it is wedged behind the stalled write.
+	select {
+	case <-closeDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close blocked behind a stalled Speaking write")
+	}
+
+	blocking.releaseWrites()
+	<-speakingDone
+}
