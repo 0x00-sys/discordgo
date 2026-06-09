@@ -235,6 +235,12 @@ func (s *Session) Open() error {
 		err = ErrWSNotFound
 		return err
 	}
+	if s.wsConn != wsConn {
+		// A concurrent Close()+Open() replaced the connection; the
+		// session belongs to the newer Open now.
+		err = ErrWSAlreadyOpen
+		return err
+	}
 	if e.Type != `READY` && e.Type != `RESUMED` {
 		// This is not fatal, but it does not follow their API documentation.
 		s.log(LogWarning, "Expected READY/RESUMED, instead got:\n%#v\n", e)
@@ -247,6 +253,12 @@ func (s *Session) Open() error {
 	s.Lock()
 	if s.wsConn == nil {
 		err = ErrWSNotFound
+		return err
+	}
+	if s.wsConn != wsConn {
+		// A concurrent Close()+Open() replaced the connection; the
+		// session belongs to the newer Open now.
+		err = ErrWSAlreadyOpen
 		return err
 	}
 
@@ -1271,7 +1283,11 @@ func (s *Session) reconnect() {
 			err = s.Open()
 			if err == nil {
 				if reconnectCanceled(cancel) {
-					_ = s.closeWithCode(websocket.CloseNormalClosure, false)
+					// Close() cancels the reconnect and tears down the
+					// current connection in one critical section, so
+					// the connection this Open created is already
+					// closed - and the current one may belong to a
+					// newer user-initiated Open() that must survive.
 					s.log(LogInformational, "reconnect canceled after opening gateway")
 					return
 				}
