@@ -334,13 +334,20 @@ func (s *State) GuildRemove(guild *Guild) error {
 		return ErrNilState
 	}
 
-	old, err := s.Guild(guild.ID)
-	if err != nil {
-		return err
+	if guild == nil {
+		return ErrStateInvalidData
 	}
 
 	s.Lock()
 	defer s.Unlock()
+
+	// Fetch the guild under the write lock; a pointer obtained earlier
+	// could have been replaced by a concurrent update, leaking
+	// channelMap entries for channels added in between.
+	old, ok := s.guildMap[guild.ID]
+	if !ok {
+		return ErrStateNotFound
+	}
 
 	delete(s.guildMap, guild.ID)
 	delete(s.memberMap, guild.ID)
@@ -357,7 +364,7 @@ func (s *State) GuildRemove(guild *Guild) error {
 	}
 
 	for i, g := range s.Guilds {
-		if g.ID == guild.ID {
+		if g != nil && g.ID == guild.ID {
 			s.Guilds = append(s.Guilds[:i], s.Guilds[i+1:]...)
 			return nil
 		}
