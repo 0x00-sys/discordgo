@@ -1029,6 +1029,82 @@ func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
 	}
 }
 
+func TestReconnectCanceledAfterOpenKeepsNewerSession(t *testing.T) {
+	// A user Close()+Open() that lands while an automatic reconnect has
+	// an Open in flight must win: the reconnect may not tear down the
+	// session the user just opened. The synchronous Connect handler
+	// runs inside the reconnect-driven Open's unlocked window, which
+	// reproduces the interleaving deterministically.
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+
+		if err := c.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
+			return
+		}
+		if _, _, err := c.ReadMessage(); err != nil {
+			return
+		}
+		ready := []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`)
+		if err := c.WriteMessage(websocket.TextMessage, ready); err != nil {
+			return
+		}
+		// Keep the connection alive until the client closes it.
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.SyncEvents = true
+
+	var handled int32
+	session.AddHandler(func(s *Session, _ *Connect) {
+		if atomic.AddInt32(&handled, 1) != 1 {
+			return
+		}
+		if err := s.Close(); err != nil {
+			t.Errorf("Close returned error: %v", err)
+		}
+		if err := s.Open(); err != nil {
+			t.Errorf("Open returned error: %v", err)
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect did not return")
+	}
+
+	session.RLock()
+	open := session.wsConn != nil
+	session.RUnlock()
+	if !open {
+		t.Fatal("reconnect closed the session opened by the concurrent Open")
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("final Close returned error: %v", err)
+	}
+}
+
 func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 	session, err := New("Bot test")
 	if err != nil {
