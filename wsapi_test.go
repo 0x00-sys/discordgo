@@ -14,6 +14,27 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestGatewayStartupReadTimeout(t *testing.T) {
+	tests := []struct {
+		name   string
+		dialer *websocket.Dialer
+		want   time.Duration
+	}{
+		{name: "nil dialer", dialer: nil, want: 45 * time.Second},
+		{name: "configured handshake timeout", dialer: &websocket.Dialer{HandshakeTimeout: 10 * time.Second}, want: 10 * time.Second},
+		{name: "zero handshake timeout", dialer: &websocket.Dialer{}, want: 45 * time.Second},
+		{name: "negative handshake timeout", dialer: &websocket.Dialer{HandshakeTimeout: -time.Second}, want: 45 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayStartupReadTimeout(tt.dialer); got != tt.want {
+				t.Fatalf("gatewayStartupReadTimeout() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOnEventOp1NilWsConn(t *testing.T) {
 	seq := int64(0)
 	s := &Session{sequence: &seq}

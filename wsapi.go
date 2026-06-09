@@ -41,7 +41,9 @@ var ErrWSShardBounds = errors.New("ShardID must be less than ShardCount")
 const websocketCloseFrameTimeout = time.Second
 
 func gatewayStartupReadTimeout(dialer *websocket.Dialer) time.Duration {
-	if dialer == nil {
+	// A dialer without a handshake timeout must not disable the startup
+	// read deadlines; fall back to the same bound used for nil dialers.
+	if dialer == nil || dialer.HandshakeTimeout <= 0 {
 		return 45 * time.Second
 	}
 	return dialer.HandshakeTimeout
