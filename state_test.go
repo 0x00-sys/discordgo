@@ -3418,3 +3418,271 @@ func TestGuildMembersChunkBatchUpdatesState(t *testing.T) {
 		t.Fatalf("member guild ID = %q, want guild", member.GuildID)
 	}
 }
+
+func TestVoiceStateUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	join := &VoiceStateUpdate{
+		VoiceState: &VoiceState{GuildID: "guild", ChannelID: "channel", UserID: "user"},
+	}
+	if err := state.OnInterface(&Session{StateEnabled: true}, join); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if len(snapshot.VoiceStates) != 0 {
+		t.Fatalf("snapshot.VoiceStates len = %d, want 0 (snapshot mutated in place)", len(snapshot.VoiceStates))
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.VoiceStates) != 1 {
+		t.Fatalf("current.VoiceStates len = %d, want 1", len(current.VoiceStates))
+	}
+
+	joined := current
+	leave := &VoiceStateUpdate{
+		VoiceState: &VoiceState{GuildID: "guild", ChannelID: "", UserID: "user"},
+	}
+	if err := state.OnInterface(&Session{StateEnabled: true}, leave); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if len(joined.VoiceStates) != 1 {
+		t.Fatalf("joined snapshot VoiceStates len = %d, want 1 (snapshot mutated in place)", len(joined.VoiceStates))
+	}
+	current, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.VoiceStates) != 0 {
+		t.Fatalf("current.VoiceStates len = %d, want 0 after leave", len(current.VoiceStates))
+	}
+}
+
+func TestEmojiAddDoesNotMutateGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:     "guild",
+		Emojis: []*Emoji{{ID: "emoji-0", Name: "zero"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	if err := state.EmojiAdd("guild", &Emoji{ID: "emoji-1", Name: "one"}); err != nil {
+		t.Fatalf("EmojiAdd returned error: %v", err)
+	}
+	if err := state.EmojiAdd("guild", &Emoji{ID: "emoji-0", Name: "replaced"}); err != nil {
+		t.Fatalf("EmojiAdd returned error: %v", err)
+	}
+
+	if len(snapshot.Emojis) != 1 || snapshot.Emojis[0].Name != "zero" {
+		t.Fatalf("snapshot.Emojis = %v, want untouched single zero emoji", snapshot.Emojis)
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.Emojis) != 2 {
+		t.Fatalf("current.Emojis len = %d, want 2", len(current.Emojis))
+	}
+
+	emoji, err := state.Emoji("guild", "emoji-0")
+	if err != nil {
+		t.Fatalf("Emoji returned error: %v", err)
+	}
+	if emoji.Name != "replaced" {
+		t.Fatalf("emoji name = %q, want replaced", emoji.Name)
+	}
+
+	if err := state.EmojiAdd("guild", nil); !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("EmojiAdd(nil) returned error %v, want %v", err, ErrStateInvalidData)
+	}
+}
+
+func TestEmojisAddBatchDoesNotMutateGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.EmojisAdd("guild", []*Emoji{
+		{ID: "emoji-0", Name: "zero"},
+		{ID: "emoji-1", Name: "one"},
+		{ID: "emoji-0", Name: "zero-replaced"},
+	})
+	if err != nil {
+		t.Fatalf("EmojisAdd returned error: %v", err)
+	}
+
+	if len(snapshot.Emojis) != 0 {
+		t.Fatalf("snapshot.Emojis len = %d, want 0 (snapshot mutated in place)", len(snapshot.Emojis))
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.Emojis) != 2 {
+		t.Fatalf("current.Emojis len = %d, want 2", len(current.Emojis))
+	}
+
+	emoji, err := state.Emoji("guild", "emoji-0")
+	if err != nil {
+		t.Fatalf("Emoji returned error: %v", err)
+	}
+	if emoji.Name != "zero-replaced" {
+		t.Fatalf("emoji name = %q, want zero-replaced", emoji.Name)
+	}
+}
+
+func TestGuildEmojisStickersUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Emojis:   []*Emoji{{ID: "emoji-old"}},
+		Stickers: []*Sticker{{ID: "sticker-old"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	err = state.OnInterface(&Session{StateEnabled: true}, &GuildEmojisUpdate{
+		GuildID: "guild",
+		Emojis:  []*Emoji{{ID: "emoji-new-a"}, {ID: "emoji-new-b"}},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	err = state.OnInterface(&Session{StateEnabled: true}, &GuildStickersUpdate{
+		GuildID:  "guild",
+		Stickers: []*Sticker{{ID: "sticker-new"}},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	if len(snapshot.Emojis) != 1 || snapshot.Emojis[0].ID != "emoji-old" {
+		t.Fatalf("snapshot.Emojis = %v, want untouched emoji-old", snapshot.Emojis)
+	}
+	if len(snapshot.Stickers) != 1 || snapshot.Stickers[0].ID != "sticker-old" {
+		t.Fatalf("snapshot.Stickers = %v, want untouched sticker-old", snapshot.Stickers)
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.Emojis) != 2 {
+		t.Fatalf("current.Emojis len = %d, want 2", len(current.Emojis))
+	}
+	if len(current.Stickers) != 1 || current.Stickers[0].ID != "sticker-new" {
+		t.Fatalf("current.Stickers = %v, want sticker-new", current.Stickers)
+	}
+}
+
+func TestVoiceEmojiStickerMutatorsDoNotRaceGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Emojis:   []*Emoji{{ID: "emoji-keep", Name: "keep"}},
+		Stickers: []*Sticker{{ID: "sticker-keep"}},
+		VoiceStates: []*VoiceState{
+			{GuildID: "guild", ChannelID: "channel", UserID: "keep"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			current, err := state.Guild("guild")
+			if err != nil {
+				return
+			}
+			for _, g := range []*Guild{guild, current} {
+				for _, vs := range g.VoiceStates {
+					if vs != nil {
+						_ = vs.ChannelID
+					}
+				}
+				for _, e := range g.Emojis {
+					if e != nil {
+						_ = e.Name
+					}
+				}
+				for _, st := range g.Stickers {
+					if st != nil {
+						_ = st.ID
+					}
+				}
+			}
+		}
+	}()
+
+	session := &Session{StateEnabled: true}
+	for i := 0; i < 2000; i++ {
+		id := strconv.Itoa(i)
+		join := &VoiceStateUpdate{
+			VoiceState: &VoiceState{GuildID: "guild", ChannelID: "channel", UserID: "user-" + id},
+		}
+		if err := state.OnInterface(session, join); err != nil {
+			t.Fatalf("OnInterface(join) returned error: %v", err)
+		}
+		if err := state.EmojiAdd("guild", &Emoji{ID: "emoji-" + id, Name: id}); err != nil {
+			t.Fatalf("EmojiAdd returned error: %v", err)
+		}
+		err := state.OnInterface(session, &GuildStickersUpdate{
+			GuildID:  "guild",
+			Stickers: []*Sticker{{ID: "sticker-" + id}},
+		})
+		if err != nil {
+			t.Fatalf("OnInterface(stickers) returned error: %v", err)
+		}
+		leave := &VoiceStateUpdate{
+			VoiceState: &VoiceState{GuildID: "guild", ChannelID: "", UserID: "user-" + id},
+		}
+		if err := state.OnInterface(session, leave); err != nil {
+			t.Fatalf("OnInterface(leave) returned error: %v", err)
+		}
+		err = state.OnInterface(session, &GuildEmojisUpdate{
+			GuildID: "guild",
+			Emojis:  []*Emoji{{ID: "emoji-keep", Name: "keep"}},
+		})
+		if err != nil {
+			t.Fatalf("OnInterface(emojis) returned error: %v", err)
+		}
+	}
+	<-done
+}

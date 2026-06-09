@@ -1094,32 +1094,67 @@ func (s *State) EmojiAdd(guildID string, emoji *Emoji) error {
 		return ErrNilState
 	}
 
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		return err
+	if emoji == nil {
+		return ErrStateInvalidData
 	}
 
 	s.Lock()
 	defer s.Unlock()
 
+	// Fetch the guild under the write lock; a pointer obtained earlier
+	// could have been replaced by a concurrent update, losing this
+	// change in an orphaned snapshot.
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	emojiAddToGuild(updated, emoji)
+	s.replaceGuild(guild, updated)
+	return nil
+}
+
+// emojiAddToGuild adds or replaces an emoji in a guild that was already
+// copied for replacement; it must not be called on a guild pointer that
+// has been handed out to callers.
+func emojiAddToGuild(guild *Guild, emoji *Emoji) {
 	for i, e := range guild.Emojis {
-		if e.ID == emoji.ID {
+		if e != nil && e.ID == emoji.ID {
 			guild.Emojis[i] = emoji
-			return nil
+			return
 		}
 	}
 
 	guild.Emojis = append(guild.Emojis, emoji)
-	return nil
 }
 
 // EmojisAdd adds multiple emojis to the world state.
 func (s *State) EmojisAdd(guildID string, emojis []*Emoji) error {
+	if s == nil {
+		return ErrNilState
+	}
+
 	for _, e := range emojis {
-		if err := s.EmojiAdd(guildID, e); err != nil {
-			return err
+		if e == nil {
+			return ErrStateInvalidData
 		}
 	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	// Copy the guild once for the whole batch.
+	updated := copyGuild(guild)
+	for _, e := range emojis {
+		emojiAddToGuild(updated, e)
+	}
+	s.replaceGuild(guild, updated)
 	return nil
 }
 
@@ -1224,31 +1259,39 @@ func (s *State) fillMessageGuildID(message *Message) {
 }
 
 func (s *State) voiceStateUpdate(update *VoiceStateUpdate) error {
-	guild, err := s.Guild(update.GuildID)
-	if err != nil {
-		return err
-	}
-
 	s.Lock()
 	defer s.Unlock()
 
+	// Fetch the guild under the write lock; a pointer obtained earlier
+	// could have been replaced by a concurrent update, losing this
+	// change in an orphaned snapshot.
+	guild, ok := s.guildMap[update.GuildID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+
 	// Handle Leaving Channel
 	if update.ChannelID == "" {
-		for i, state := range guild.VoiceStates {
-			if state.UserID == update.UserID {
-				guild.VoiceStates = append(guild.VoiceStates[:i], guild.VoiceStates[i+1:]...)
+		for i, state := range updated.VoiceStates {
+			if state != nil && state.UserID == update.UserID {
+				updated.VoiceStates = append(updated.VoiceStates[:i], updated.VoiceStates[i+1:]...)
+				s.replaceGuild(guild, updated)
 				return nil
 			}
 		}
 	} else {
-		for i, state := range guild.VoiceStates {
-			if state.UserID == update.UserID {
-				guild.VoiceStates[i] = update.VoiceState
+		for i, state := range updated.VoiceStates {
+			if state != nil && state.UserID == update.UserID {
+				updated.VoiceStates[i] = update.VoiceState
+				s.replaceGuild(guild, updated)
 				return nil
 			}
 		}
 
-		guild.VoiceStates = append(guild.VoiceStates, update.VoiceState)
+		updated.VoiceStates = append(updated.VoiceStates, update.VoiceState)
+		s.replaceGuild(guild, updated)
 	}
 
 	return nil
@@ -1557,25 +1600,27 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *GuildEmojisUpdate:
 		if s.TrackEmojis {
-			var guild *Guild
-			guild, err = s.Guild(t.GuildID)
-			if err != nil {
-				return err
-			}
 			s.Lock()
 			defer s.Unlock()
-			guild.Emojis = t.Emojis
+			guild, ok := s.guildMap[t.GuildID]
+			if !ok {
+				return ErrStateNotFound
+			}
+			updated := copyGuild(guild)
+			updated.Emojis = t.Emojis
+			s.replaceGuild(guild, updated)
 		}
 	case *GuildStickersUpdate:
 		if s.TrackStickers {
-			var guild *Guild
-			guild, err = s.Guild(t.GuildID)
-			if err != nil {
-				return err
-			}
 			s.Lock()
 			defer s.Unlock()
-			guild.Stickers = t.Stickers
+			guild, ok := s.guildMap[t.GuildID]
+			if !ok {
+				return ErrStateNotFound
+			}
+			updated := copyGuild(guild)
+			updated.Stickers = t.Stickers
+			s.replaceGuild(guild, updated)
 		}
 	case *ChannelCreate:
 		if s.TrackChannels {
