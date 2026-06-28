@@ -36,8 +36,9 @@ type WebhookParams struct {
 	Embeds          []*MessageEmbed         `json:"embeds,omitempty"`
 	Attachments     []*MessageAttachment    `json:"attachments,omitempty"`
 	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
-	// Only MessageFlagsSuppressEmbeds and MessageFlagsEphemeral can be set.
+	// Only flags supported by webhook messages can be set.
 	// MessageFlagsEphemeral can only be set when using Followup Message Create endpoint.
+	// Use MessageFlagsIsComponentsV2 when sending components v2 messages.
 	Flags MessageFlags `json:"flags,omitempty"`
 	// Name of the thread to create.
 	// NOTE: can only be set if the webhook channel is a forum.

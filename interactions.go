@@ -401,7 +401,7 @@ type MessageComponentInteractionData struct {
 	ComponentType ComponentType                    `json:"component_type"`
 	Resolved      ComponentInteractionDataResolved `json:"resolved"`
 
-	// NOTE: Only filled when ComponentType is SelectMenuComponent (3). Otherwise is nil.
+	// NOTE: Only filled for select menu interactions.
 	Values []string `json:"values"`
 }
 
@@ -648,7 +648,8 @@ type InteractionResponseData struct {
 	Attachments     *[]*MessageAttachment   `json:"attachments,omitempty"`
 	Poll            *Poll                   `json:"poll,omitempty"`
 
-	// NOTE: only MessageFlagsSuppressEmbeds and MessageFlagsEphemeral can be set.
+	// NOTE: Only flags supported by interaction callback messages can be set.
+	// This includes MessageFlagsEphemeral and MessageFlagsIsComponentsV2.
 	Flags MessageFlags `json:"flags,omitempty"`
 
 	// NOTE: autocomplete interaction only.
