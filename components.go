@@ -419,6 +419,8 @@ func (s Section) MarshalJSON() ([]byte, error) {
 
 // TextDisplay is a top-level component that allows you to add markdown-formatted text to the message.
 type TextDisplay struct {
+	// Unique identifier for the component; auto populated through increment if not provided.
+	ID      int    `json:"id,omitempty"`
 	Content string `json:"content"`
 }
 
@@ -506,6 +508,9 @@ type FileComponent struct {
 	ID      int               `json:"id,omitempty"`
 	File    UnfurledMediaItem `json:"file"`
 	Spoiler bool              `json:"spoiler"`
+	// Name and Size are only populated in responses from Discord.
+	Name string `json:"name,omitempty"`
+	Size int    `json:"size,omitempty"`
 }
 
 // Type is a method to get the type of a component.
@@ -695,7 +700,15 @@ func (f FileUpload) MarshalJSON() ([]byte, error) {
 
 // UnfurledMediaItem represents an unfurled media item.
 type UnfurledMediaItem struct {
-	URL string `json:"url"`
+	URL          string                        `json:"url"`
+	ProxyURL     string                        `json:"proxy_url,omitempty"`
+	Width        int                           `json:"width,omitempty"`
+	Height       int                           `json:"height,omitempty"`
+	ContentType  string                        `json:"content_type,omitempty"`
+	AttachmentID string                        `json:"attachment_id,omitempty"`
+	LoadingState UnfurledMediaItemLoadingState `json:"loading_state,omitempty"`
+	Flags        MessageAttachmentFlags        `json:"flags,omitempty"`
+	Placeholder  string                        `json:"placeholder,omitempty"`
 }
 
 // UnfurledMediaItemLoadingState is the loading state of the unfurled media item.
@@ -711,9 +724,13 @@ const (
 
 // ResolvedUnfurledMediaItem represents a resolved unfurled media item.
 type ResolvedUnfurledMediaItem struct {
-	URL         string `json:"url"`
-	ProxyURL    string `json:"proxy_url"`
-	Width       int    `json:"width"`
-	Height      int    `json:"height"`
-	ContentType string `json:"content_type"`
+	URL          string                        `json:"url"`
+	ProxyURL     string                        `json:"proxy_url"`
+	Width        int                           `json:"width"`
+	Height       int                           `json:"height"`
+	ContentType  string                        `json:"content_type"`
+	AttachmentID string                        `json:"attachment_id,omitempty"`
+	LoadingState UnfurledMediaItemLoadingState `json:"loading_state,omitempty"`
+	Flags        MessageAttachmentFlags        `json:"flags,omitempty"`
+	Placeholder  string                        `json:"placeholder,omitempty"`
 }
