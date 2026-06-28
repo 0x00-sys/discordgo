@@ -116,3 +116,146 @@ func TestComponentsV2PublicResponseFields(t *testing.T) {
 		t.Fatalf("remarshaled text display id = %d, want 2", remarshal.Components[0].ID)
 	}
 }
+
+func TestPreviewModalComponents(t *testing.T) {
+	t.Run("radio group", func(t *testing.T) {
+		raw := []byte(`{
+			"type": 18,
+			"id": 1,
+			"label": "Priority",
+			"component": {
+				"type": 21,
+				"id": 2,
+				"custom_id": "priority",
+				"required": false,
+				"options": [
+					{"label": "High", "value": "high", "description": "urgent", "default": true},
+					{"label": "Low", "value": "low", "description": "later", "default": false}
+				],
+				"value": "high"
+			}
+		}`)
+
+		label := componentLabelFromJSON(t, raw)
+		group, ok := label.Component.(*RadioGroup)
+		if !ok {
+			t.Fatalf("label.Component = %T, want *RadioGroup", label.Component)
+		}
+		if group.ID != 2 || group.CustomID != "priority" || group.Value == nil || *group.Value != "high" {
+			t.Fatalf("radio group = %#v, want id, custom id, and response value", group)
+		}
+		if group.Required == nil || *group.Required {
+			t.Fatalf("radio group Required = %v, want pointer to false", group.Required)
+		}
+		if len(group.Options) != 2 || group.Options[0].Value != "high" || !group.Options[0].Default {
+			t.Fatalf("radio group options = %#v, want parsed options", group.Options)
+		}
+
+		assertComponentMarshalType(t, group, RadioGroupComponent)
+	})
+
+	t.Run("checkbox group", func(t *testing.T) {
+		raw := []byte(`{
+			"type": 18,
+			"id": 1,
+			"label": "Tags",
+			"component": {
+				"type": 22,
+				"id": 2,
+				"custom_id": "tags",
+				"min_values": 0,
+				"max_values": 2,
+				"required": true,
+				"options": [
+					{"label": "Bug", "value": "bug", "description": "broken", "default": true},
+					{"label": "Docs", "value": "docs", "description": "writing", "default": false}
+				],
+				"values": ["bug"]
+			}
+		}`)
+
+		label := componentLabelFromJSON(t, raw)
+		group, ok := label.Component.(*CheckboxGroup)
+		if !ok {
+			t.Fatalf("label.Component = %T, want *CheckboxGroup", label.Component)
+		}
+		if group.ID != 2 || group.CustomID != "tags" || group.MaxValues != 2 {
+			t.Fatalf("checkbox group = %#v, want id, custom id, and max values", group)
+		}
+		if group.MinValues == nil || *group.MinValues != 0 {
+			t.Fatalf("checkbox group MinValues = %v, want pointer to 0", group.MinValues)
+		}
+		if group.Required == nil || !*group.Required {
+			t.Fatalf("checkbox group Required = %v, want pointer to true", group.Required)
+		}
+		if len(group.Values) != 1 || group.Values[0] != "bug" {
+			t.Fatalf("checkbox group Values = %#v, want [bug]", group.Values)
+		}
+		if len(group.Options) != 2 || group.Options[0].Value != "bug" || !group.Options[0].Default {
+			t.Fatalf("checkbox group options = %#v, want parsed options", group.Options)
+		}
+
+		assertComponentMarshalType(t, group, CheckboxGroupComponent)
+	})
+
+	t.Run("checkbox", func(t *testing.T) {
+		raw := []byte(`{
+			"type": 18,
+			"id": 1,
+			"label": "Confirm",
+			"component": {
+				"type": 23,
+				"id": 2,
+				"custom_id": "confirm",
+				"default": true,
+				"value": false
+			}
+		}`)
+
+		label := componentLabelFromJSON(t, raw)
+		checkbox, ok := label.Component.(*Checkbox)
+		if !ok {
+			t.Fatalf("label.Component = %T, want *Checkbox", label.Component)
+		}
+		if checkbox.ID != 2 || checkbox.CustomID != "confirm" || !checkbox.Default {
+			t.Fatalf("checkbox = %#v, want id, custom id, and default true", checkbox)
+		}
+		if checkbox.Value == nil || *checkbox.Value {
+			t.Fatalf("checkbox Value = %v, want pointer to false", checkbox.Value)
+		}
+
+		assertComponentMarshalType(t, checkbox, CheckboxComponent)
+	})
+}
+
+func componentLabelFromJSON(t *testing.T, raw []byte) *Label {
+	t.Helper()
+
+	component, err := MessageComponentFromJSON(raw)
+	if err != nil {
+		t.Fatalf("MessageComponentFromJSON returned error: %v", err)
+	}
+	label, ok := component.(*Label)
+	if !ok {
+		t.Fatalf("component = %T, want *Label", component)
+	}
+	return label
+}
+
+func assertComponentMarshalType(t *testing.T, component MessageComponent, want ComponentType) {
+	t.Helper()
+
+	data, err := json.Marshal(component)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var got struct {
+		Type ComponentType `json:"type"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal marshaled component returned error: %v", err)
+	}
+	if got.Type != want {
+		t.Fatalf("marshaled type = %d, want %d", got.Type, want)
+	}
+}
