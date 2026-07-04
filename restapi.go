@@ -1256,6 +1256,81 @@ func (s *Session) GuildMembersSearch(guildID, query string, limit int, options .
 	return
 }
 
+// GuildMessagesSearch returns messages matching the search options in a guild.
+// guildID : The ID of a Guild.
+// opts    : Search query options.
+func (s *Session) GuildMessagesSearch(guildID string, opts *GuildMessagesSearchOptions, options ...RequestOption) (st *GuildMessagesSearchResult, err error) {
+	endpoint := EndpointGuildMessagesSearch(guildID)
+	uri := endpoint
+
+	if opts != nil {
+		queryParams := url.Values{}
+		addValues := func(key string, values []string) {
+			for _, value := range values {
+				queryParams.Add(key, value)
+			}
+		}
+
+		if opts.Limit > 0 {
+			queryParams.Set("limit", strconv.Itoa(opts.Limit))
+		}
+		if opts.Offset > 0 {
+			queryParams.Set("offset", strconv.Itoa(opts.Offset))
+		}
+		if opts.MaxID != "" {
+			queryParams.Set("max_id", opts.MaxID)
+		}
+		if opts.MinID != "" {
+			queryParams.Set("min_id", opts.MinID)
+		}
+		if opts.Slop > 0 {
+			queryParams.Set("slop", strconv.Itoa(opts.Slop))
+		}
+		if opts.Content != "" {
+			queryParams.Set("content", opts.Content)
+		}
+		addValues("channel_id", opts.ChannelIDs)
+		addValues("author_type", opts.AuthorTypes)
+		addValues("author_id", opts.AuthorIDs)
+		addValues("mentions", opts.Mentions)
+		addValues("mentions_role_id", opts.MentionRoleIDs)
+		if opts.MentionEveryone != nil {
+			queryParams.Set("mention_everyone", strconv.FormatBool(*opts.MentionEveryone))
+		}
+		addValues("replied_to_user_id", opts.RepliedToUserIDs)
+		addValues("replied_to_message_id", opts.RepliedToMessageIDs)
+		if opts.Pinned != nil {
+			queryParams.Set("pinned", strconv.FormatBool(*opts.Pinned))
+		}
+		addValues("has", opts.Has)
+		addValues("embed_type", opts.EmbedTypes)
+		addValues("embed_provider", opts.EmbedProviders)
+		addValues("link_hostname", opts.LinkHostnames)
+		addValues("attachment_filename", opts.AttachmentFilenames)
+		addValues("attachment_extension", opts.AttachmentExtensions)
+		if opts.SortBy != "" {
+			queryParams.Set("sort_by", opts.SortBy)
+		}
+		if opts.SortOrder != "" {
+			queryParams.Set("sort_order", opts.SortOrder)
+		}
+		if opts.IncludeNSFW != nil {
+			queryParams.Set("include_nsfw", strconv.FormatBool(*opts.IncludeNSFW))
+		}
+		if len(queryParams) > 0 {
+			uri += "?" + queryParams.Encode()
+		}
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &st)
+	return
+}
+
 // GuildMember returns a member of a guild.
 // guildID   : The ID of a Guild.
 // userID    : The ID of a User
@@ -1909,6 +1984,113 @@ func (s *Session) GuildEmojiDelete(guildID, emojiID string, options ...RequestOp
 	return
 }
 
+// SoundboardSoundSend sends a soundboard sound to a voice channel.
+// channelID     : The ID of a voice Channel.
+// soundID       : The ID of the soundboard sound to play.
+// sourceGuildID : The ID of the guild the soundboard sound is from, if different from the channel's guild.
+func (s *Session) SoundboardSoundSend(channelID, soundID, sourceGuildID string, options ...RequestOption) (err error) {
+	endpoint := EndpointChannelSendSoundboardSound(channelID)
+	data := struct {
+		SoundID       string `json:"sound_id"`
+		SourceGuildID string `json:"source_guild_id,omitempty"`
+	}{soundID, sourceGuildID}
+
+	_, err = s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
+	return
+}
+
+// SoundboardDefaultSounds returns all default soundboard sounds.
+func (s *Session) SoundboardDefaultSounds(options ...RequestOption) (sounds []*SoundboardSound, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointSoundboardDefaultSounds, nil, EndpointSoundboardDefaultSounds, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &sounds)
+	return
+}
+
+// GuildSoundboardSounds returns all soundboard sounds for the given guild.
+// guildID : The ID of a Guild.
+func (s *Session) GuildSoundboardSounds(guildID string, options ...RequestOption) (sounds []*SoundboardSound, err error) {
+	endpoint := EndpointGuildSoundboardSounds(guildID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	var temp struct {
+		Items []*SoundboardSound `json:"items"`
+	}
+	err = unmarshal(body, &temp)
+	if err != nil {
+		return
+	}
+
+	sounds = temp.Items
+	return
+}
+
+// GuildSoundboardSound returns the specified guild soundboard sound.
+// guildID : The ID of a Guild.
+// soundID : The ID of a Soundboard Sound.
+func (s *Session) GuildSoundboardSound(guildID, soundID string, options ...RequestOption) (sound *SoundboardSound, err error) {
+	endpoint := EndpointGuildSoundboardSound(guildID, soundID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &sound)
+	return
+}
+
+// GuildSoundboardSoundCreate creates a new soundboard sound.
+// guildID : The ID of a Guild.
+// data    : New soundboard sound data.
+func (s *Session) GuildSoundboardSoundCreate(guildID string, data *SoundboardSoundParams, options ...RequestOption) (sound *SoundboardSound, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("soundboard sound data cannot be nil")
+	}
+
+	endpoint := EndpointGuildSoundboardSounds(guildID)
+	body, err := s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &sound)
+	return
+}
+
+// GuildSoundboardSoundEdit modifies and returns the updated guild soundboard sound.
+// guildID : The ID of a Guild.
+// soundID : The ID of a Soundboard Sound.
+// data    : Updated soundboard sound data.
+func (s *Session) GuildSoundboardSoundEdit(guildID, soundID string, data *SoundboardSoundParams, options ...RequestOption) (sound *SoundboardSound, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("soundboard sound data cannot be nil")
+	}
+
+	endpoint := EndpointGuildSoundboardSound(guildID, soundID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, data, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &sound)
+	return
+}
+
+// GuildSoundboardSoundDelete deletes a soundboard sound.
+// guildID : The ID of a Guild.
+// soundID : The ID of a Soundboard Sound.
+func (s *Session) GuildSoundboardSoundDelete(guildID, soundID string, options ...RequestOption) (err error) {
+	endpoint := EndpointGuildSoundboardSound(guildID, soundID)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	return
+}
+
 // ApplicationEmojis returns all emojis for the given application
 // appID : ID of the application
 func (s *Session) ApplicationEmojis(appID string, options ...RequestOption) (emojis []*Emoji, err error) {
@@ -1976,6 +2158,20 @@ func (s *Session) ApplicationEmojiEdit(appID string, emojiID string, data *Emoji
 // emojiID : ID of an Emoji
 func (s *Session) ApplicationEmojiDelete(appID, emojiID string, options ...RequestOption) (err error) {
 	_, err = s.RequestWithBucketID("DELETE", EndpointApplicationEmoji(appID, emojiID), nil, EndpointApplicationEmojis(appID), options...)
+	return
+}
+
+// ApplicationActivityInstance returns a serialized activity instance, if it exists.
+// appID      : ID of the application.
+// instanceID : ID of the activity instance.
+func (s *Session) ApplicationActivityInstance(appID, instanceID string, options ...RequestOption) (st *ApplicationActivityInstance, err error) {
+	endpoint := EndpointApplicationActivityInstance(appID, instanceID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &st)
 	return
 }
 
@@ -2547,13 +2743,40 @@ func (s *Session) ChannelInvites(channelID string, options ...RequestOption) (st
 func (s *Session) ChannelInviteCreate(channelID string, i Invite, options ...RequestOption) (st *Invite, err error) {
 
 	data := struct {
-		MaxAge    int  `json:"max_age"`
-		MaxUses   int  `json:"max_uses"`
-		Temporary bool `json:"temporary"`
-		Unique    bool `json:"unique"`
-	}{i.MaxAge, i.MaxUses, i.Temporary, i.Unique}
+		MaxAge              int              `json:"max_age"`
+		MaxUses             int              `json:"max_uses"`
+		Temporary           bool             `json:"temporary"`
+		Unique              bool             `json:"unique"`
+		TargetType          InviteTargetType `json:"target_type,omitempty"`
+		TargetUserID        string           `json:"target_user_id,omitempty"`
+		TargetApplicationID string           `json:"target_application_id,omitempty"`
+		RoleIDs             []string         `json:"role_ids,omitempty"`
+	}{
+		MaxAge:              i.MaxAge,
+		MaxUses:             i.MaxUses,
+		Temporary:           i.Temporary,
+		Unique:              i.Unique,
+		TargetType:          i.TargetType,
+		TargetUserID:        i.TargetUserID,
+		TargetApplicationID: i.TargetApplicationID,
+		RoleIDs:             i.RoleIDs,
+	}
 
-	body, err := s.RequestWithBucketID("POST", EndpointChannelInvites(channelID), data, EndpointChannelInvites(channelID), options...)
+	endpoint := EndpointChannelInvites(channelID)
+	var body []byte
+	if i.TargetUsersFile != nil {
+		file := *i.TargetUsersFile
+		file.FieldName = "target_users_file"
+
+		contentType, requestBody, encodeErr := MultipartBodyWithJSON(data, []*File{&file})
+		if encodeErr != nil {
+			err = encodeErr
+			return
+		}
+		body, err = s.RequestRaw("POST", endpoint, contentType, requestBody, endpoint, 0, options...)
+	} else {
+		body, err = s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
+	}
 	if err != nil {
 		return
 	}
@@ -2707,6 +2930,61 @@ func (s *Session) InviteAccept(inviteID string, options ...RequestOption) (st *I
 	}
 
 	err = unmarshal(body, &st)
+	return
+}
+
+// InviteTargetUsers returns the CSV target-user file for the given invite.
+// inviteID : The invite code.
+func (s *Session) InviteTargetUsers(inviteID string, options ...RequestOption) (st []byte, err error) {
+	endpoint := EndpointInviteTargetUsers(inviteID)
+	st, err = s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	return
+}
+
+// InviteTargetUsersUpdate updates the CSV target-user file for the given invite.
+// inviteID : The invite code.
+// file     : CSV file with a single user_id column.
+func (s *Session) InviteTargetUsersUpdate(inviteID string, file *File, options ...RequestOption) (err error) {
+	if file == nil {
+		return fmt.Errorf("target users file cannot be nil")
+	}
+
+	upload := *file
+	upload.FieldName = "target_users_file"
+
+	contentType, body, err := multipartBody(nil, []*File{&upload}, false)
+	if err != nil {
+		return
+	}
+
+	endpoint := EndpointInviteTargetUsers(inviteID)
+	_, err = s.RequestRaw("PUT", endpoint, contentType, body, endpoint, 0, options...)
+	return
+}
+
+// InviteTargetUsersJobStatus returns the target-users file processing status for the given invite.
+// inviteID : The invite code.
+func (s *Session) InviteTargetUsersJobStatus(inviteID string, options ...RequestOption) (st *InviteTargetUsersJob, err error) {
+	endpoint := EndpointInviteTargetUsersJobStatus(inviteID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return
+	}
+
+	err = unmarshal(body, &st)
+	return
+}
+
+// ChannelVoiceStatusSet sets or clears a voice channel status.
+// channelID : The ID of a voice Channel.
+// status    : New status text, or nil to clear the status.
+func (s *Session) ChannelVoiceStatusSet(channelID string, status *string, options ...RequestOption) (err error) {
+	endpoint := EndpointChannelVoiceStatus(channelID)
+	data := struct {
+		Status *string `json:"status"`
+	}{status}
+
+	_, err = s.RequestWithBucketID("PUT", endpoint, data, endpoint, options...)
 	return
 }
 

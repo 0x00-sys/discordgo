@@ -163,6 +163,473 @@ func TestGuildMembersSearchSetsGuildID(t *testing.T) {
 	}
 }
 
+func TestGuildMessagesSearchBuildsQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/guilds/guild/messages/search" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/messages/search")
+		}
+
+		query := r.URL.Query()
+		for key, want := range map[string]string{
+			"limit":            "25",
+			"offset":           "5",
+			"max_id":           "200",
+			"min_id":           "100",
+			"slop":             "2",
+			"content":          "hello",
+			"mention_everyone": "true",
+			"pinned":           "false",
+			"sort_by":          "timestamp",
+			"sort_order":       "desc",
+			"include_nsfw":     "true",
+		} {
+			if got := query.Get(key); got != want {
+				t.Fatalf("%s = %q, want %q", key, got, want)
+			}
+		}
+		for key, want := range map[string]string{
+			"channel_id":            "channel-1,channel-2",
+			"author_type":           "user,webhook",
+			"author_id":             "author",
+			"mentions":              "mentioned-user",
+			"mentions_role_id":      "mentioned-role",
+			"replied_to_user_id":    "reply-user",
+			"replied_to_message_id": "reply-message",
+			"has":                   "file,embed",
+			"embed_type":            "rich",
+			"embed_provider":        "YouTube",
+			"link_hostname":         "example.com",
+			"attachment_filename":   "report.pdf",
+			"attachment_extension":  "pdf",
+		} {
+			if got := strings.Join(query[key], ","); got != want {
+				t.Fatalf("%s = %q, want %q", key, got, want)
+			}
+		}
+
+		_, _ = w.Write([]byte(`{"doing_deep_historical_index":false,"total_results":1,"messages":[[{"id":"message","channel_id":"channel-1"}]],"threads":[{"id":"thread"}],"members":[{"id":"thread-member"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	trueValue := true
+	falseValue := false
+	result, err := session.GuildMessagesSearch("guild", &GuildMessagesSearchOptions{
+		Limit:                25,
+		Offset:               5,
+		MaxID:                "200",
+		MinID:                "100",
+		Slop:                 2,
+		Content:              "hello",
+		ChannelIDs:           []string{"channel-1", "channel-2"},
+		AuthorTypes:          []string{"user", "webhook"},
+		AuthorIDs:            []string{"author"},
+		Mentions:             []string{"mentioned-user"},
+		MentionRoleIDs:       []string{"mentioned-role"},
+		MentionEveryone:      &trueValue,
+		RepliedToUserIDs:     []string{"reply-user"},
+		RepliedToMessageIDs:  []string{"reply-message"},
+		Pinned:               &falseValue,
+		Has:                  []string{"file", "embed"},
+		EmbedTypes:           []string{"rich"},
+		EmbedProviders:       []string{"YouTube"},
+		LinkHostnames:        []string{"example.com"},
+		AttachmentFilenames:  []string{"report.pdf"},
+		AttachmentExtensions: []string{"pdf"},
+		SortBy:               "timestamp",
+		SortOrder:            "desc",
+		IncludeNSFW:          &trueValue,
+	})
+	if err != nil {
+		t.Fatalf("GuildMessagesSearch returned error: %v", err)
+	}
+	if result.TotalResults != 1 || len(result.Messages) != 1 || len(result.Messages[0]) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestChannelInviteCreateWithTargetUsersFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/channels/channel/invites" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/channels/channel/invites")
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Fatalf("Content-Type = %q, want multipart/form-data", r.Header.Get("Content-Type"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm returned error: %v", err)
+		}
+
+		var payload struct {
+			MaxAge              int              `json:"max_age"`
+			MaxUses             int              `json:"max_uses"`
+			Temporary           bool             `json:"temporary"`
+			Unique              bool             `json:"unique"`
+			TargetType          InviteTargetType `json:"target_type"`
+			TargetApplicationID string           `json:"target_application_id"`
+			RoleIDs             []string         `json:"role_ids"`
+		}
+		if err := json.Unmarshal([]byte(r.MultipartForm.Value["payload_json"][0]), &payload); err != nil {
+			t.Fatalf("json.Unmarshal payload returned error: %v", err)
+		}
+		if payload.MaxAge != 60 || payload.MaxUses != 2 || !payload.Temporary || !payload.Unique {
+			t.Fatalf("payload = %#v", payload)
+		}
+		if payload.TargetType != InviteTargetEmbeddedApplication || payload.TargetApplicationID != "app" {
+			t.Fatalf("payload target = %#v", payload)
+		}
+		if len(payload.RoleIDs) != 2 || payload.RoleIDs[0] != "role-1" || payload.RoleIDs[1] != "role-2" {
+			t.Fatalf("role_ids = %#v", payload.RoleIDs)
+		}
+
+		file, header, err := r.FormFile("target_users_file")
+		if err != nil {
+			t.Fatalf("FormFile returned error: %v", err)
+		}
+		defer file.Close()
+		contents, err := ioutil.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if header.Filename != "users.csv" || string(contents) != "user_id\n1\n" {
+			t.Fatalf("file = %q/%q", header.Filename, contents)
+		}
+
+		_, _ = w.Write([]byte(`{"type":0,"code":"invite"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := EndpointChannels
+	EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	invite, err := session.ChannelInviteCreate("channel", Invite{
+		MaxAge:              60,
+		MaxUses:             2,
+		Temporary:           true,
+		Unique:              true,
+		TargetType:          InviteTargetEmbeddedApplication,
+		TargetApplicationID: "app",
+		RoleIDs:             []string{"role-1", "role-2"},
+		TargetUsersFile: &File{
+			Name:        "users.csv",
+			ContentType: "text/csv",
+			Reader:      strings.NewReader("user_id\n1\n"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChannelInviteCreate returned error: %v", err)
+	}
+	if invite.Code != "invite" || invite.Type != InviteTypeGuild {
+		t.Fatalf("invite = %#v", invite)
+	}
+}
+
+func TestInviteTargetUsersEndpoints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /invites/invite/target-users":
+			_, _ = w.Write([]byte("user_id\n1\n"))
+		case http.MethodPut + " /invites/invite/target-users":
+			if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+				t.Fatalf("Content-Type = %q, want multipart/form-data", r.Header.Get("Content-Type"))
+			}
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm returned error: %v", err)
+			}
+			if _, ok := r.MultipartForm.Value["payload_json"]; ok {
+				t.Fatalf("payload_json was included in target-users upload")
+			}
+			file, header, err := r.FormFile("target_users_file")
+			if err != nil {
+				t.Fatalf("FormFile returned error: %v", err)
+			}
+			defer file.Close()
+			contents, err := ioutil.ReadAll(file)
+			if err != nil {
+				t.Fatalf("ReadAll returned error: %v", err)
+			}
+			if header.Filename != "users.csv" || string(contents) != "user_id\n2\n" {
+				t.Fatalf("file = %q/%q", header.Filename, contents)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet + " /invites/invite/target-users/job-status":
+			_, _ = w.Write([]byte(`{"status":2,"total_users":1,"processed_users":1,"created_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:00:01Z"}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointAPI := EndpointAPI
+	EndpointAPI = server.URL + "/"
+	t.Cleanup(func() {
+		EndpointAPI = oldEndpointAPI
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	data, err := session.InviteTargetUsers("invite")
+	if err != nil {
+		t.Fatalf("InviteTargetUsers returned error: %v", err)
+	}
+	if string(data) != "user_id\n1\n" {
+		t.Fatalf("target users data = %q", data)
+	}
+
+	if err := session.InviteTargetUsersUpdate("invite", &File{Name: "users.csv", ContentType: "text/csv", Reader: strings.NewReader("user_id\n2\n")}); err != nil {
+		t.Fatalf("InviteTargetUsersUpdate returned error: %v", err)
+	}
+	if err := session.InviteTargetUsersUpdate("invite", nil); err == nil {
+		t.Fatal("InviteTargetUsersUpdate returned nil error for nil file")
+	}
+
+	job, err := session.InviteTargetUsersJobStatus("invite")
+	if err != nil {
+		t.Fatalf("InviteTargetUsersJobStatus returned error: %v", err)
+	}
+	if job.Status != InviteTargetUsersJobStatusCompleted || job.TotalUsers != 1 || job.ProcessedUsers != 1 {
+		t.Fatalf("job = %#v", job)
+	}
+}
+
+func TestChannelVoiceStatusSet(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPut)
+		}
+		if r.URL.Path != "/channels/channel/voice-status" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/channels/channel/voice-status")
+		}
+		var payload struct {
+			Status *string `json:"status"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		requests++
+		switch requests {
+		case 1:
+			if payload.Status == nil || *payload.Status != "Live" {
+				t.Fatalf("status = %#v, want Live", payload.Status)
+			}
+		case 2:
+			if payload.Status != nil {
+				t.Fatalf("status = %#v, want nil", payload.Status)
+			}
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := EndpointChannels
+	EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	status := "Live"
+	if err := session.ChannelVoiceStatusSet("channel", &status); err != nil {
+		t.Fatalf("ChannelVoiceStatusSet returned error: %v", err)
+	}
+	if err := session.ChannelVoiceStatusSet("channel", nil); err != nil {
+		t.Fatalf("ChannelVoiceStatusSet clear returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestSoundboardEndpoints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /channels/channel/send-soundboard-sound":
+			var payload struct {
+				SoundID       string `json:"sound_id"`
+				SourceGuildID string `json:"source_guild_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode send returned error: %v", err)
+			}
+			if payload.SoundID != "sound" || payload.SourceGuildID != "guild" {
+				t.Fatalf("send payload = %#v", payload)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet + " /soundboard-default-sounds":
+			_, _ = w.Write([]byte(`[{"sound_id":"default","name":"Default","volume":1}]`))
+		case http.MethodGet + " /guilds/guild/soundboard-sounds":
+			_, _ = w.Write([]byte(`{"items":[{"sound_id":"sound","name":"Sound","volume":1,"guild_id":"guild"}]}`))
+		case http.MethodGet + " /guilds/guild/soundboard-sounds/sound":
+			_, _ = w.Write([]byte(`{"sound_id":"sound","name":"Sound","volume":1,"guild_id":"guild"}`))
+		case http.MethodPost + " /guilds/guild/soundboard-sounds":
+			var payload SoundboardSoundParams
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode create returned error: %v", err)
+			}
+			if payload.Name != "Created" || payload.Sound == "" || payload.Volume == nil || *payload.Volume != 0.5 {
+				t.Fatalf("create payload = %#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"sound_id":"created","name":"Created","volume":0.5,"guild_id":"guild"}`))
+		case http.MethodPatch + " /guilds/guild/soundboard-sounds/sound":
+			var payload SoundboardSoundParams
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode edit returned error: %v", err)
+			}
+			if payload.Name != "Edited" {
+				t.Fatalf("edit payload = %#v", payload)
+			}
+			_, _ = w.Write([]byte(`{"sound_id":"sound","name":"Edited","volume":1,"guild_id":"guild"}`))
+		case http.MethodDelete + " /guilds/guild/soundboard-sounds/sound":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := EndpointChannels
+	oldEndpointGuilds := EndpointGuilds
+	oldEndpointSoundboardDefaultSounds := EndpointSoundboardDefaultSounds
+	EndpointChannels = server.URL + "/channels/"
+	EndpointGuilds = server.URL + "/guilds/"
+	EndpointSoundboardDefaultSounds = server.URL + "/soundboard-default-sounds"
+	t.Cleanup(func() {
+		EndpointChannels = oldEndpointChannels
+		EndpointGuilds = oldEndpointGuilds
+		EndpointSoundboardDefaultSounds = oldEndpointSoundboardDefaultSounds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	if err := session.SoundboardSoundSend("channel", "sound", "guild"); err != nil {
+		t.Fatalf("SoundboardSoundSend returned error: %v", err)
+	}
+	defaultSounds, err := session.SoundboardDefaultSounds()
+	if err != nil {
+		t.Fatalf("SoundboardDefaultSounds returned error: %v", err)
+	}
+	if len(defaultSounds) != 1 || defaultSounds[0].SoundID != "default" {
+		t.Fatalf("default sounds = %#v", defaultSounds)
+	}
+	sounds, err := session.GuildSoundboardSounds("guild")
+	if err != nil {
+		t.Fatalf("GuildSoundboardSounds returned error: %v", err)
+	}
+	if len(sounds) != 1 || sounds[0].GuildID != "guild" {
+		t.Fatalf("guild sounds = %#v", sounds)
+	}
+	sound, err := session.GuildSoundboardSound("guild", "sound")
+	if err != nil {
+		t.Fatalf("GuildSoundboardSound returned error: %v", err)
+	}
+	if sound.SoundID != "sound" {
+		t.Fatalf("sound = %#v", sound)
+	}
+
+	volume := 0.5
+	created, err := session.GuildSoundboardSoundCreate("guild", &SoundboardSoundParams{Name: "Created", Sound: "data:audio/ogg;base64,AAAA", Volume: &volume})
+	if err != nil {
+		t.Fatalf("GuildSoundboardSoundCreate returned error: %v", err)
+	}
+	if created.SoundID != "created" {
+		t.Fatalf("created = %#v", created)
+	}
+	if _, err := session.GuildSoundboardSoundCreate("guild", nil); err == nil {
+		t.Fatal("GuildSoundboardSoundCreate returned nil error for nil data")
+	}
+	edited, err := session.GuildSoundboardSoundEdit("guild", "sound", &SoundboardSoundParams{Name: "Edited"})
+	if err != nil {
+		t.Fatalf("GuildSoundboardSoundEdit returned error: %v", err)
+	}
+	if edited.Name != "Edited" {
+		t.Fatalf("edited = %#v", edited)
+	}
+	if _, err := session.GuildSoundboardSoundEdit("guild", "sound", nil); err == nil {
+		t.Fatal("GuildSoundboardSoundEdit returned nil error for nil data")
+	}
+	if err := session.GuildSoundboardSoundDelete("guild", "sound"); err != nil {
+		t.Fatalf("GuildSoundboardSoundDelete returned error: %v", err)
+	}
+}
+
+func TestApplicationActivityInstanceEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/applications/app/activity-instances/instance" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/applications/app/activity-instances/instance")
+		}
+		_, _ = w.Write([]byte(`{"application_id":"app","instance_id":"instance","launch_id":"launch","location":{"id":"gc-guild-channel","kind":"gc","channel_id":"channel","guild_id":"guild"},"users":["user"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointApplications := EndpointApplications
+	EndpointApplications = server.URL + "/applications"
+	t.Cleanup(func() {
+		EndpointApplications = oldEndpointApplications
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	instance, err := session.ApplicationActivityInstance("app", "instance")
+	if err != nil {
+		t.Fatalf("ApplicationActivityInstance returned error: %v", err)
+	}
+	if instance.ApplicationID != "app" || instance.InstanceID != "instance" {
+		t.Fatalf("instance = %#v", instance)
+	}
+	if instance.Location == nil || instance.Location.ChannelID != "channel" {
+		t.Fatalf("location = %#v", instance.Location)
+	}
+}
+
 func TestWebhookDeleteWithTokenAllowsNoContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {

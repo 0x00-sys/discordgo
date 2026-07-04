@@ -26,27 +26,33 @@ func SnowflakeTimestamp(ID string) (t time.Time, err error) {
 // data  : The object to encode for payload_json in the multipart request
 // files : Files to include in the request
 func MultipartBodyWithJSON(data interface{}, files []*File) (requestContentType string, requestBody []byte, err error) {
+	return multipartBody(data, files, true)
+}
+
+func multipartBody(data interface{}, files []*File, includePayload bool) (requestContentType string, requestBody []byte, err error) {
 	body := &bytes.Buffer{}
 	bodywriter := multipart.NewWriter(body)
-
-	payload, err := Marshal(data)
-	if err != nil {
-		return
-	}
-
 	var p io.Writer
 
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", `form-data; name="payload_json"`)
-	h.Set("Content-Type", "application/json")
+	if includePayload {
+		var payload []byte
+		payload, err = Marshal(data)
+		if err != nil {
+			return
+		}
 
-	p, err = bodywriter.CreatePart(h)
-	if err != nil {
-		return
-	}
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", `form-data; name="payload_json"`)
+		h.Set("Content-Type", "application/json")
 
-	if _, err = p.Write(payload); err != nil {
-		return
+		p, err = bodywriter.CreatePart(h)
+		if err != nil {
+			return
+		}
+
+		if _, err = p.Write(payload); err != nil {
+			return
+		}
 	}
 
 	for i, file := range files {
@@ -59,8 +65,13 @@ func MultipartBodyWithJSON(data interface{}, files []*File) (requestContentType 
 			return
 		}
 
+		fieldName := file.FieldName
+		if fieldName == "" {
+			fieldName = fmt.Sprintf("files[%d]", i)
+		}
+
 		h := make(textproto.MIMEHeader)
-		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[%d]"; filename="%s"`, i, quoteEscaper.Replace(file.Name)))
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, quoteEscaper.Replace(fieldName), quoteEscaper.Replace(file.Name)))
 		h.Set("Content-Type", safeFileContentType(file.ContentType))
 
 		p, err = bodywriter.CreatePart(h)

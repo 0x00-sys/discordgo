@@ -170,25 +170,67 @@ type ApplicationIntegrationTypeConfig struct {
 
 // Application stores values for a Discord Application
 type Application struct {
-	ID                     string                                                           `json:"id,omitempty"`
-	Name                   string                                                           `json:"name"`
-	Icon                   string                                                           `json:"icon,omitempty"`
-	Description            string                                                           `json:"description,omitempty"`
-	RPCOrigins             []string                                                         `json:"rpc_origins,omitempty"`
-	BotPublic              bool                                                             `json:"bot_public,omitempty"`
-	BotRequireCodeGrant    bool                                                             `json:"bot_require_code_grant,omitempty"`
-	TermsOfServiceURL      string                                                           `json:"terms_of_service_url"`
-	PrivacyProxyURL        string                                                           `json:"privacy_policy_url"`
-	Owner                  *User                                                            `json:"owner"`
-	Summary                string                                                           `json:"summary"`
-	VerifyKey              string                                                           `json:"verify_key"`
-	Team                   *Team                                                            `json:"team"`
-	GuildID                string                                                           `json:"guild_id"`
-	PrimarySKUID           string                                                           `json:"primary_sku_id"`
-	Slug                   string                                                           `json:"slug"`
-	CoverImage             string                                                           `json:"cover_image"`
-	Flags                  int                                                              `json:"flags,omitempty"`
-	IntegrationTypesConfig map[ApplicationIntegrationType]*ApplicationIntegrationTypeConfig `json:"integration_types,omitempty"`
+	ID                                string                                                           `json:"id,omitempty"`
+	Name                              string                                                           `json:"name"`
+	Icon                              string                                                           `json:"icon,omitempty"`
+	Description                       string                                                           `json:"description,omitempty"`
+	RPCOrigins                        []string                                                         `json:"rpc_origins,omitempty"`
+	BotPublic                         bool                                                             `json:"bot_public,omitempty"`
+	BotRequireCodeGrant               bool                                                             `json:"bot_require_code_grant,omitempty"`
+	Bot                               *User                                                            `json:"bot,omitempty"`
+	TermsOfServiceURL                 string                                                           `json:"terms_of_service_url"`
+	PrivacyProxyURL                   string                                                           `json:"privacy_policy_url"`
+	Owner                             *User                                                            `json:"owner"`
+	Summary                           string                                                           `json:"summary"`
+	VerifyKey                         string                                                           `json:"verify_key"`
+	Team                              *Team                                                            `json:"team"`
+	GuildID                           string                                                           `json:"guild_id"`
+	Guild                             *Guild                                                           `json:"guild,omitempty"`
+	PrimarySKUID                      string                                                           `json:"primary_sku_id"`
+	Slug                              string                                                           `json:"slug"`
+	CoverImage                        string                                                           `json:"cover_image"`
+	Flags                             int                                                              `json:"flags,omitempty"`
+	FlagsNew                          string                                                           `json:"flags_new,omitempty"`
+	ApproximateGuildCount             int                                                              `json:"approximate_guild_count,omitempty"`
+	ApproximateUserInstallCount       int                                                              `json:"approximate_user_install_count,omitempty"`
+	ApproximateUserAuthorizationCount int                                                              `json:"approximate_user_authorization_count,omitempty"`
+	RedirectURIs                      []string                                                         `json:"redirect_uris,omitempty"`
+	InteractionsEndpointURL           string                                                           `json:"interactions_endpoint_url,omitempty"`
+	RoleConnectionsVerificationURL    string                                                           `json:"role_connections_verification_url,omitempty"`
+	EventWebhooksURL                  string                                                           `json:"event_webhooks_url,omitempty"`
+	EventWebhooksStatus               int                                                              `json:"event_webhooks_status,omitempty"`
+	EventWebhooksTypes                []string                                                         `json:"event_webhooks_types,omitempty"`
+	Tags                              []string                                                         `json:"tags,omitempty"`
+	InstallParams                     *ApplicationInstallParams                                        `json:"install_params,omitempty"`
+	IntegrationTypesConfig            map[ApplicationIntegrationType]*ApplicationIntegrationTypeConfig `json:"integration_types_config,omitempty"`
+	CustomInstallURL                  string                                                           `json:"custom_install_url,omitempty"`
+}
+
+// ApplicationActivityLocationKind indicates where an activity instance is running.
+type ApplicationActivityLocationKind string
+
+const (
+	// ApplicationActivityLocationGuildChannel indicates a guild channel activity location.
+	ApplicationActivityLocationGuildChannel ApplicationActivityLocationKind = "gc"
+	// ApplicationActivityLocationPrivateChannel indicates a private channel activity location.
+	ApplicationActivityLocationPrivateChannel ApplicationActivityLocationKind = "pc"
+)
+
+// ApplicationActivityInstance stores an application's running activity instance.
+type ApplicationActivityInstance struct {
+	ApplicationID string                       `json:"application_id"`
+	InstanceID    string                       `json:"instance_id"`
+	LaunchID      string                       `json:"launch_id"`
+	Location      *ApplicationActivityLocation `json:"location"`
+	Users         []string                     `json:"users"`
+}
+
+// ApplicationActivityLocation stores where an activity instance is running.
+type ApplicationActivityLocation struct {
+	ID        string                          `json:"id"`
+	Kind      ApplicationActivityLocationKind `json:"kind"`
+	ChannelID string                          `json:"channel_id"`
+	GuildID   string                          `json:"guild_id,omitempty"`
 }
 
 // ApplicationRoleConnectionMetadataType represents the type of application role connection metadata.
@@ -285,28 +327,75 @@ const (
 	InviteTargetEmbeddedApplication InviteTargetType = 2
 )
 
+// InviteType indicates the type of invite.
+type InviteType uint8
+
+// Invite types.
+const (
+	InviteTypeGuild   InviteType = 0
+	InviteTypeGroupDM InviteType = 1
+	InviteTypeFriend  InviteType = 2
+)
+
+// InviteFlags represent flags on an invite.
+type InviteFlags int
+
+// Valid InviteFlags values.
+const (
+	InviteFlagIsGuestInvite InviteFlags = 1 << 0
+)
+
 // A Invite stores all data related to a specific Discord Guild or Channel invite.
 type Invite struct {
-	Guild             *Guild           `json:"guild"`
-	Channel           *Channel         `json:"channel"`
-	Inviter           *User            `json:"inviter"`
-	Code              string           `json:"code"`
-	CreatedAt         time.Time        `json:"created_at"`
-	MaxAge            int              `json:"max_age"`
-	Uses              int              `json:"uses"`
-	MaxUses           int              `json:"max_uses"`
-	Revoked           bool             `json:"revoked"`
-	Temporary         bool             `json:"temporary"`
-	Unique            bool             `json:"unique"`
-	TargetUser        *User            `json:"target_user"`
-	TargetType        InviteTargetType `json:"target_type"`
-	TargetApplication *Application     `json:"target_application"`
+	Type                InviteType           `json:"type"`
+	Guild               *Guild               `json:"guild"`
+	Channel             *Channel             `json:"channel"`
+	Inviter             *User                `json:"inviter"`
+	Code                string               `json:"code"`
+	CreatedAt           time.Time            `json:"created_at"`
+	MaxAge              int                  `json:"max_age"`
+	Uses                int                  `json:"uses"`
+	MaxUses             int                  `json:"max_uses"`
+	Revoked             bool                 `json:"revoked"`
+	Temporary           bool                 `json:"temporary"`
+	Unique              bool                 `json:"unique"`
+	TargetUser          *User                `json:"target_user"`
+	TargetType          InviteTargetType     `json:"target_type"`
+	TargetUserID        string               `json:"target_user_id,omitempty"`
+	TargetApplicationID string               `json:"target_application_id,omitempty"`
+	TargetApplication   *Application         `json:"target_application"`
+	GuildScheduledEvent *GuildScheduledEvent `json:"guild_scheduled_event"`
+	Flags               InviteFlags          `json:"flags"`
+	Roles               []*Role              `json:"roles,omitempty"`
+	RoleIDs             []string             `json:"role_ids,omitempty"`
+	TargetUsersFile     *File                `json:"-"`
 
 	// will only be filled when using InviteWithCounts
 	ApproximatePresenceCount int `json:"approximate_presence_count"`
 	ApproximateMemberCount   int `json:"approximate_member_count"`
 
 	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+// InviteTargetUsersJobStatus is the processing status of an invite target-users CSV file.
+type InviteTargetUsersJobStatus int
+
+// Valid InviteTargetUsersJobStatus values.
+const (
+	InviteTargetUsersJobStatusUnspecified InviteTargetUsersJobStatus = 0
+	InviteTargetUsersJobStatusProcessing  InviteTargetUsersJobStatus = 1
+	InviteTargetUsersJobStatusCompleted   InviteTargetUsersJobStatus = 2
+	InviteTargetUsersJobStatusFailed      InviteTargetUsersJobStatus = 3
+)
+
+// InviteTargetUsersJob stores target-user processing status for an invite.
+type InviteTargetUsersJob struct {
+	Status         InviteTargetUsersJobStatus `json:"status"`
+	TotalUsers     int                        `json:"total_users"`
+	ProcessedUsers int                        `json:"processed_users"`
+	CreatedAt      time.Time                  `json:"created_at"`
+	CompletedAt    *time.Time                 `json:"completed_at"`
+	ErrorMessage   string                     `json:"error_message"`
 }
 
 // ChannelType is the type of a Channel
@@ -737,6 +826,27 @@ type EmojiParams struct {
 	// Roles for which this emoji will be available.
 	// NOTE: can not be used with application emoji endpoints.
 	Roles []string `json:"roles,omitempty"`
+}
+
+// SoundboardSound stores data related to soundboard sounds.
+type SoundboardSound struct {
+	Name      string  `json:"name"`
+	SoundID   string  `json:"sound_id"`
+	Volume    float64 `json:"volume"`
+	EmojiID   string  `json:"emoji_id"`
+	EmojiName string  `json:"emoji_name"`
+	GuildID   string  `json:"guild_id"`
+	Available bool    `json:"available"`
+	User      *User   `json:"user,omitempty"`
+}
+
+// SoundboardSoundParams represents parameters needed to create or update a soundboard sound.
+type SoundboardSoundParams struct {
+	Name      string   `json:"name,omitempty"`
+	Sound     string   `json:"sound,omitempty"`
+	Volume    *float64 `json:"volume,omitempty"`
+	EmojiID   *string  `json:"emoji_id,omitempty"`
+	EmojiName *string  `json:"emoji_name,omitempty"`
 }
 
 // StickerFormat is the file format of the Sticker.
@@ -1417,7 +1527,10 @@ const (
 	GuildFeatureCreatorStorePage                      GuildFeature = "CREATOR_STORE_PAGE"
 	GuildFeatureDeveloperSupportServer                GuildFeature = "DEVELOPER_SUPPORT_SERVER"
 	GuildFeatureDiscoverable                          GuildFeature = "DISCOVERABLE"
+	GuildFeatureEnhancedRoleColors                    GuildFeature = "ENHANCED_ROLE_COLORS"
 	GuildFeatureFeaturable                            GuildFeature = "FEATURABLE"
+	GuildFeatureGuestsEnabled                         GuildFeature = "GUESTS_ENABLED"
+	GuildFeatureGuildTags                             GuildFeature = "GUILD_TAGS"
 	GuildFeatureInvitesDisabled                       GuildFeature = "INVITES_DISABLED"
 	GuildFeatureInviteSplash                          GuildFeature = "INVITE_SPLASH"
 	GuildFeatureMemberVerificationGateEnabled         GuildFeature = "MEMBER_VERIFICATION_GATE_ENABLED"
@@ -1483,6 +1596,9 @@ type Role struct {
 	// The hex color of this role.
 	Color int `json:"color"`
 
+	// The colors of this role.
+	Colors *RoleColors `json:"colors,omitempty"`
+
 	// The position of this role in the guild's role hierarchy.
 	Position int `json:"position"`
 
@@ -1501,6 +1617,13 @@ type Role struct {
 	// This is a combination of bit masks; the presence of a certain flag can
 	// be checked by performing a bitwise AND between this int and the flag.
 	Flags RoleFlags `json:"flags"`
+}
+
+// RoleColors stores the primary and optional gradient colors of a role.
+type RoleColors struct {
+	PrimaryColor   int  `json:"primary_color"`
+	SecondaryColor *int `json:"secondary_color"`
+	TertiaryColor  *int `json:"tertiary_color"`
 }
 
 // RoleFlags represent the flags of a Role.
@@ -1541,6 +1664,8 @@ type RoleParams struct {
 	Name string `json:"name,omitempty"`
 	// The color the role should have (as a decimal, not hex)
 	Color *int `json:"color,omitempty"`
+	// The colors the role should have.
+	Colors *RoleColors `json:"colors,omitempty"`
 	// Whether to display the role's users separately
 	Hoist *bool `json:"hoist,omitempty"`
 	// The overall permissions number of the role
@@ -1639,6 +1764,18 @@ const (
 	MemberFlagBypassesVerification MemberFlags = 1 << 2
 	// MemberFlagStartedOnboarding indicates whether the Member has started onboarding.
 	MemberFlagStartedOnboarding MemberFlags = 1 << 3
+	// MemberFlagIsGuest indicates whether the Member is a guest.
+	MemberFlagIsGuest MemberFlags = 1 << 4
+	// MemberFlagStartedHomeActions indicates whether the Member has started Server Guide new member actions.
+	MemberFlagStartedHomeActions MemberFlags = 1 << 5
+	// MemberFlagCompletedHomeActions indicates whether the Member has completed Server Guide new member actions.
+	MemberFlagCompletedHomeActions MemberFlags = 1 << 6
+	// MemberFlagAutomodQuarantinedUsername indicates whether the Member's username, display name, or nickname is blocked by AutoMod.
+	MemberFlagAutomodQuarantinedUsername MemberFlags = 1 << 7
+	// MemberFlagDMSettingsUpsellAcknowledged indicates whether the Member dismissed the DM settings upsell.
+	MemberFlagDMSettingsUpsellAcknowledged MemberFlags = 1 << 9
+	// MemberFlagAutomodQuarantinedGuildTag indicates whether the Member's guild tag is blocked by AutoMod.
+	MemberFlagAutomodQuarantinedGuildTag MemberFlags = 1 << 10
 )
 
 // A Member stores user information for Guild members. A guild
@@ -2197,6 +2334,9 @@ const (
 
 	AuditLogActionHomeSettingsCreate = 190
 	AuditLogActionHomeSettingsUpdate = 191
+
+	AuditLogActionVoiceChannelStatusUpdate AuditLogAction = 192
+	AuditLogActionVoiceChannelStatusDelete AuditLogAction = 193
 )
 
 // GuildMemberParams stores data needed to update a member
@@ -2217,6 +2357,14 @@ type GuildMemberParams struct {
 	// to communicate in the guild again (up to 28 days in the future).
 	// Set to time.Time{} to remove timeout.
 	CommunicationDisabledUntil *time.Time `json:"communication_disabled_until,omitempty"`
+	// The member flags to set.
+	Flags *MemberFlags `json:"flags,omitempty"`
+	// The current member's avatar image encoded in base64.
+	Avatar *string `json:"avatar,omitempty"`
+	// The current member's banner image encoded in base64.
+	Banner *string `json:"banner,omitempty"`
+	// The current member's guild bio.
+	Bio *string `json:"bio,omitempty"`
 }
 
 // MarshalJSON is a helper function to marshal GuildMemberParams.
@@ -2618,8 +2766,8 @@ type SubscriptionStatus int
 // Valid SubscriptionStatus values
 const (
 	SubscriptionStatusActive   = 0
-	SubscriptionStatusEnding   = 1
-	SubscriptionStatusInactive = 2
+	SubscriptionStatusInactive = 1
+	SubscriptionStatusEnding   = 2
 )
 
 // EntitlementType is the type of entitlement (see EntitlementType* consts)

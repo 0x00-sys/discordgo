@@ -112,6 +112,92 @@ func TestMessageReference_DefaultTypeIsDefault(t *testing.T) {
 	}
 }
 
+func TestMessageAttachmentCurrentFieldsAndFlags(t *testing.T) {
+	data := []byte(`{
+		"id":"attachment",
+		"filename":"clip.mp4",
+		"title":"clip",
+		"description":"alt text",
+		"content_type":"video/mp4",
+		"size":42,
+		"url":"https://cdn.example/clip.mp4",
+		"proxy_url":"https://proxy.example/clip.mp4",
+		"height":720,
+		"width":1280,
+		"placeholder":"thumbhash",
+		"placeholder_version":1,
+		"ephemeral":true,
+		"duration_secs":5.2,
+		"waveform":"wave",
+		"flags":9,
+		"clip_participants":[{"id":"user","username":"User"}],
+		"clip_created_at":"2026-06-24T12:00:00Z",
+		"application":{"id":"app","name":"App","description":"desc","verify_key":"key"}
+	}`)
+
+	var attachment MessageAttachment
+	if err := json.Unmarshal(data, &attachment); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if attachment.Title != "clip" || attachment.Description != "alt text" {
+		t.Fatalf("attachment title/description = %q/%q", attachment.Title, attachment.Description)
+	}
+	if attachment.Placeholder != "thumbhash" || attachment.PlaceholderVersion != 1 {
+		t.Fatalf("placeholder fields = %q/%d", attachment.Placeholder, attachment.PlaceholderVersion)
+	}
+	wantFlags := MessageAttachmentFlagsIsClip | MessageAttachmentFlagsIsSpoiler
+	if attachment.Flags != wantFlags {
+		t.Fatalf("Flags = %d, want %d", attachment.Flags, wantFlags)
+	}
+	if len(attachment.ClipParticipants) != 1 || attachment.ClipParticipants[0].ID != "user" {
+		t.Fatalf("ClipParticipants = %#v", attachment.ClipParticipants)
+	}
+	if attachment.ClipCreatedAt == nil || attachment.ClipCreatedAt.Year() != 2026 {
+		t.Fatalf("ClipCreatedAt = %v", attachment.ClipCreatedAt)
+	}
+	if attachment.Application == nil || attachment.Application.ID != "app" {
+		t.Fatalf("Application = %#v", attachment.Application)
+	}
+
+	request := MessageAttachment{
+		ID:          "0",
+		Filename:    "spoiler.png",
+		Description: "updated alt",
+		IsSpoiler:   true,
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	encodedText := string(encoded)
+	if !strings.Contains(encodedText, `"description":"updated alt"`) || !strings.Contains(encodedText, `"is_spoiler":true`) {
+		t.Fatalf("attachment request JSON missing edit fields: %s", encodedText)
+	}
+}
+
+func TestCurrentMessageTypeAndFlagConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  interface{}
+		want interface{}
+	}{
+		{"MessageTypePollResult", MessageTypePollResult, MessageType(46)},
+		{"MessageTypePurchaseNotification", MessageTypePurchaseNotification, MessageType(44)},
+		{"MessageTypeGuildIncidentReportRaid", MessageTypeGuildIncidentReportRaid, MessageType(38)},
+		{"MessageFlagsHasSnapshot", MessageFlagsHasSnapshot, MessageFlags(1 << 14)},
+		{"MessageAttachmentFlagsIsSpoiler", MessageAttachmentFlagsIsSpoiler, MessageAttachmentFlags(1 << 3)},
+		{"MessageAttachmentFlagsIsAnimated", MessageAttachmentFlagsIsAnimated, MessageAttachmentFlags(1 << 5)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("%s = %v, want %v", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMessageCreateUnknownComponentType(t *testing.T) {
 	var m MessageCreate
 	err := json.Unmarshal([]byte(`{

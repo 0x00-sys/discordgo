@@ -768,6 +768,48 @@ func TestRequestGuildMembersBatchListSendsOnePayloadPerGuild(t *testing.T) {
 	}
 }
 
+func TestRequestSoundboardSoundsWritesGatewayOp(t *testing.T) {
+	writes := captureGatewayWrites(t, 1, func(session *Session) error {
+		return session.RequestSoundboardSounds([]string{"guild-1", "guild-2"})
+	})
+
+	if writes[0].Op != 31 {
+		t.Fatalf("op = %d, want 31", writes[0].Op)
+	}
+	var data requestSoundboardSoundsData
+	if err := json.Unmarshal(writes[0].Data, &data); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(data.GuildIDs) != 2 || data.GuildIDs[0] != "guild-1" || data.GuildIDs[1] != "guild-2" {
+		t.Fatalf("guild_ids = %#v, want [guild-1 guild-2]", data.GuildIDs)
+	}
+}
+
+func TestRequestChannelInfoWritesGatewayOp(t *testing.T) {
+	writes := captureGatewayWrites(t, 1, func(session *Session) error {
+		return session.RequestChannelInfo("guild", []string{"status", "voice_start_time"})
+	})
+
+	if writes[0].Op != 43 {
+		t.Fatalf("op = %d, want 43", writes[0].Op)
+	}
+	var data requestChannelInfoData
+	if err := json.Unmarshal(writes[0].Data, &data); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if data.GuildID != "guild" {
+		t.Fatalf("guild_id = %q, want guild", data.GuildID)
+	}
+	if len(data.Fields) != 2 || data.Fields[0] != "status" || data.Fields[1] != "voice_start_time" {
+		t.Fatalf("fields = %#v, want [status voice_start_time]", data.Fields)
+	}
+}
+
+type gatewayWrite struct {
+	Op   int             `json:"op"`
+	Data json.RawMessage `json:"d"`
+}
+
 type requestGuildMembersWrite struct {
 	Op   int `json:"op"`
 	Data struct {
@@ -780,6 +822,21 @@ type requestGuildMembersWrite struct {
 }
 
 func captureRequestGuildMembersWrites(t *testing.T, count int, call func(*Session) error) []requestGuildMembersWrite {
+	t.Helper()
+
+	rawWrites := captureGatewayWrites(t, count, call)
+	writes := make([]requestGuildMembersWrite, count)
+	for i, rawWrite := range rawWrites {
+		writes[i].Op = rawWrite.Op
+		if err := json.Unmarshal(rawWrite.Data, &writes[i].Data); err != nil {
+			t.Fatalf("message %d data = %s, unmarshal error: %v", i, rawWrite.Data, err)
+		}
+	}
+
+	return writes
+}
+
+func captureGatewayWrites(t *testing.T, count int, call func(*Session) error) []gatewayWrite {
 	t.Helper()
 
 	messages := make(chan []byte, count)
@@ -824,7 +881,7 @@ func captureRequestGuildMembersWrites(t *testing.T, count int, call func(*Sessio
 		t.Fatalf("ReadMessage returned error: %v", err)
 	}
 
-	writes := make([]requestGuildMembersWrite, count)
+	writes := make([]gatewayWrite, count)
 	for i := 0; i < count; i++ {
 		message := <-messages
 		if err := json.Unmarshal(message, &writes[i]); err != nil {

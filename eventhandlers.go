@@ -14,6 +14,7 @@ const (
 	autoModerationRuleUpdateEventType            = "AUTO_MODERATION_RULE_UPDATE"
 	channelCreateEventType                       = "CHANNEL_CREATE"
 	channelDeleteEventType                       = "CHANNEL_DELETE"
+	channelInfoEventType                         = "CHANNEL_INFO"
 	channelPinsUpdateEventType                   = "CHANNEL_PINS_UPDATE"
 	channelUpdateEventType                       = "CHANNEL_UPDATE"
 	connectEventType                             = "__CONNECT__"
@@ -41,6 +42,10 @@ const (
 	guildScheduledEventUpdateEventType           = "GUILD_SCHEDULED_EVENT_UPDATE"
 	guildScheduledEventUserAddEventType          = "GUILD_SCHEDULED_EVENT_USER_ADD"
 	guildScheduledEventUserRemoveEventType       = "GUILD_SCHEDULED_EVENT_USER_REMOVE"
+	guildSoundboardSoundCreateEventType          = "GUILD_SOUNDBOARD_SOUND_CREATE"
+	guildSoundboardSoundDeleteEventType          = "GUILD_SOUNDBOARD_SOUND_DELETE"
+	guildSoundboardSoundUpdateEventType          = "GUILD_SOUNDBOARD_SOUND_UPDATE"
+	guildSoundboardSoundsUpdateEventType         = "GUILD_SOUNDBOARD_SOUNDS_UPDATE"
 	guildStickersUpdateEventType                 = "GUILD_STICKERS_UPDATE"
 	guildUpdateEventType                         = "GUILD_UPDATE"
 	integrationCreateEventType                   = "INTEGRATION_CREATE"
@@ -62,8 +67,10 @@ const (
 	presenceUpdateEventType                      = "PRESENCE_UPDATE"
 	presencesReplaceEventType                    = "PRESENCES_REPLACE"
 	rateLimitEventType                           = "__RATE_LIMIT__"
+	rateLimitedEventType                         = "RATE_LIMITED"
 	readyEventType                               = "READY"
 	resumedEventType                             = "RESUMED"
+	soundboardSoundsEventType                    = "SOUNDBOARD_SOUNDS"
 	stageInstanceEventCreateEventType            = "STAGE_INSTANCE_EVENT_CREATE"
 	stageInstanceEventDeleteEventType            = "STAGE_INSTANCE_EVENT_DELETE"
 	stageInstanceEventUpdateEventType            = "STAGE_INSTANCE_EVENT_UPDATE"
@@ -78,6 +85,9 @@ const (
 	threadUpdateEventType                        = "THREAD_UPDATE"
 	typingStartEventType                         = "TYPING_START"
 	userUpdateEventType                          = "USER_UPDATE"
+	voiceChannelEffectSendEventType              = "VOICE_CHANNEL_EFFECT_SEND"
+	voiceChannelStartTimeUpdateEventType         = "VOICE_CHANNEL_START_TIME_UPDATE"
+	voiceChannelStatusUpdateEventType            = "VOICE_CHANNEL_STATUS_UPDATE"
 	voiceServerUpdateEventType                   = "VOICE_SERVER_UPDATE"
 	voiceStateUpdateEventType                    = "VOICE_STATE_UPDATE"
 	webhooksUpdateEventType                      = "WEBHOOKS_UPDATE"
@@ -219,6 +229,26 @@ func (eh channelDeleteEventHandler) New() interface{} {
 // Handle is the handler for ChannelDelete events.
 func (eh channelDeleteEventHandler) Handle(s *Session, i interface{}) {
 	if t, ok := i.(*ChannelDelete); ok {
+		eh(s, t)
+	}
+}
+
+// channelInfoEventHandler is an event handler for ChannelInfo events.
+type channelInfoEventHandler func(*Session, *ChannelInfo)
+
+// Type returns the event type for ChannelInfo events.
+func (eh channelInfoEventHandler) Type() string {
+	return channelInfoEventType
+}
+
+// New returns a new instance of ChannelInfo.
+func (eh channelInfoEventHandler) New() interface{} {
+	return &ChannelInfo{}
+}
+
+// Handle is the handler for ChannelInfo events.
+func (eh channelInfoEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*ChannelInfo); ok {
 		eh(s, t)
 	}
 }
@@ -748,6 +778,86 @@ func (eh guildScheduledEventUserRemoveEventHandler) Handle(s *Session, i interfa
 	}
 }
 
+// guildSoundboardSoundCreateEventHandler is an event handler for GuildSoundboardSoundCreate events.
+type guildSoundboardSoundCreateEventHandler func(*Session, *GuildSoundboardSoundCreate)
+
+// Type returns the event type for GuildSoundboardSoundCreate events.
+func (eh guildSoundboardSoundCreateEventHandler) Type() string {
+	return guildSoundboardSoundCreateEventType
+}
+
+// New returns a new instance of GuildSoundboardSoundCreate.
+func (eh guildSoundboardSoundCreateEventHandler) New() interface{} {
+	return &GuildSoundboardSoundCreate{}
+}
+
+// Handle is the handler for GuildSoundboardSoundCreate events.
+func (eh guildSoundboardSoundCreateEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*GuildSoundboardSoundCreate); ok {
+		eh(s, t)
+	}
+}
+
+// guildSoundboardSoundDeleteEventHandler is an event handler for GuildSoundboardSoundDelete events.
+type guildSoundboardSoundDeleteEventHandler func(*Session, *GuildSoundboardSoundDelete)
+
+// Type returns the event type for GuildSoundboardSoundDelete events.
+func (eh guildSoundboardSoundDeleteEventHandler) Type() string {
+	return guildSoundboardSoundDeleteEventType
+}
+
+// New returns a new instance of GuildSoundboardSoundDelete.
+func (eh guildSoundboardSoundDeleteEventHandler) New() interface{} {
+	return &GuildSoundboardSoundDelete{}
+}
+
+// Handle is the handler for GuildSoundboardSoundDelete events.
+func (eh guildSoundboardSoundDeleteEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*GuildSoundboardSoundDelete); ok {
+		eh(s, t)
+	}
+}
+
+// guildSoundboardSoundUpdateEventHandler is an event handler for GuildSoundboardSoundUpdate events.
+type guildSoundboardSoundUpdateEventHandler func(*Session, *GuildSoundboardSoundUpdate)
+
+// Type returns the event type for GuildSoundboardSoundUpdate events.
+func (eh guildSoundboardSoundUpdateEventHandler) Type() string {
+	return guildSoundboardSoundUpdateEventType
+}
+
+// New returns a new instance of GuildSoundboardSoundUpdate.
+func (eh guildSoundboardSoundUpdateEventHandler) New() interface{} {
+	return &GuildSoundboardSoundUpdate{}
+}
+
+// Handle is the handler for GuildSoundboardSoundUpdate events.
+func (eh guildSoundboardSoundUpdateEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*GuildSoundboardSoundUpdate); ok {
+		eh(s, t)
+	}
+}
+
+// guildSoundboardSoundsUpdateEventHandler is an event handler for GuildSoundboardSoundsUpdate events.
+type guildSoundboardSoundsUpdateEventHandler func(*Session, *GuildSoundboardSoundsUpdate)
+
+// Type returns the event type for GuildSoundboardSoundsUpdate events.
+func (eh guildSoundboardSoundsUpdateEventHandler) Type() string {
+	return guildSoundboardSoundsUpdateEventType
+}
+
+// New returns a new instance of GuildSoundboardSoundsUpdate.
+func (eh guildSoundboardSoundsUpdateEventHandler) New() interface{} {
+	return &GuildSoundboardSoundsUpdate{}
+}
+
+// Handle is the handler for GuildSoundboardSoundsUpdate events.
+func (eh guildSoundboardSoundsUpdateEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*GuildSoundboardSoundsUpdate); ok {
+		eh(s, t)
+	}
+}
+
 // guildStickersUpdateEventHandler is an event handler for GuildStickersUpdate events.
 type guildStickersUpdateEventHandler func(*Session, *GuildStickersUpdate)
 
@@ -1163,6 +1273,26 @@ func (eh rateLimitEventHandler) Handle(s *Session, i interface{}) {
 	}
 }
 
+// rateLimitedEventHandler is an event handler for RateLimited events.
+type rateLimitedEventHandler func(*Session, *RateLimited)
+
+// Type returns the event type for RateLimited events.
+func (eh rateLimitedEventHandler) Type() string {
+	return rateLimitedEventType
+}
+
+// New returns a new instance of RateLimited.
+func (eh rateLimitedEventHandler) New() interface{} {
+	return &RateLimited{}
+}
+
+// Handle is the handler for RateLimited events.
+func (eh rateLimitedEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*RateLimited); ok {
+		eh(s, t)
+	}
+}
+
 // readyEventHandler is an event handler for Ready events.
 type readyEventHandler func(*Session, *Ready)
 
@@ -1199,6 +1329,26 @@ func (eh resumedEventHandler) New() interface{} {
 // Handle is the handler for Resumed events.
 func (eh resumedEventHandler) Handle(s *Session, i interface{}) {
 	if t, ok := i.(*Resumed); ok {
+		eh(s, t)
+	}
+}
+
+// soundboardSoundsEventHandler is an event handler for SoundboardSounds events.
+type soundboardSoundsEventHandler func(*Session, *SoundboardSounds)
+
+// Type returns the event type for SoundboardSounds events.
+func (eh soundboardSoundsEventHandler) Type() string {
+	return soundboardSoundsEventType
+}
+
+// New returns a new instance of SoundboardSounds.
+func (eh soundboardSoundsEventHandler) New() interface{} {
+	return &SoundboardSounds{}
+}
+
+// Handle is the handler for SoundboardSounds events.
+func (eh soundboardSoundsEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*SoundboardSounds); ok {
 		eh(s, t)
 	}
 }
@@ -1483,6 +1633,66 @@ func (eh userUpdateEventHandler) Handle(s *Session, i interface{}) {
 	}
 }
 
+// voiceChannelEffectSendEventHandler is an event handler for VoiceChannelEffectSend events.
+type voiceChannelEffectSendEventHandler func(*Session, *VoiceChannelEffectSend)
+
+// Type returns the event type for VoiceChannelEffectSend events.
+func (eh voiceChannelEffectSendEventHandler) Type() string {
+	return voiceChannelEffectSendEventType
+}
+
+// New returns a new instance of VoiceChannelEffectSend.
+func (eh voiceChannelEffectSendEventHandler) New() interface{} {
+	return &VoiceChannelEffectSend{}
+}
+
+// Handle is the handler for VoiceChannelEffectSend events.
+func (eh voiceChannelEffectSendEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*VoiceChannelEffectSend); ok {
+		eh(s, t)
+	}
+}
+
+// voiceChannelStartTimeUpdateEventHandler is an event handler for VoiceChannelStartTimeUpdate events.
+type voiceChannelStartTimeUpdateEventHandler func(*Session, *VoiceChannelStartTimeUpdate)
+
+// Type returns the event type for VoiceChannelStartTimeUpdate events.
+func (eh voiceChannelStartTimeUpdateEventHandler) Type() string {
+	return voiceChannelStartTimeUpdateEventType
+}
+
+// New returns a new instance of VoiceChannelStartTimeUpdate.
+func (eh voiceChannelStartTimeUpdateEventHandler) New() interface{} {
+	return &VoiceChannelStartTimeUpdate{}
+}
+
+// Handle is the handler for VoiceChannelStartTimeUpdate events.
+func (eh voiceChannelStartTimeUpdateEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*VoiceChannelStartTimeUpdate); ok {
+		eh(s, t)
+	}
+}
+
+// voiceChannelStatusUpdateEventHandler is an event handler for VoiceChannelStatusUpdate events.
+type voiceChannelStatusUpdateEventHandler func(*Session, *VoiceChannelStatusUpdate)
+
+// Type returns the event type for VoiceChannelStatusUpdate events.
+func (eh voiceChannelStatusUpdateEventHandler) Type() string {
+	return voiceChannelStatusUpdateEventType
+}
+
+// New returns a new instance of VoiceChannelStatusUpdate.
+func (eh voiceChannelStatusUpdateEventHandler) New() interface{} {
+	return &VoiceChannelStatusUpdate{}
+}
+
+// Handle is the handler for VoiceChannelStatusUpdate events.
+func (eh voiceChannelStatusUpdateEventHandler) Handle(s *Session, i interface{}) {
+	if t, ok := i.(*VoiceChannelStatusUpdate); ok {
+		eh(s, t)
+	}
+}
+
 // voiceServerUpdateEventHandler is an event handler for VoiceServerUpdate events.
 type voiceServerUpdateEventHandler func(*Session, *VoiceServerUpdate)
 
@@ -1561,6 +1771,8 @@ func handlerForInterface(handler interface{}) EventHandler {
 		return channelCreateEventHandler(v)
 	case func(*Session, *ChannelDelete):
 		return channelDeleteEventHandler(v)
+	case func(*Session, *ChannelInfo):
+		return channelInfoEventHandler(v)
 	case func(*Session, *ChannelPinsUpdate):
 		return channelPinsUpdateEventHandler(v)
 	case func(*Session, *ChannelUpdate):
@@ -1615,6 +1827,14 @@ func handlerForInterface(handler interface{}) EventHandler {
 		return guildScheduledEventUserAddEventHandler(v)
 	case func(*Session, *GuildScheduledEventUserRemove):
 		return guildScheduledEventUserRemoveEventHandler(v)
+	case func(*Session, *GuildSoundboardSoundCreate):
+		return guildSoundboardSoundCreateEventHandler(v)
+	case func(*Session, *GuildSoundboardSoundDelete):
+		return guildSoundboardSoundDeleteEventHandler(v)
+	case func(*Session, *GuildSoundboardSoundUpdate):
+		return guildSoundboardSoundUpdateEventHandler(v)
+	case func(*Session, *GuildSoundboardSoundsUpdate):
+		return guildSoundboardSoundsUpdateEventHandler(v)
 	case func(*Session, *GuildStickersUpdate):
 		return guildStickersUpdateEventHandler(v)
 	case func(*Session, *GuildUpdate):
@@ -1657,10 +1877,14 @@ func handlerForInterface(handler interface{}) EventHandler {
 		return presencesReplaceEventHandler(v)
 	case func(*Session, *RateLimit):
 		return rateLimitEventHandler(v)
+	case func(*Session, *RateLimited):
+		return rateLimitedEventHandler(v)
 	case func(*Session, *Ready):
 		return readyEventHandler(v)
 	case func(*Session, *Resumed):
 		return resumedEventHandler(v)
+	case func(*Session, *SoundboardSounds):
+		return soundboardSoundsEventHandler(v)
 	case func(*Session, *StageInstanceEventCreate):
 		return stageInstanceEventCreateEventHandler(v)
 	case func(*Session, *StageInstanceEventDelete):
@@ -1689,6 +1913,12 @@ func handlerForInterface(handler interface{}) EventHandler {
 		return typingStartEventHandler(v)
 	case func(*Session, *UserUpdate):
 		return userUpdateEventHandler(v)
+	case func(*Session, *VoiceChannelEffectSend):
+		return voiceChannelEffectSendEventHandler(v)
+	case func(*Session, *VoiceChannelStartTimeUpdate):
+		return voiceChannelStartTimeUpdateEventHandler(v)
+	case func(*Session, *VoiceChannelStatusUpdate):
+		return voiceChannelStatusUpdateEventHandler(v)
 	case func(*Session, *VoiceServerUpdate):
 		return voiceServerUpdateEventHandler(v)
 	case func(*Session, *VoiceStateUpdate):
@@ -1708,6 +1938,7 @@ func init() {
 	registerInterfaceProvider(autoModerationRuleUpdateEventHandler(nil))
 	registerInterfaceProvider(channelCreateEventHandler(nil))
 	registerInterfaceProvider(channelDeleteEventHandler(nil))
+	registerInterfaceProvider(channelInfoEventHandler(nil))
 	registerInterfaceProvider(channelPinsUpdateEventHandler(nil))
 	registerInterfaceProvider(channelUpdateEventHandler(nil))
 	registerInterfaceProvider(entitlementCreateEventHandler(nil))
@@ -1732,6 +1963,10 @@ func init() {
 	registerInterfaceProvider(guildScheduledEventUpdateEventHandler(nil))
 	registerInterfaceProvider(guildScheduledEventUserAddEventHandler(nil))
 	registerInterfaceProvider(guildScheduledEventUserRemoveEventHandler(nil))
+	registerInterfaceProvider(guildSoundboardSoundCreateEventHandler(nil))
+	registerInterfaceProvider(guildSoundboardSoundDeleteEventHandler(nil))
+	registerInterfaceProvider(guildSoundboardSoundUpdateEventHandler(nil))
+	registerInterfaceProvider(guildSoundboardSoundsUpdateEventHandler(nil))
 	registerInterfaceProvider(guildStickersUpdateEventHandler(nil))
 	registerInterfaceProvider(guildUpdateEventHandler(nil))
 	registerInterfaceProvider(integrationCreateEventHandler(nil))
@@ -1752,8 +1987,10 @@ func init() {
 	registerInterfaceProvider(messageUpdateEventHandler(nil))
 	registerInterfaceProvider(presenceUpdateEventHandler(nil))
 	registerInterfaceProvider(presencesReplaceEventHandler(nil))
+	registerInterfaceProvider(rateLimitedEventHandler(nil))
 	registerInterfaceProvider(readyEventHandler(nil))
 	registerInterfaceProvider(resumedEventHandler(nil))
+	registerInterfaceProvider(soundboardSoundsEventHandler(nil))
 	registerInterfaceProvider(stageInstanceEventCreateEventHandler(nil))
 	registerInterfaceProvider(stageInstanceEventDeleteEventHandler(nil))
 	registerInterfaceProvider(stageInstanceEventUpdateEventHandler(nil))
@@ -1768,6 +2005,9 @@ func init() {
 	registerInterfaceProvider(threadUpdateEventHandler(nil))
 	registerInterfaceProvider(typingStartEventHandler(nil))
 	registerInterfaceProvider(userUpdateEventHandler(nil))
+	registerInterfaceProvider(voiceChannelEffectSendEventHandler(nil))
+	registerInterfaceProvider(voiceChannelStartTimeUpdateEventHandler(nil))
+	registerInterfaceProvider(voiceChannelStatusUpdateEventHandler(nil))
 	registerInterfaceProvider(voiceServerUpdateEventHandler(nil))
 	registerInterfaceProvider(voiceStateUpdateEventHandler(nil))
 	registerInterfaceProvider(webhooksUpdateEventHandler(nil))

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"go/ast"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -78,8 +79,11 @@ func main() {
 	}
 
 	names := []string{}
-	for object := range parsedFile.Scope.Objects {
-		names = append(names, object)
+	for _, object := range parsedFile.Scope.Objects {
+		if object.Kind != ast.Typ || !isEventHandlerType(object.Name) {
+			continue
+		}
+		names = append(names, object.Name)
 	}
 	sort.Strings(names)
 	eventHandlerTmpl.Execute(&buf, names)
@@ -105,6 +109,15 @@ func constCase(name string) string {
 func isDiscordEvent(name string) bool {
 	switch {
 	case name == "Connect", name == "Disconnect", name == "Event", name == "RateLimit", name == "Interface":
+		return false
+	default:
+		return true
+	}
+}
+
+func isEventHandlerType(name string) bool {
+	switch name {
+	case "ChannelInfoChannel", "RateLimitedMeta":
 		return false
 	default:
 		return true

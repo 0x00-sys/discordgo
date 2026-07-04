@@ -9,6 +9,7 @@ package discordgo
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +107,192 @@ func TestForumTagUnmarshalID(t *testing.T) {
 				t.Fatalf("ID = %q, want %q", tag.ID, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplicationCurrentFieldsAndIntegrationTypesConfig(t *testing.T) {
+	data := []byte(`{
+		"id":"app",
+		"name":"Application",
+		"description":"desc",
+		"verify_key":"key",
+		"flags":8192,
+		"flags_new":"1099511635968",
+		"approximate_guild_count":12,
+		"approximate_user_install_count":34,
+		"approximate_user_authorization_count":56,
+		"redirect_uris":["https://example.com/callback"],
+		"interactions_endpoint_url":"https://example.com/interactions",
+		"role_connections_verification_url":"https://example.com/role",
+		"event_webhooks_url":"https://example.com/events",
+		"event_webhooks_status":2,
+		"event_webhooks_types":["APPLICATION_AUTHORIZED"],
+		"tags":["utility"],
+		"custom_install_url":"https://example.com/install",
+		"integration_types_config":{
+			"0":{"oauth2_install_params":{"scopes":["bot"],"permissions":"2048"}},
+			"1":{"oauth2_install_params":{"scopes":["applications.commands"],"permissions":"0"}}
+		},
+		"install_params":{"scopes":["bot"],"permissions":"8"},
+		"bot":{"id":"bot","username":"Bot"},
+		"guild":{"id":"guild","name":"Guild"}
+	}`)
+
+	var app Application
+	if err := json.Unmarshal(data, &app); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if app.FlagsNew != "1099511635968" {
+		t.Fatalf("FlagsNew = %q", app.FlagsNew)
+	}
+	if app.ApproximateUserInstallCount != 34 || app.ApproximateUserAuthorizationCount != 56 {
+		t.Fatalf("approximate user counts = %d/%d", app.ApproximateUserInstallCount, app.ApproximateUserAuthorizationCount)
+	}
+	if app.Bot == nil || app.Bot.ID != "bot" || app.Guild == nil || app.Guild.ID != "guild" {
+		t.Fatalf("bot/guild = %#v/%#v", app.Bot, app.Guild)
+	}
+	if app.IntegrationTypesConfig[ApplicationIntegrationGuildInstall].OAuth2InstallParams.Permissions != 2048 {
+		t.Fatalf("guild install permissions = %d", app.IntegrationTypesConfig[ApplicationIntegrationGuildInstall].OAuth2InstallParams.Permissions)
+	}
+
+	encoded, err := json.Marshal(Application{
+		Name:        "Application",
+		Description: "desc",
+		VerifyKey:   "key",
+		IntegrationTypesConfig: map[ApplicationIntegrationType]*ApplicationIntegrationTypeConfig{
+			ApplicationIntegrationUserInstall: {
+				OAuth2InstallParams: &ApplicationInstallParams{
+					Scopes:      []string{"applications.commands"},
+					Permissions: 0,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	encodedText := string(encoded)
+	if !strings.Contains(encodedText, `"integration_types_config"`) {
+		t.Fatalf("encoded application missing integration_types_config: %s", encodedText)
+	}
+	if strings.Contains(encodedText, `"integration_types"`) {
+		t.Fatalf("encoded application used old integration_types tag: %s", encodedText)
+	}
+}
+
+func TestInviteCurrentFieldsAndTargetUsersJob(t *testing.T) {
+	data := []byte(`{
+		"type":0,
+		"code":"invite",
+		"target_type":2,
+		"target_application_id":"app",
+		"flags":1,
+		"roles":[{"id":"role","name":"Role","position":1,"color":1,"colors":{"primary_color":1,"secondary_color":2,"tertiary_color":null},"icon":"icon","unicode_emoji":"ok"}],
+		"role_ids":["role"],
+		"guild_scheduled_event":{"id":"event","guild_id":"guild","channel_id":"channel","name":"Event","description":"desc","scheduled_start_time":"2026-01-01T00:00:00Z","privacy_level":2,"status":1,"entity_type":1}
+	}`)
+
+	var invite Invite
+	if err := json.Unmarshal(data, &invite); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if invite.Type != InviteTypeGuild || invite.Flags != InviteFlagIsGuestInvite {
+		t.Fatalf("invite type/flags = %d/%d", invite.Type, invite.Flags)
+	}
+	if len(invite.Roles) != 1 || invite.Roles[0].Colors == nil || invite.Roles[0].Colors.SecondaryColor == nil {
+		t.Fatalf("roles = %#v", invite.Roles)
+	}
+	if invite.GuildScheduledEvent == nil || invite.GuildScheduledEvent.ID != "event" {
+		t.Fatalf("GuildScheduledEvent = %#v", invite.GuildScheduledEvent)
+	}
+
+	var job InviteTargetUsersJob
+	if err := json.Unmarshal([]byte(`{"status":3,"total_users":100,"processed_users":41,"created_at":"2025-01-08T12:00:00Z","completed_at":null,"error_message":"Failed"}`), &job); err != nil {
+		t.Fatalf("json.Unmarshal job returned error: %v", err)
+	}
+	if job.Status != InviteTargetUsersJobStatusFailed || job.CompletedAt != nil || job.ErrorMessage != "Failed" {
+		t.Fatalf("job = %#v", job)
+	}
+}
+
+func TestRoleColorsMemberParamsAndSubscriptionConstants(t *testing.T) {
+	secondary := 0x112233
+	tertiary := 0x445566
+	encodedRole, err := json.Marshal(RoleParams{
+		Colors: &RoleColors{
+			PrimaryColor:   0x010203,
+			SecondaryColor: &secondary,
+			TertiaryColor:  &tertiary,
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal role returned error: %v", err)
+	}
+	if !strings.Contains(string(encodedRole), `"colors":{"primary_color":66051,"secondary_color":1122867,"tertiary_color":4478310}`) {
+		t.Fatalf("role colors JSON = %s", encodedRole)
+	}
+
+	flags := MemberFlagBypassesVerification | MemberFlagAutomodQuarantinedGuildTag
+	avatar := "data:image/png;base64,avatar"
+	banner := "data:image/png;base64,banner"
+	bio := "guild bio"
+	encodedMember, err := json.Marshal(GuildMemberParams{
+		Flags:  &flags,
+		Avatar: &avatar,
+		Banner: &banner,
+		Bio:    &bio,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal member returned error: %v", err)
+	}
+	encodedMemberText := string(encodedMember)
+	for _, want := range []string{`"flags":1028`, `"avatar":"data:image/png;base64,avatar"`, `"banner":"data:image/png;base64,banner"`, `"bio":"guild bio"`} {
+		if !strings.Contains(encodedMemberText, want) {
+			t.Fatalf("member params JSON missing %s: %s", want, encodedMemberText)
+		}
+	}
+
+	if SubscriptionStatusInactive != 1 || SubscriptionStatusEnding != 2 {
+		t.Fatalf("subscription statuses inactive/ending = %d/%d", SubscriptionStatusInactive, SubscriptionStatusEnding)
+	}
+}
+
+func TestSoundboardSoundStructures(t *testing.T) {
+	var sound SoundboardSound
+	if err := json.Unmarshal([]byte(`{"name":"Yay","sound_id":"1106714396018884649","volume":1,"emoji_id":"989193655938064464","emoji_name":null,"guild_id":"613425648685547541","available":true,"user":{"id":"user","username":"User"}}`), &sound); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if sound.SoundID != "1106714396018884649" || sound.User == nil || sound.User.ID != "user" {
+		t.Fatalf("sound = %#v", sound)
+	}
+
+	volume := 0.5
+	emojiName := "sound"
+	encoded, err := json.Marshal(SoundboardSoundParams{
+		Name:      "Yay",
+		Sound:     "data:audio/ogg;base64,AAAA",
+		Volume:    &volume,
+		EmojiName: &emojiName,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	for _, want := range []string{`"name":"Yay"`, `"sound":"data:audio/ogg;base64,AAAA"`, `"volume":0.5`, `"emoji_name":"sound"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("sound params JSON missing %s: %s", want, encoded)
+		}
+	}
+}
+
+func TestApplicationActivityInstance(t *testing.T) {
+	var instance ApplicationActivityInstance
+	if err := json.Unmarshal([]byte(`{"application_id":"app","instance_id":"instance","launch_id":"launch","location":{"id":"gc-guild-channel","kind":"gc","channel_id":"channel","guild_id":"guild"},"users":["user"]}`), &instance); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if instance.Location == nil || instance.Location.Kind != ApplicationActivityLocationGuildChannel {
+		t.Fatalf("Location = %#v", instance.Location)
+	}
+	if len(instance.Users) != 1 || instance.Users[0] != "user" {
+		t.Fatalf("Users = %#v", instance.Users)
 	}
 }
