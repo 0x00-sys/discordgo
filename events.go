@@ -24,6 +24,19 @@ type RateLimit struct {
 	URL string
 }
 
+// RateLimited is the data for a RateLimited gateway event.
+type RateLimited struct {
+	Opcode     int              `json:"opcode"`
+	RetryAfter float64          `json:"retry_after"`
+	Meta       *RateLimitedMeta `json:"meta"`
+}
+
+// RateLimitedMeta is metadata for a gateway rate limit event.
+type RateLimitedMeta struct {
+	GuildID string `json:"guild_id"`
+	Nonce   string `json:"nonce,omitempty"`
+}
+
 // Event provides a basic initial struct for all websocket events.
 type Event struct {
 	Operation int             `json:"op"`
@@ -61,6 +74,33 @@ type ChannelUpdate struct {
 type ChannelDelete struct {
 	*Channel
 	BeforeDelete *Channel `json:"-"`
+}
+
+// ChannelInfo is the data for a ChannelInfo event.
+type ChannelInfo struct {
+	GuildID  string                `json:"guild_id"`
+	Channels []*ChannelInfoChannel `json:"channels"`
+}
+
+// ChannelInfoChannel stores ephemeral channel data returned by ChannelInfo events.
+type ChannelInfoChannel struct {
+	ID             string  `json:"id"`
+	Status         *string `json:"status"`
+	VoiceStartTime *int64  `json:"voice_start_time"`
+}
+
+// VoiceChannelStatusUpdate is the data for a VoiceChannelStatusUpdate event.
+type VoiceChannelStatusUpdate struct {
+	ID      string  `json:"id"`
+	GuildID string  `json:"guild_id"`
+	Status  *string `json:"status"`
+}
+
+// VoiceChannelStartTimeUpdate is the data for a VoiceChannelStartTimeUpdate event.
+type VoiceChannelStartTimeUpdate struct {
+	ID             string `json:"id"`
+	GuildID        string `json:"guild_id"`
+	VoiceStartTime *int64 `json:"voice_start_time"`
 }
 
 // ChannelPinsUpdate stores data for a ChannelPinsUpdate event.
@@ -191,6 +231,34 @@ type GuildEmojisUpdate struct {
 type GuildStickersUpdate struct {
 	GuildID  string     `json:"guild_id"`
 	Stickers []*Sticker `json:"stickers"`
+}
+
+// GuildSoundboardSoundCreate is the data for a GuildSoundboardSoundCreate event.
+type GuildSoundboardSoundCreate struct {
+	*SoundboardSound
+}
+
+// GuildSoundboardSoundUpdate is the data for a GuildSoundboardSoundUpdate event.
+type GuildSoundboardSoundUpdate struct {
+	*SoundboardSound
+}
+
+// GuildSoundboardSoundDelete is the data for a GuildSoundboardSoundDelete event.
+type GuildSoundboardSoundDelete struct {
+	SoundID string `json:"sound_id"`
+	GuildID string `json:"guild_id"`
+}
+
+// GuildSoundboardSoundsUpdate is the data for a GuildSoundboardSoundsUpdate event.
+type GuildSoundboardSoundsUpdate struct {
+	SoundboardSounds []*SoundboardSound `json:"soundboard_sounds"`
+	GuildID          string             `json:"guild_id"`
+}
+
+// SoundboardSounds is the data for a SoundboardSounds event.
+type SoundboardSounds struct {
+	SoundboardSounds []*SoundboardSound `json:"soundboard_sounds"`
+	GuildID          string             `json:"guild_id"`
 }
 
 // A GuildMembersChunk is the data for a GuildMembersChunk event.
@@ -387,6 +455,34 @@ type VoiceStateUpdate struct {
 	*VoiceState
 	// BeforeUpdate will be nil if the VoiceState was not previously cached in the state cache.
 	BeforeUpdate *VoiceState `json:"-"`
+}
+
+// VoiceChannelEffectSend is the data for a VoiceChannelEffectSend event.
+type VoiceChannelEffectSend struct {
+	ChannelID     string  `json:"channel_id"`
+	GuildID       string  `json:"guild_id"`
+	UserID        string  `json:"user_id"`
+	Emoji         *Emoji  `json:"emoji"`
+	AnimationType *int    `json:"animation_type"`
+	AnimationID   int     `json:"animation_id"`
+	SoundID       string  `json:"sound_id"`
+	SoundVolume   float64 `json:"sound_volume"`
+}
+
+// UnmarshalJSON handles sound_id values encoded as either strings or numbers.
+func (v *VoiceChannelEffectSend) UnmarshalJSON(data []byte) error {
+	type voiceChannelEffectSend VoiceChannelEffectSend
+	temp := struct {
+		voiceChannelEffectSend
+		SoundID stringNumber `json:"sound_id"`
+	}{}
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	*v = VoiceChannelEffectSend(temp.voiceChannelEffectSend)
+	v.SoundID = string(temp.SoundID)
+	return nil
 }
 
 // MessageDeleteBulk is the data for a MessageDeleteBulk event

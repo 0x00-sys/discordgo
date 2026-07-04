@@ -738,6 +738,45 @@ type requestGuildMembersOp struct {
 	Data requestGuildMembersData `json:"d"`
 }
 
+type requestSoundboardSoundsData struct {
+	GuildIDs []string `json:"guild_ids"`
+}
+
+type requestSoundboardSoundsOp struct {
+	Op   int                         `json:"op"`
+	Data requestSoundboardSoundsData `json:"d"`
+}
+
+// RequestSoundboardSounds requests soundboard sounds for the given guilds from the gateway.
+// The gateway responds with SoundboardSounds events.
+// guildIDs : IDs of guilds to request soundboard sounds for.
+func (s *Session) RequestSoundboardSounds(guildIDs []string) error {
+	data := requestSoundboardSoundsData{GuildIDs: guildIDs}
+	return s.gatewayWriteJSON(requestSoundboardSoundsOp{31, data})
+}
+
+type requestChannelInfoData struct {
+	GuildID string   `json:"guild_id"`
+	Fields  []string `json:"fields"`
+}
+
+type requestChannelInfoOp struct {
+	Op   int                    `json:"op"`
+	Data requestChannelInfoData `json:"d"`
+}
+
+// RequestChannelInfo requests ephemeral channel data for a guild from the gateway.
+// The gateway responds with a ChannelInfo event.
+// guildID : ID of guild to request channel info for.
+// fields  : Channel info fields to request, such as "status" or "voice_start_time".
+func (s *Session) RequestChannelInfo(guildID string, fields []string) error {
+	data := requestChannelInfoData{
+		GuildID: guildID,
+		Fields:  fields,
+	}
+	return s.gatewayWriteJSON(requestChannelInfoOp{43, data})
+}
+
 // RequestGuildMembers requests guild members from the gateway
 // The gateway responds with GuildMembersChunk events
 // guildID   : Single Guild ID to request members of

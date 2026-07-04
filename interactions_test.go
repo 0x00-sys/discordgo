@@ -178,3 +178,65 @@ func TestComponentResolvedMembersLinkUsers(t *testing.T) {
 		t.Fatalf("Mention = %q, want %q", mention, "<@!100>")
 	}
 }
+
+func TestCurrentApplicationCommandEntryPointFields(t *testing.T) {
+	encoded, err := json.Marshal(ApplicationCommand{
+		Type:    PrimaryEntryPointApplicationCommand,
+		Name:    "launch",
+		Handler: ApplicationCommandHandlerDiscordLaunchActivity,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+
+	if !strings.Contains(string(encoded), `"type":4`) {
+		t.Fatalf("encoded command missing primary entry point type: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"handler":2`) {
+		t.Fatalf("encoded command missing launch activity handler: %s", encoded)
+	}
+
+	var decoded ApplicationCommand
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if decoded.Type != PrimaryEntryPointApplicationCommand {
+		t.Fatalf("Type = %d, want %d", decoded.Type, PrimaryEntryPointApplicationCommand)
+	}
+	if decoded.Handler != ApplicationCommandHandlerDiscordLaunchActivity {
+		t.Fatalf("Handler = %d, want %d", decoded.Handler, ApplicationCommandHandlerDiscordLaunchActivity)
+	}
+}
+
+func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
+	var interaction Interaction
+	if err := json.Unmarshal([]byte(`{
+		"id":"interaction",
+		"application_id":"app",
+		"type":2,
+		"data":{"id":"command","name":"launch","type":4},
+		"attachment_size_limit":10485760,
+		"token":"token",
+		"version":1
+	}`), &interaction); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+
+	if interaction.AttachmentSizeLimit != 10485760 {
+		t.Fatalf("AttachmentSizeLimit = %d, want 10485760", interaction.AttachmentSizeLimit)
+	}
+	data, ok := interaction.Data.(ApplicationCommandInteractionData)
+	if !ok {
+		t.Fatalf("Data type = %T, want ApplicationCommandInteractionData", interaction.Data)
+	}
+	if data.CommandType != PrimaryEntryPointApplicationCommand {
+		t.Fatalf("CommandType = %d, want %d", data.CommandType, PrimaryEntryPointApplicationCommand)
+	}
+
+	if InteractionResponsePremiumRequired != 10 {
+		t.Fatalf("InteractionResponsePremiumRequired = %d, want 10", InteractionResponsePremiumRequired)
+	}
+	if InteractionResponseLaunchActivity != 12 {
+		t.Fatalf("InteractionResponseLaunchActivity = %d, want 12", InteractionResponseLaunchActivity)
+	}
+}

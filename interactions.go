@@ -29,6 +29,19 @@ const (
 	UserApplicationCommand ApplicationCommandType = 2
 	// MessageApplicationCommand adds command to message context menu.
 	MessageApplicationCommand ApplicationCommandType = 3
+	// PrimaryEntryPointApplicationCommand is a global command to launch an app activity.
+	PrimaryEntryPointApplicationCommand ApplicationCommandType = 4
+)
+
+// ApplicationCommandHandlerType represents how an entry point command is handled.
+type ApplicationCommandHandlerType uint8
+
+// Application command handler types.
+const (
+	// ApplicationCommandHandlerApp means the app handles the interaction using an interaction token.
+	ApplicationCommandHandlerApp ApplicationCommandHandlerType = 1
+	// ApplicationCommandHandlerDiscordLaunchActivity means Discord launches the app activity.
+	ApplicationCommandHandlerDiscordLaunchActivity ApplicationCommandHandlerType = 2
 )
 
 // ApplicationCommand represents an application's slash command.
@@ -50,6 +63,7 @@ type ApplicationCommand struct {
 	DMPermission     *bool                         `json:"dm_permission,omitempty"`
 	Contexts         *[]InteractionContextType     `json:"contexts,omitempty"`
 	IntegrationTypes *[]ApplicationIntegrationType `json:"integration_types,omitempty"`
+	Handler          ApplicationCommandHandlerType `json:"handler,omitempty"`
 
 	// NOTE: Chat commands only. Otherwise it mustn't be set.
 
@@ -254,6 +268,7 @@ type Interaction struct {
 
 	Context                      InteractionContextType                `json:"context"`
 	AuthorizingIntegrationOwners map[ApplicationIntegrationType]string `json:"authorizing_integration_owners"`
+	AttachmentSizeLimit          int                                   `json:"attachment_size_limit"`
 
 	Token   string `json:"token"`
 	Version int    `json:"version"`
@@ -629,6 +644,12 @@ const (
 	InteractionApplicationCommandAutocompleteResult InteractionResponseType = 8
 	// InteractionResponseModal is for responding to an interaction with a modal window.
 	InteractionResponseModal InteractionResponseType = 9
+	// InteractionResponsePremiumRequired responds to an interaction with an upgrade button.
+	//
+	// Deprecated: Premium buttons are deprecated by Discord.
+	InteractionResponsePremiumRequired InteractionResponseType = 10
+	// InteractionResponseLaunchActivity launches the Activity associated with the app.
+	InteractionResponseLaunchActivity InteractionResponseType = 12
 )
 
 // InteractionResponse represents a response for an interaction event.

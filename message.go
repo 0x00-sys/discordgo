@@ -23,26 +23,43 @@ type MessageType int
 
 // Block contains the valid known MessageType values
 const (
-	MessageTypeDefault                               MessageType = 0
-	MessageTypeRecipientAdd                          MessageType = 1
-	MessageTypeRecipientRemove                       MessageType = 2
-	MessageTypeCall                                  MessageType = 3
-	MessageTypeChannelNameChange                     MessageType = 4
-	MessageTypeChannelIconChange                     MessageType = 5
-	MessageTypeChannelPinnedMessage                  MessageType = 6
-	MessageTypeGuildMemberJoin                       MessageType = 7
-	MessageTypeUserPremiumGuildSubscription          MessageType = 8
-	MessageTypeUserPremiumGuildSubscriptionTierOne   MessageType = 9
-	MessageTypeUserPremiumGuildSubscriptionTierTwo   MessageType = 10
-	MessageTypeUserPremiumGuildSubscriptionTierThree MessageType = 11
-	MessageTypeChannelFollowAdd                      MessageType = 12
-	MessageTypeGuildDiscoveryDisqualified            MessageType = 14
-	MessageTypeGuildDiscoveryRequalified             MessageType = 15
-	MessageTypeThreadCreated                         MessageType = 18
-	MessageTypeReply                                 MessageType = 19
-	MessageTypeChatInputCommand                      MessageType = 20
-	MessageTypeThreadStarterMessage                  MessageType = 21
-	MessageTypeContextMenuCommand                    MessageType = 23
+	MessageTypeDefault                                 MessageType = 0
+	MessageTypeRecipientAdd                            MessageType = 1
+	MessageTypeRecipientRemove                         MessageType = 2
+	MessageTypeCall                                    MessageType = 3
+	MessageTypeChannelNameChange                       MessageType = 4
+	MessageTypeChannelIconChange                       MessageType = 5
+	MessageTypeChannelPinnedMessage                    MessageType = 6
+	MessageTypeGuildMemberJoin                         MessageType = 7
+	MessageTypeUserPremiumGuildSubscription            MessageType = 8
+	MessageTypeUserPremiumGuildSubscriptionTierOne     MessageType = 9
+	MessageTypeUserPremiumGuildSubscriptionTierTwo     MessageType = 10
+	MessageTypeUserPremiumGuildSubscriptionTierThree   MessageType = 11
+	MessageTypeChannelFollowAdd                        MessageType = 12
+	MessageTypeGuildDiscoveryDisqualified              MessageType = 14
+	MessageTypeGuildDiscoveryRequalified               MessageType = 15
+	MessageTypeGuildDiscoveryGracePeriodInitialWarning MessageType = 16
+	MessageTypeGuildDiscoveryGracePeriodFinalWarning   MessageType = 17
+	MessageTypeThreadCreated                           MessageType = 18
+	MessageTypeReply                                   MessageType = 19
+	MessageTypeChatInputCommand                        MessageType = 20
+	MessageTypeThreadStarterMessage                    MessageType = 21
+	MessageTypeGuildInviteReminder                     MessageType = 22
+	MessageTypeContextMenuCommand                      MessageType = 23
+	MessageTypeAutoModerationAction                    MessageType = 24
+	MessageTypeRoleSubscriptionPurchase                MessageType = 25
+	MessageTypeInteractionPremiumUpsell                MessageType = 26
+	MessageTypeStageStart                              MessageType = 27
+	MessageTypeStageEnd                                MessageType = 28
+	MessageTypeStageSpeaker                            MessageType = 29
+	MessageTypeStageTopic                              MessageType = 31
+	MessageTypeGuildApplicationPremiumSubscription     MessageType = 32
+	MessageTypeGuildIncidentAlertModeEnabled           MessageType = 36
+	MessageTypeGuildIncidentAlertModeDisabled          MessageType = 37
+	MessageTypeGuildIncidentReportRaid                 MessageType = 38
+	MessageTypeGuildIncidentReportFalseAlarm           MessageType = 39
+	MessageTypePurchaseNotification                    MessageType = 44
+	MessageTypePollResult                              MessageType = 46
 )
 
 // A Message stores all data related to a specific Discord message.
@@ -252,6 +269,8 @@ const (
 	MessageFlagsSuppressNotifications MessageFlags = 1 << 12
 	// MessageFlagsIsVoiceMessage this message is a voice message.
 	MessageFlagsIsVoiceMessage MessageFlags = 1 << 13
+	// MessageFlagsHasSnapshot this message has a snapshot of another message.
+	MessageFlagsHasSnapshot MessageFlags = 1 << 14
 	// MessageFlagsIsComponentsV2 this message uses the new components system. Disables the ability of sending `content` & `embeds`
 	MessageFlagsIsComponentsV2 MessageFlags = 1 << 15
 )
@@ -261,6 +280,7 @@ type File struct {
 	Name        string
 	ContentType string
 	Reader      io.Reader
+	FieldName   string
 }
 
 // MessageSend stores all parameters you can send with ChannelMessageSendComplex.
@@ -376,18 +396,28 @@ type MessageAllowedMentions struct {
 
 // A MessageAttachment stores data for message attachments.
 type MessageAttachment struct {
-	ID           string                 `json:"id"`
-	URL          string                 `json:"url"`
-	ProxyURL     string                 `json:"proxy_url"`
-	Filename     string                 `json:"filename"`
-	ContentType  string                 `json:"content_type"`
-	Width        int                    `json:"width"`
-	Height       int                    `json:"height"`
-	Size         int                    `json:"size"`
-	Ephemeral    bool                   `json:"ephemeral"`
-	DurationSecs float64                `json:"duration_secs"`
-	Waveform     string                 `json:"waveform"`
-	Flags        MessageAttachmentFlags `json:"flags"`
+	ID                 string                 `json:"id"`
+	URL                string                 `json:"url"`
+	ProxyURL           string                 `json:"proxy_url"`
+	Filename           string                 `json:"filename"`
+	Title              string                 `json:"title,omitempty"`
+	Description        string                 `json:"description,omitempty"`
+	ContentType        string                 `json:"content_type"`
+	Width              int                    `json:"width"`
+	Height             int                    `json:"height"`
+	Size               int                    `json:"size"`
+	Placeholder        string                 `json:"placeholder,omitempty"`
+	PlaceholderVersion int                    `json:"placeholder_version,omitempty"`
+	Ephemeral          bool                   `json:"ephemeral"`
+	DurationSecs       float64                `json:"duration_secs"`
+	Waveform           string                 `json:"waveform"`
+	Flags              MessageAttachmentFlags `json:"flags"`
+	ClipParticipants   []*User                `json:"clip_participants,omitempty"`
+	ClipCreatedAt      *time.Time             `json:"clip_created_at,omitempty"`
+	Application        *Application           `json:"application,omitempty"`
+
+	// NOTE: Used in attachment request objects when creating or editing messages.
+	IsSpoiler bool `json:"is_spoiler,omitempty"`
 }
 
 // MessageAttachmentFlags is the flags of a message attachment.
@@ -395,8 +425,50 @@ type MessageAttachmentFlags int
 
 // Valid MessageAttachmentFlags values.
 const (
-	MessageAttachmentFlagsIsRemix MessageAttachmentFlags = 1 << 2
+	MessageAttachmentFlagsIsClip      MessageAttachmentFlags = 1 << 0
+	MessageAttachmentFlagsIsThumbnail MessageAttachmentFlags = 1 << 1
+	MessageAttachmentFlagsIsRemix     MessageAttachmentFlags = 1 << 2
+	MessageAttachmentFlagsIsSpoiler   MessageAttachmentFlags = 1 << 3
+	MessageAttachmentFlagsIsAnimated  MessageAttachmentFlags = 1 << 5
 )
+
+// GuildMessagesSearchOptions stores query parameters for guild message search.
+type GuildMessagesSearchOptions struct {
+	Limit                int
+	Offset               int
+	MaxID                string
+	MinID                string
+	Slop                 int
+	Content              string
+	ChannelIDs           []string
+	AuthorTypes          []string
+	AuthorIDs            []string
+	Mentions             []string
+	MentionRoleIDs       []string
+	MentionEveryone      *bool
+	RepliedToUserIDs     []string
+	RepliedToMessageIDs  []string
+	Pinned               *bool
+	Has                  []string
+	EmbedTypes           []string
+	EmbedProviders       []string
+	LinkHostnames        []string
+	AttachmentFilenames  []string
+	AttachmentExtensions []string
+	SortBy               string
+	SortOrder            string
+	IncludeNSFW          *bool
+}
+
+// GuildMessagesSearchResult stores a guild message search response.
+type GuildMessagesSearchResult struct {
+	DoingDeepHistoricalIndex bool            `json:"doing_deep_historical_index"`
+	DocumentsIndexed         int             `json:"documents_indexed,omitempty"`
+	TotalResults             int             `json:"total_results"`
+	Messages                 [][]*Message    `json:"messages"`
+	Threads                  []*Channel      `json:"threads,omitempty"`
+	Members                  []*ThreadMember `json:"members,omitempty"`
+}
 
 // MessageEmbedFooter is a part of a MessageEmbed struct.
 type MessageEmbedFooter struct {
