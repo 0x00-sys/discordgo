@@ -983,6 +983,45 @@ type GuildIncidentActionsParams struct {
 	DMsDisabledUntil     **time.Time `json:"dms_disabled_until,omitempty"`
 }
 
+// GuildWelcomeScreen represents the welcome screen shown to new guild members.
+// https://discord.com/developers/docs/resources/guild#welcome-screen-object
+type GuildWelcomeScreen struct {
+	// The server description shown in the welcome screen.
+	Description *string `json:"description"`
+
+	// The channels shown in the welcome screen.
+	WelcomeChannels []GuildWelcomeScreenChannel `json:"welcome_channels"`
+}
+
+// GuildWelcomeScreenChannel represents a channel displayed on a guild's welcome screen.
+// https://discord.com/developers/docs/resources/guild#welcome-screen-object-welcome-screen-channel-structure
+type GuildWelcomeScreenChannel struct {
+	// The ID of the suggested channel.
+	ChannelID string `json:"channel_id"`
+
+	// The description shown for the channel.
+	Description string `json:"description"`
+
+	// The ID of the custom emoji shown for the channel.
+	EmojiID *string `json:"emoji_id"`
+
+	// The custom emoji name or standard emoji character shown for the channel.
+	EmojiName *string `json:"emoji_name"`
+}
+
+// GuildWelcomeScreenParams stores the welcome screen fields to modify.
+// A nil field is omitted, while a non-nil pointer to a nil value sends JSON null.
+type GuildWelcomeScreenParams struct {
+	// Whether the welcome screen is enabled.
+	Enabled **bool `json:"enabled,omitempty"`
+
+	// The channels linked in the welcome screen.
+	WelcomeChannels *[]GuildWelcomeScreenChannel `json:"welcome_channels,omitempty"`
+
+	// The server description shown in the welcome screen.
+	Description **string `json:"description,omitempty"`
+}
+
 // A Guild holds all data related to a specific Discord Guild.  Guilds are also
 // sometimes referred to as Servers in the Discord client.
 type Guild struct {
@@ -1157,6 +1196,9 @@ type Guild struct {
 
 	// Approximate number of non-offline members in this guild, returned from the GET /guild/<id> endpoint when with_counts is true
 	ApproximatePresenceCount int `json:"approximate_presence_count"`
+
+	// The welcome screen shown to new members, returned in invite guild objects.
+	WelcomeScreen *GuildWelcomeScreen `json:"welcome_screen"`
 
 	// The incidents data for this guild.
 	IncidentsData *GuildIncidentsData `json:"incidents_data"`

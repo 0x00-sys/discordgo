@@ -112,6 +112,7 @@ var (
 	EndpointGuildScheduledEvents     = func(gID string) string { return EndpointGuilds + gID + "/scheduled-events" }
 	EndpointGuildScheduledEvent      = func(gID, eID string) string { return EndpointGuilds + gID + "/scheduled-events/" + eID }
 	EndpointGuildScheduledEventUsers = func(gID, eID string) string { return EndpointGuildScheduledEvent(gID, eID) + "/users" }
+	EndpointGuildWelcomeScreen       = func(gID string) string { return EndpointGuilds + gID + "/welcome-screen" }
 	EndpointGuildOnboarding          = func(gID string) string { return EndpointGuilds + gID + "/onboarding" }
 	EndpointGuildIncidentActions     = func(gID string) string { return EndpointGuilds + gID + "/incident-actions" }
 	EndpointGuildTemplate            = func(tID string) string { return EndpointGuilds + "templates/" + tID }
