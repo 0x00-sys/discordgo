@@ -958,6 +958,14 @@ const (
 	PremiumTier3    PremiumTier = 3
 )
 
+// GuildIncidentsData stores information about active security incidents and disabled guild features.
+type GuildIncidentsData struct {
+	InvitesDisabledUntil *time.Time `json:"invites_disabled_until"`
+	DMsDisabledUntil     *time.Time `json:"dms_disabled_until"`
+	DMSpamDetectedAt     *time.Time `json:"dm_spam_detected_at"`
+	RaidDetectedAt       *time.Time `json:"raid_detected_at"`
+}
+
 // A Guild holds all data related to a specific Discord Guild.  Guilds are also
 // sometimes referred to as Servers in the Discord client.
 type Guild struct {
@@ -1117,6 +1125,9 @@ type Guild struct {
 
 	// Approximate number of non-offline members in this guild, returned from the GET /guild/<id> endpoint when with_counts is true
 	ApproximatePresenceCount int `json:"approximate_presence_count"`
+
+	// The incidents data for this guild.
+	IncidentsData *GuildIncidentsData `json:"incidents_data"`
 
 	// Permissions of our user
 	Permissions int64 `json:"permissions,string"`
