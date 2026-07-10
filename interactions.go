@@ -53,6 +53,7 @@ type ApplicationCommand struct {
 	Type              ApplicationCommandType `json:"type,omitempty"`
 	Name              string                 `json:"name"`
 	NameLocalizations *map[Locale]string     `json:"name_localizations,omitempty"`
+	NameLocalized     string                 `json:"name_localized,omitempty"`
 
 	// NOTE: DefaultPermission will be soon deprecated. Use DefaultMemberPermissions and Contexts instead.
 	DefaultPermission        *bool  `json:"default_permission,omitempty"`
@@ -69,6 +70,7 @@ type ApplicationCommand struct {
 
 	Description              string                      `json:"description,omitempty"`
 	DescriptionLocalizations *map[Locale]string          `json:"description_localizations,omitempty"`
+	DescriptionLocalized     string                      `json:"description_localized,omitempty"`
 	Options                  []*ApplicationCommandOption `json:"options"`
 }
 
@@ -123,8 +125,10 @@ type ApplicationCommandOption struct {
 	Type                     ApplicationCommandOptionType `json:"type"`
 	Name                     string                       `json:"name"`
 	NameLocalizations        map[Locale]string            `json:"name_localizations,omitempty"`
+	NameLocalized            string                       `json:"name_localized,omitempty"`
 	Description              string                       `json:"description,omitempty"`
 	DescriptionLocalizations map[Locale]string            `json:"description_localizations,omitempty"`
+	DescriptionLocalized     string                       `json:"description_localized,omitempty"`
 	// NOTE: This feature was on the API, but at some point developers decided to remove it.
 	// So I commented it, until it will be officially on the docs.
 	// Default     bool                              `json:"default"`
@@ -150,6 +154,7 @@ type ApplicationCommandOption struct {
 type ApplicationCommandOptionChoice struct {
 	Name              string            `json:"name"`
 	NameLocalizations map[Locale]string `json:"name_localizations,omitempty"`
+	NameLocalized     string            `json:"name_localized,omitempty"`
 	Value             interface{}       `json:"value"`
 }
 
