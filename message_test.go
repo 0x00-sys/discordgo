@@ -509,6 +509,31 @@ func TestMessageCallNullableFields(t *testing.T) {
 	}
 }
 
+func TestMessageApplicationIDJSON(t *testing.T) {
+	var message Message
+	if err := json.Unmarshal([]byte(`{"application_id":"1234567890123456789"}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.ApplicationID != "1234567890123456789" {
+		t.Fatalf("ApplicationID = %q, want %q", message.ApplicationID, "1234567890123456789")
+	}
+
+	if err := json.Unmarshal([]byte(`{"application_id":null}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.ApplicationID != "" {
+		t.Fatalf("ApplicationID = %q after null, want empty", message.ApplicationID)
+	}
+
+	message.ApplicationID = "stale"
+	if err := json.Unmarshal([]byte(`{}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.ApplicationID != "" {
+		t.Fatalf("ApplicationID = %q after omission, want empty", message.ApplicationID)
+	}
+}
+
 func TestBaseThemeTypeValues(t *testing.T) {
 	tests := []struct {
 		theme BaseThemeType

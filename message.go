@@ -186,6 +186,9 @@ type Message struct {
 	// Is sent with Rich Presence-related chat embeds
 	Application *MessageApplication `json:"application"`
 
+	// The ID of the application associated with an interaction or application-owned webhook message.
+	ApplicationID string `json:"application_id"`
+
 	// MessageReference contains reference data sent with crossposted or reply messages.
 	// This does not contain the reference *to* this message; this is for when *this* message references another.
 	// To generate a reference to this message, use (*Message).Reference().
