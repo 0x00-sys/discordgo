@@ -118,6 +118,29 @@ func TestOnEventRejectsNullEvent(t *testing.T) {
 	}
 }
 
+func TestOnVoiceStateUpdateHandlesMalformedEvent(t *testing.T) {
+	tests := []struct {
+		name  string
+		event *VoiceStateUpdate
+	}{
+		{name: "nil event", event: nil},
+		{name: "missing voice state", event: &VoiceStateUpdate{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Session{}
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("onVoiceStateUpdate panicked: %v", r)
+				}
+			}()
+
+			s.onVoiceStateUpdate(tt.event)
+		})
+	}
+}
+
 func TestChannelVoiceJoinManualNilWsConn(t *testing.T) {
 	s := &Session{}
 

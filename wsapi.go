@@ -1173,6 +1173,9 @@ func (s *Session) ChannelVoiceJoinManual(gID, cID string, mute, deaf bool) (err 
 
 // onVoiceStateUpdate handles Voice State Update events on the data websocket.
 func (s *Session) onVoiceStateUpdate(st *VoiceStateUpdate) {
+	if st == nil || st.VoiceState == nil {
+		return
+	}
 
 	// If we don't have a connection for the channel, don't bother
 	if st.ChannelID == "" {

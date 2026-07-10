@@ -1783,6 +1783,10 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *VoiceStateUpdate:
 		if s.TrackVoice {
+			if t == nil || t.VoiceState == nil {
+				return ErrStateInvalidData
+			}
+
 			var old *VoiceState
 			old, err = s.VoiceState(t.GuildID, t.UserID)
 			if err == nil {

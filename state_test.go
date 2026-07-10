@@ -74,6 +74,34 @@ func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
 	}
 }
 
+func TestStateOnInterfaceRejectsMalformedVoiceStateEvent(t *testing.T) {
+	tests := []struct {
+		name  string
+		event *VoiceStateUpdate
+	}{
+		{name: "nil event", event: nil},
+		{name: "missing voice state", event: &VoiceStateUpdate{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
+func TestStateOnInterfaceIgnoresMalformedVoiceStateWhenTrackingDisabled(t *testing.T) {
+	state := NewState()
+	state.TrackVoice = false
+
+	if err := state.OnInterface(&Session{StateEnabled: true}, &VoiceStateUpdate{}); err != nil {
+		t.Fatalf("OnInterface returned error %v with voice tracking disabled", err)
+	}
+}
+
 func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -234,6 +262,24 @@ func TestSessionOnEventHandlesNullStateDispatch(t *testing.T) {
 	}()
 
 	_, err = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"CHANNEL_CREATE","d":null}`))
+	if err != nil {
+		t.Fatalf("onEvent returned error: %v", err)
+	}
+}
+
+func TestSessionOnEventHandlesNullVoiceStateDispatch(t *testing.T) {
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("onEvent panicked: %v", r)
+		}
+	}()
+
+	_, err = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"VOICE_STATE_UPDATE","d":null}`))
 	if err != nil {
 		t.Fatalf("onEvent returned error: %v", err)
 	}
