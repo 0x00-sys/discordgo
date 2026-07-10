@@ -398,6 +398,26 @@ func TestRoleHelpersHandleNilRoles(t *testing.T) {
 	}
 }
 
+func TestStateOnInterfaceRejectsNilGuildEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{name: "ready", event: (*Ready)(nil)},
+		{name: "guild create", event: (*GuildCreate)(nil)},
+		{name: "guild update", event: (*GuildUpdate)(nil)},
+		{name: "guild delete", event: (*GuildDelete)(nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertStateInvalidData(t, func() error {
+				return NewState().OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
 func TestSessionOnInterfaceHandlesMalformedGuildPayloads(t *testing.T) {
 	session := &Session{
 		State:        NewState(),
@@ -415,12 +435,28 @@ func TestSessionOnInterfaceHandlesMalformedGuildPayloads(t *testing.T) {
 			},
 		},
 		{
+			name:  "nil ready",
+			event: (*Ready)(nil),
+		},
+		{
 			name:  "guild create missing guild",
 			event: &GuildCreate{},
 		},
 		{
+			name:  "nil guild create",
+			event: (*GuildCreate)(nil),
+		},
+		{
 			name:  "guild update missing guild",
 			event: &GuildUpdate{},
+		},
+		{
+			name:  "nil guild update",
+			event: (*GuildUpdate)(nil),
+		},
+		{
+			name:  "nil guild delete",
+			event: (*GuildDelete)(nil),
 		},
 	}
 
