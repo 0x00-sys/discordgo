@@ -225,6 +225,9 @@ type Message struct {
 	// An array of StickerItem objects, representing sent stickers, if there were any.
 	StickerItems []*StickerItem `json:"sticker_items"`
 
+	// The approximate position of the message in a thread.
+	Position *int `json:"position"`
+
 	// A poll object.
 	Poll *Poll `json:"poll"`
 
