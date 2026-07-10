@@ -136,6 +136,43 @@ func TestGuildIncidentsData(t *testing.T) {
 	}
 }
 
+func TestGuildSafetyAlertsChannelID(t *testing.T) {
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{"id":"guild","safety_alerts_channel_id":"channel"}`), &guild); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if guild.SafetyAlertsChannelID != "channel" {
+		t.Fatalf("SafetyAlertsChannelID = %q, want channel", guild.SafetyAlertsChannelID)
+	}
+
+	channelID := "channel"
+	channelValue := &channelID
+	encoded, err := json.Marshal(GuildParams{SafetyAlertsChannelID: &channelValue})
+	if err != nil {
+		t.Fatalf("json.Marshal set channel returned error: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"safety_alerts_channel_id":"channel"`) {
+		t.Fatalf("set channel JSON = %s", encoded)
+	}
+
+	disable := (*string)(nil)
+	encoded, err = json.Marshal(GuildParams{SafetyAlertsChannelID: &disable})
+	if err != nil {
+		t.Fatalf("json.Marshal clear channel returned error: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"safety_alerts_channel_id":null`) {
+		t.Fatalf("clear channel JSON = %s", encoded)
+	}
+
+	encoded, err = json.Marshal(GuildParams{})
+	if err != nil {
+		t.Fatalf("json.Marshal omitted channel returned error: %v", err)
+	}
+	if strings.Contains(string(encoded), `"safety_alerts_channel_id"`) {
+		t.Fatalf("omitted channel JSON = %s", encoded)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
