@@ -1211,6 +1211,9 @@ type Guild struct {
 
 	// Scheduled events in the guild
 	GuildScheduledEvents []*GuildScheduledEvent `json:"guild_scheduled_events"`
+
+	// Soundboard sounds in the guild
+	SoundboardSounds []*SoundboardSound `json:"soundboard_sounds"`
 }
 
 // A GuildPreview holds data related to a specific public Discord Guild, even if the user is not in the guild.

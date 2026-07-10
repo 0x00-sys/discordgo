@@ -870,6 +870,9 @@ func TestGuildAddReplacesCachedPointer(t *testing.T) {
 		GuildScheduledEvents: []*GuildScheduledEvent{
 			{ID: "event", GuildID: "guild", Name: "old-event"},
 		},
+		SoundboardSounds: []*SoundboardSound{
+			{SoundID: "sound", GuildID: "guild", Name: "old-sound"},
+		},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
 	}
@@ -914,6 +917,9 @@ func TestGuildAddReplacesCachedPointer(t *testing.T) {
 	}
 	if len(updatedGuild.GuildScheduledEvents) != 1 || updatedGuild.GuildScheduledEvents[0].Name != "old-event" {
 		t.Fatalf("updated guild scheduled events = %#v, want preserved old-event", updatedGuild.GuildScheduledEvents)
+	}
+	if len(updatedGuild.SoundboardSounds) != 1 || updatedGuild.SoundboardSounds[0].Name != "old-sound" {
+		t.Fatalf("updated guild soundboard sounds = %#v, want preserved old-sound", updatedGuild.SoundboardSounds)
 	}
 
 	if err := state.RoleAdd("guild", &Role{ID: "role", Name: "new-role"}); err != nil {
