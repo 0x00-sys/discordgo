@@ -2390,6 +2390,7 @@ type AuditLogOptions struct {
 	AutoModerationRuleName        string               `json:"auto_moderation_rule_name"`
 	AutoModerationRuleTriggerType string               `json:"auto_moderation_rule_trigger_type"`
 	IntegrationType               string               `json:"integration_type"`
+	Status                        string               `json:"status"`
 }
 
 // AuditLogOptionsType of the AuditLogOption
@@ -2469,12 +2470,17 @@ const (
 
 	AuditLogActionApplicationCommandPermissionUpdate AuditLogAction = 121
 
+	AuditLogActionSoundboardSoundCreate AuditLogAction = 130
+	AuditLogActionSoundboardSoundUpdate AuditLogAction = 131
+	AuditLogActionSoundboardSoundDelete AuditLogAction = 132
+
 	AuditLogActionAutoModerationRuleCreate                AuditLogAction = 140
 	AuditLogActionAutoModerationRuleUpdate                AuditLogAction = 141
 	AuditLogActionAutoModerationRuleDelete                AuditLogAction = 142
 	AuditLogActionAutoModerationBlockMessage              AuditLogAction = 143
 	AuditLogActionAutoModerationFlagToChannel             AuditLogAction = 144
 	AuditLogActionAutoModerationUserCommunicationDisabled AuditLogAction = 145
+	AuditLogActionAutoModerationQuarantineUser            AuditLogAction = 146
 
 	AuditLogActionCreatorMonetizationRequestCreated AuditLogAction = 150
 	AuditLogActionCreatorMonetizationTermsAccepted  AuditLogAction = 151
@@ -2488,7 +2494,9 @@ const (
 	AuditLogActionHomeSettingsCreate = 190
 	AuditLogActionHomeSettingsUpdate = 191
 
-	AuditLogActionVoiceChannelStatusUpdate AuditLogAction = 192
+	AuditLogActionVoiceChannelStatusCreate AuditLogAction = 192
+	// Deprecated: use AuditLogActionVoiceChannelStatusCreate instead.
+	AuditLogActionVoiceChannelStatusUpdate AuditLogAction = AuditLogActionVoiceChannelStatusCreate
 	AuditLogActionVoiceChannelStatusDelete AuditLogAction = 193
 )
 
