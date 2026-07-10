@@ -698,6 +698,104 @@ func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
 	}
 }
 
+func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
+	serverDone := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		ready := []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`)
+		if err := conn.WriteMessage(websocket.TextMessage, ready); err != nil {
+			return
+		}
+		<-serverDone
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { closeChannel(serverDone) })
+
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.ShouldReconnectVoiceOnSessionError = true
+	voice := &VoiceConnection{GuildID: "guild", session: session}
+	session.VoiceConnections = map[string]*VoiceConnection{
+		"guild": voice,
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	t.Cleanup(func() {
+		session.Lock()
+		delete(session.VoiceConnections, "guild")
+		session.Unlock()
+	})
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect()
+		close(done)
+	}()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(2 * time.Second)
+	for {
+		voice.RLock()
+		reconnecting := voice.reconnecting
+		voice.RUnlock()
+		if reconnecting {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout:
+			t.Fatal("reconnect did not start voice reconnection")
+		}
+	}
+
+	lockAcquired := make(chan struct{})
+	go func() {
+		session.Lock()
+		close(lockAcquired)
+		session.Unlock()
+	}()
+
+	select {
+	case <-lockAcquired:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("voice reconnect scheduling blocked the session write lock")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not return")
+	}
+}
+
+func TestReconnectVoiceConnectionsSkipsNil(t *testing.T) {
+	session := &Session{
+		VoiceConnections: map[string]*VoiceConnection{"guild": nil},
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("reconnectVoiceConnections panicked: %v", recovered)
+		}
+	}()
+
+	session.reconnectVoiceConnections()
+}
+
 func newGatewayTestConnection(t *testing.T) (*websocket.Conn, *websocket.Conn) {
 	t.Helper()
 
