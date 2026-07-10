@@ -567,6 +567,47 @@ func TestMessagePositionJSON(t *testing.T) {
 	}
 }
 
+func TestMessageRoleSubscriptionDataJSON(t *testing.T) {
+	data := []byte(`{"type":25,"role_subscription_data":{"role_subscription_listing_id":"1234567890123456789","tier_name":"Premium","total_months_subscribed":18,"is_renewal":true}}`)
+
+	var message Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.RoleSubscriptionData == nil {
+		t.Fatal("RoleSubscriptionData = nil")
+	}
+	roleSubscription := message.RoleSubscriptionData
+	if roleSubscription.RoleSubscriptionListingID != "1234567890123456789" || roleSubscription.TierName != "Premium" || roleSubscription.TotalMonthsSubscribed != 18 || !roleSubscription.IsRenewal {
+		t.Fatalf("RoleSubscriptionData = %#v", roleSubscription)
+	}
+
+	if err := json.Unmarshal([]byte(`{"role_subscription_data":{"role_subscription_listing_id":"111","tier_name":"Starter","total_months_subscribed":0,"is_renewal":false}}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.RoleSubscriptionData == nil || message.RoleSubscriptionData.TotalMonthsSubscribed != 0 || message.RoleSubscriptionData.IsRenewal {
+		t.Fatalf("zero-value RoleSubscriptionData = %#v", message.RoleSubscriptionData)
+	}
+}
+
+func TestMessageRoleSubscriptionDataNullableFields(t *testing.T) {
+	message := Message{RoleSubscriptionData: &MessageRoleSubscriptionData{RoleSubscriptionListingID: "stale"}}
+	if err := json.Unmarshal([]byte(`{"role_subscription_data":null}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.RoleSubscriptionData != nil {
+		t.Fatalf("RoleSubscriptionData = %#v after null, want nil", message.RoleSubscriptionData)
+	}
+
+	message.RoleSubscriptionData = &MessageRoleSubscriptionData{RoleSubscriptionListingID: "stale"}
+	if err := json.Unmarshal([]byte(`{}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.RoleSubscriptionData != nil {
+		t.Fatalf("RoleSubscriptionData = %#v after omission, want nil", message.RoleSubscriptionData)
+	}
+}
+
 func TestBaseThemeTypeValues(t *testing.T) {
 	tests := []struct {
 		theme BaseThemeType

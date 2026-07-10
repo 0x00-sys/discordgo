@@ -72,6 +72,22 @@ type MessageCall struct {
 	EndedTimestamp *time.Time `json:"ended_timestamp"`
 }
 
+// MessageRoleSubscriptionData contains information about a role subscription purchase or renewal.
+// https://discord.com/developers/docs/resources/message#role-subscription-data-object
+type MessageRoleSubscriptionData struct {
+	// The ID of the SKU and listing the user is subscribed to.
+	RoleSubscriptionListingID string `json:"role_subscription_listing_id"`
+
+	// The name of the tier the user is subscribed to.
+	TierName string `json:"tier_name"`
+
+	// The cumulative number of months the user has been subscribed.
+	TotalMonthsSubscribed int `json:"total_months_subscribed"`
+
+	// Whether the notification is for a renewal rather than a new purchase.
+	IsRenewal bool `json:"is_renewal"`
+}
+
 // BaseThemeType is the mode of a shared client theme.
 // https://discord.com/developers/docs/resources/message#base-theme-types
 type BaseThemeType int
@@ -227,6 +243,9 @@ type Message struct {
 
 	// The approximate position of the message in a thread.
 	Position *int `json:"position"`
+
+	// Data for the role subscription purchase or renewal that prompted the message.
+	RoleSubscriptionData *MessageRoleSubscriptionData `json:"role_subscription_data"`
 
 	// A poll object.
 	Poll *Poll `json:"poll"`
