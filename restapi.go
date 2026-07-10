@@ -947,6 +947,9 @@ func memberPermissions(guild *Guild, channel *Channel, userID string, roles []st
 	}
 
 	for _, role := range guild.Roles {
+		if role == nil {
+			continue
+		}
 		if role.ID == guild.ID {
 			apermissions |= role.Permissions
 			break
@@ -954,6 +957,9 @@ func memberPermissions(guild *Guild, channel *Channel, userID string, roles []st
 	}
 
 	for _, role := range guild.Roles {
+		if role == nil {
+			continue
+		}
 		for _, roleID := range roles {
 			if role.ID == roleID {
 				apermissions |= role.Permissions

@@ -1730,6 +1730,29 @@ func TestMemberPermissionsAdministratorBypassesChannelOverwrites(t *testing.T) {
 	}
 }
 
+func TestMemberPermissionsSkipsNilRoles(t *testing.T) {
+	guild := &Guild{
+		ID: "guild",
+		Roles: []*Role{
+			nil,
+			{ID: "guild", Permissions: PermissionViewChannel},
+			{ID: "member", Permissions: PermissionSendMessages},
+		},
+	}
+	channel := &Channel{GuildID: "guild"}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("memberPermissions panicked: %v", r)
+		}
+	}()
+	permissions := memberPermissions(guild, channel, "user", []string{"member"})
+	want := int64(PermissionViewChannel | PermissionSendMessages)
+	if permissions&want != want {
+		t.Fatalf("permissions = %d, want %d", permissions, want)
+	}
+}
+
 func TestGateway(t *testing.T) {
 
 	if dg == nil {
