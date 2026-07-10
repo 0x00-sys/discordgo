@@ -192,6 +192,7 @@ func copyGuild(guild *Guild) *Guild {
 	guildCopy.VoiceStates = append([]*VoiceState(nil), guild.VoiceStates...)
 	guildCopy.Features = append([]GuildFeature(nil), guild.Features...)
 	guildCopy.StageInstances = append([]*StageInstance(nil), guild.StageInstances...)
+	guildCopy.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), guild.GuildScheduledEvents...)
 	return &guildCopy
 }
 
@@ -293,6 +294,9 @@ func (s *State) GuildAdd(guild *Guild) error {
 		}
 		if guild.VoiceStates == nil && s.TrackVoice {
 			guild.VoiceStates = append([]*VoiceState(nil), g.VoiceStates...)
+		}
+		if guild.GuildScheduledEvents == nil {
+			guild.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), g.GuildScheduledEvents...)
 		}
 		for _, c := range guild.Channels {
 			if c != nil {

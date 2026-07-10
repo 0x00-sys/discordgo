@@ -359,6 +359,22 @@ func TestGuildWelcomeScreenParamsJSON(t *testing.T) {
 	}
 }
 
+func TestGuildCreateScheduledEvents(t *testing.T) {
+	var event GuildCreate
+	if err := json.Unmarshal([]byte(`{"id":"guild","guild_scheduled_events":[{"id":"event","guild_id":"guild","name":"Town Hall"}]}`), &event); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if event.Guild == nil {
+		t.Fatal("Guild is nil")
+	}
+	if len(event.GuildScheduledEvents) != 1 {
+		t.Fatalf("len(GuildScheduledEvents) = %d, want 1", len(event.GuildScheduledEvents))
+	}
+	if scheduledEvent := event.GuildScheduledEvents[0]; scheduledEvent == nil || scheduledEvent.ID != "event" || scheduledEvent.GuildID != "guild" || scheduledEvent.Name != "Town Hall" {
+		t.Fatalf("GuildScheduledEvents[0] = %#v", scheduledEvent)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
