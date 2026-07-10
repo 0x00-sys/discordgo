@@ -416,6 +416,40 @@ func TestGuildAuditLogReferenceCollections(t *testing.T) {
 	}
 }
 
+func TestCurrentAuditLogActionsAndStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		action AuditLogAction
+		want   AuditLogAction
+	}{
+		{"soundboard create", AuditLogActionSoundboardSoundCreate, 130},
+		{"soundboard update", AuditLogActionSoundboardSoundUpdate, 131},
+		{"soundboard delete", AuditLogActionSoundboardSoundDelete, 132},
+		{"auto moderation quarantine", AuditLogActionAutoModerationQuarantineUser, 146},
+		{"voice channel status create", AuditLogActionVoiceChannelStatusCreate, 192},
+		{"voice channel status delete", AuditLogActionVoiceChannelStatusDelete, 193},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.action != test.want {
+				t.Fatalf("action = %d, want %d", test.action, test.want)
+			}
+		})
+	}
+	if AuditLogActionVoiceChannelStatusUpdate != AuditLogActionVoiceChannelStatusCreate {
+		t.Fatalf("VoiceChannelStatusUpdate = %d, want alias of %d", AuditLogActionVoiceChannelStatusUpdate, AuditLogActionVoiceChannelStatusCreate)
+	}
+
+	var options AuditLogOptions
+	if err := json.Unmarshal([]byte(`{"channel_id":"channel","status":"Town Hall"}`), &options); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if options.ChannelID != "channel" || options.Status != "Town Hall" {
+		t.Fatalf("AuditLogOptions = %#v", options)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
