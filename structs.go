@@ -1118,6 +1118,9 @@ type Guild struct {
 	// The total number of users currently boosting this server
 	PremiumSubscriptionCount int `json:"premium_subscription_count"`
 
+	// Whether the guild has the boost progress bar enabled.
+	PremiumProgressBarEnabled bool `json:"premium_progress_bar_enabled"`
+
 	// The preferred locale of a guild with the "PUBLIC" feature; used in server discovery and notices from Discord; defaults to "en-US"
 	PreferredLocale string `json:"preferred_locale"`
 
