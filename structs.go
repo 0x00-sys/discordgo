@@ -142,6 +142,9 @@ type Session struct {
 	// stores session ID of current Gateway connection
 	sessionID string
 
+	// used to keep gateway voice state updates in lifecycle order
+	voiceMutex sync.Mutex
+
 	// used to make sure gateway websocket writes do not happen concurrently
 	wsMutex sync.Mutex
 }

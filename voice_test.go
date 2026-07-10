@@ -244,11 +244,62 @@ func TestVoiceReconnectStopsWhenUnregistered(t *testing.T) {
 	}
 }
 
+func TestVoiceReconnectResetSkipsReplacement(t *testing.T) {
+	session := &Session{VoiceConnections: make(map[string]*VoiceConnection)}
+	stale := &VoiceConnection{
+		GuildID: "guild",
+		session: session,
+	}
+	session.VoiceConnections[stale.GuildID] = stale
+
+	session.voiceMutex.Lock()
+	type resetResult struct {
+		sent bool
+		err  error
+	}
+	done := make(chan resetResult, 1)
+	go func() {
+		sent, err := stale.sendDisconnectIfCurrent()
+		done <- resetResult{sent: sent, err: err}
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	replacement := &VoiceConnection{GuildID: stale.GuildID, session: session}
+	session.Lock()
+	session.VoiceConnections[stale.GuildID] = replacement
+	session.Unlock()
+	session.voiceMutex.Unlock()
+
+	result := <-done
+	if result.sent {
+		t.Fatal("stale reconnect sent a disconnect packet after replacement")
+	}
+	if result.err != nil {
+		t.Fatalf("sendDisconnectIfCurrent() error = %v", result.err)
+	}
+
+	session.RLock()
+	registered := session.VoiceConnections[stale.GuildID]
+	session.RUnlock()
+	if registered != replacement {
+		t.Fatal("stale reconnect removed the replacement voice connection")
+	}
+}
+
 func TestVoiceChangeChannelNilSessionWsConn(t *testing.T) {
 	v := &VoiceConnection{
 		GuildID: "guild",
 		session: &Session{},
 	}
+
+	err := v.ChangeChannel("channel", false, false)
+	if !errors.Is(err, ErrWSNotFound) {
+		t.Fatalf("ChangeChannel() error = %v, want %v", err, ErrWSNotFound)
+	}
+}
+
+func TestVoiceChangeChannelNilSession(t *testing.T) {
+	v := &VoiceConnection{GuildID: "guild"}
 
 	err := v.ChangeChannel("channel", false, false)
 	if !errors.Is(err, ErrWSNotFound) {
@@ -269,6 +320,84 @@ func TestVoiceDisconnectNilSessionWsConn(t *testing.T) {
 	}
 	if v.sessionID != "" {
 		t.Fatalf("sessionID = %q, want empty", v.sessionID)
+	}
+}
+
+func TestVoiceDisconnectNilSession(t *testing.T) {
+	v := &VoiceConnection{
+		GuildID:   "guild",
+		sessionID: "session",
+	}
+
+	err := v.Disconnect()
+	if !errors.Is(err, ErrWSNotFound) {
+		t.Fatalf("Disconnect() error = %v, want %v", err, ErrWSNotFound)
+	}
+	if v.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty", v.sessionID)
+	}
+}
+
+func TestVoiceDisconnectDoesNotAcquireGatewayWriteLockBeforeTeardown(t *testing.T) {
+	conn, _ := newGatewayTestConnection(t)
+	session := &Session{
+		wsConn:           conn,
+		VoiceConnections: make(map[string]*VoiceConnection),
+	}
+	voice := &VoiceConnection{
+		GuildID:   "guild",
+		sessionID: "session",
+		session:   session,
+	}
+	session.VoiceConnections[voice.GuildID] = voice
+
+	session.wsMutex.Lock()
+	wsMutexLocked := true
+	defer func() {
+		if wsMutexLocked {
+			session.wsMutex.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- voice.Disconnect()
+	}()
+
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		voice.RLock()
+		disconnecting := voice.disconnecting
+		voice.RUnlock()
+		if disconnecting {
+			break
+		}
+
+		select {
+		case err := <-done:
+			session.wsMutex.Unlock()
+			wsMutexLocked = false
+			t.Fatalf("Disconnect returned before the gateway write lock was available: %v", err)
+		case <-timer.C:
+			session.wsMutex.Unlock()
+			wsMutexLocked = false
+			t.Fatal("Disconnect waited for the gateway write lock before tearing down local state")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	session.RLock()
+	registered := session.VoiceConnections[voice.GuildID]
+	session.RUnlock()
+	if registered != nil {
+		t.Fatal("Disconnect did not unregister before the gateway write")
+	}
+
+	session.wsMutex.Unlock()
+	wsMutexLocked = false
+	if err := <-done; err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
 	}
 }
 
@@ -644,7 +773,9 @@ func (c *textFrameBlockingConn) releaseWrites() {
 	c.releaseOnce.Do(func() { close(c.release) })
 }
 
-func TestVoiceSpeakingStalledWriteDoesNotBlockClose(t *testing.T) {
+func newTextFrameBlockingWebsocket(t *testing.T) (*websocket.Conn, *textFrameBlockingConn) {
+	t.Helper()
+
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := upgrader.Upgrade(w, r, nil)
@@ -658,14 +789,13 @@ func TestVoiceSpeakingStalledWriteDoesNotBlockClose(t *testing.T) {
 			}
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	blocking := &textFrameBlockingConn{
 		block:   true,
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	defer blocking.releaseWrites()
 
 	dialer := websocket.Dialer{
 		NetDial: func(network, addr string) (net.Conn, error) {
@@ -683,6 +813,14 @@ func TestVoiceSpeakingStalledWriteDoesNotBlockClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
+	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(blocking.releaseWrites)
+
+	return conn, blocking
+}
+
+func TestVoiceSpeakingStalledWriteDoesNotBlockClose(t *testing.T) {
+	conn, blocking := newTextFrameBlockingWebsocket(t)
 
 	vc := &VoiceConnection{LogLevel: -1, wsConn: conn}
 
@@ -714,4 +852,105 @@ func TestVoiceSpeakingStalledWriteDoesNotBlockClose(t *testing.T) {
 
 	blocking.releaseWrites()
 	<-speakingDone
+}
+
+func TestVoiceDisconnectStalledGatewayWriteDoesNotBlockCloseOrReorderUpdates(t *testing.T) {
+	conn, blocking := newTextFrameBlockingWebsocket(t)
+
+	session := &Session{
+		LogLevel:         -1,
+		wsConn:           conn,
+		VoiceConnections: make(map[string]*VoiceConnection),
+	}
+	voice := &VoiceConnection{
+		LogLevel:  -1,
+		GuildID:   "guild",
+		sessionID: "session",
+		session:   session,
+	}
+	session.VoiceConnections[voice.GuildID] = voice
+
+	disconnectDone := make(chan error, 1)
+	go func() {
+		disconnectDone <- voice.Disconnect()
+	}()
+
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Disconnect never reached the gateway write")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		voice.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		blocking.releaseWrites()
+		t.Fatal("Close blocked behind a stalled Disconnect gateway write")
+	}
+
+	changeDone := make(chan error, 1)
+	go func() {
+		changeDone <- voice.ChangeChannel("stale", false, false)
+	}()
+
+	type joinResult struct {
+		voice *VoiceConnection
+		err   error
+	}
+	joinDone := make(chan joinResult, 1)
+	go func() {
+		joined, joinErr := session.ChannelVoiceJoin(voice.GuildID, "replacement", false, false)
+		joinDone <- joinResult{voice: joined, err: joinErr}
+	}()
+
+	blocking.releaseWrites()
+
+	var replacement *VoiceConnection
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for replacement == nil || replacement == voice {
+		session.RLock()
+		replacement = session.VoiceConnections[voice.GuildID]
+		session.RUnlock()
+		if replacement != nil && replacement != voice {
+			break
+		}
+
+		select {
+		case <-timer.C:
+			t.Fatal("ChannelVoiceJoin reused the disconnecting voice connection")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	replacement.Lock()
+	replacement.Ready = true
+	replacement.Unlock()
+
+	if err := <-disconnectDone; err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+	if err := <-changeDone; !errors.Is(err, ErrWSNotFound) {
+		t.Fatalf("ChangeChannel() error = %v, want %v", err, ErrWSNotFound)
+	}
+	joined := <-joinDone
+	if joined.err != nil {
+		t.Fatalf("ChannelVoiceJoin() error = %v", joined.err)
+	}
+	if joined.voice != replacement {
+		t.Fatal("ChannelVoiceJoin did not return the replacement voice connection")
+	}
+
+	session.RLock()
+	got := session.VoiceConnections[voice.GuildID]
+	session.RUnlock()
+	if got != replacement {
+		t.Fatal("Disconnect removed a replacement voice connection")
+	}
 }

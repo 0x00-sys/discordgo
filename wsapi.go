@@ -1114,27 +1114,56 @@ type voiceChannelJoinOp struct {
 func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *VoiceConnection, err error) {
 
 	s.log(LogInformational, "called")
+	s.voiceMutex.Lock()
 
-	s.RLock()
-	voice, _ = s.VoiceConnections[gID]
-	s.RUnlock()
-
-	if voice == nil {
-		voice = &VoiceConnection{}
+	// A disconnect unregisters its connection before writing to the
+	// gateway. Select and configure a registered connection in a loop
+	// so a join racing that teardown switches to a replacement.
+	for {
 		s.Lock()
-		s.VoiceConnections[gID] = voice
+		if s.VoiceConnections == nil {
+			s.VoiceConnections = make(map[string]*VoiceConnection)
+		}
+		voice = s.VoiceConnections[gID]
+		if voice == nil {
+			voice = &VoiceConnection{}
+			s.VoiceConnections[gID] = voice
+		}
 		s.Unlock()
+
+		voice.Lock()
+		if voice.disconnecting {
+			voice.Unlock()
+
+			s.Lock()
+			if s.VoiceConnections[gID] == voice {
+				delete(s.VoiceConnections, gID)
+			}
+			s.Unlock()
+			continue
+		}
+		voice.GuildID = gID
+		voice.ChannelID = cID
+		voice.deaf = deaf
+		voice.mute = mute
+		voice.session = s
+		voice.Unlock()
+
+		s.RLock()
+		registered := s.VoiceConnections[gID] == voice
+		s.RUnlock()
+		voice.RLock()
+		disconnecting := voice.disconnecting
+		voice.RUnlock()
+		if !registered || disconnecting {
+			continue
+		}
+
+		err = s.channelVoiceJoinManual(gID, cID, mute, deaf)
+		break
 	}
+	s.voiceMutex.Unlock()
 
-	voice.Lock()
-	voice.GuildID = gID
-	voice.ChannelID = cID
-	voice.deaf = deaf
-	voice.mute = mute
-	voice.session = s
-	voice.Unlock()
-
-	err = s.ChannelVoiceJoinManual(gID, cID, mute, deaf)
 	if err != nil {
 		return
 	}
@@ -1161,7 +1190,15 @@ func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *Voi
 func (s *Session) ChannelVoiceJoinManual(gID, cID string, mute, deaf bool) (err error) {
 
 	s.log(LogInformational, "called")
+	s.voiceMutex.Lock()
+	err = s.channelVoiceJoinManual(gID, cID, mute, deaf)
+	s.voiceMutex.Unlock()
+	return
+}
 
+// channelVoiceJoinManual sends a voice state update.
+// The caller must hold voiceMutex.
+func (s *Session) channelVoiceJoinManual(gID, cID string, mute, deaf bool) (err error) {
 	var channelID *string
 	if cID == "" {
 		channelID = nil
