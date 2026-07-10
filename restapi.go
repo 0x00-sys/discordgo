@@ -4464,6 +4464,47 @@ func (s *Session) GuildScheduledEventUsers(guildID, eventID string, limit int, w
 	return
 }
 
+// GuildWelcomeScreen returns the welcome screen of a guild.
+// guildID : The ID of the guild
+func (s *Session) GuildWelcomeScreen(guildID string, options ...RequestOption) (welcomeScreen *GuildWelcomeScreen, err error) {
+	endpoint := EndpointGuildWelcomeScreen(guildID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &welcomeScreen); err != nil {
+		return nil, err
+	}
+	if welcomeScreen == nil {
+		return nil, fmt.Errorf("%w: guild welcome screen response is null", ErrJSONUnmarshal)
+	}
+	return welcomeScreen, nil
+}
+
+// GuildWelcomeScreenEdit modifies the welcome screen of a guild.
+// guildID : The ID of the guild
+// data    : The welcome screen fields to modify
+func (s *Session) GuildWelcomeScreenEdit(guildID string, data *GuildWelcomeScreenParams, options ...RequestOption) (welcomeScreen *GuildWelcomeScreen, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("guild welcome screen data cannot be nil")
+	}
+
+	endpoint := EndpointGuildWelcomeScreen(guildID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, data, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &welcomeScreen); err != nil {
+		return nil, err
+	}
+	if welcomeScreen == nil {
+		return nil, fmt.Errorf("%w: guild welcome screen response is null", ErrJSONUnmarshal)
+	}
+	return welcomeScreen, nil
+}
+
 // GuildOnboarding returns onboarding configuration of a guild.
 // guildID   : The ID of the guild
 func (s *Session) GuildOnboarding(guildID string, options ...RequestOption) (onboarding *GuildOnboarding, err error) {

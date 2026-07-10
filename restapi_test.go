@@ -503,6 +503,132 @@ func TestGuildMessagesSearchBuildsQuery(t *testing.T) {
 	}
 }
 
+func TestGuildWelcomeScreen(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/guilds/guild/welcome-screen" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/welcome-screen")
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"description":"Welcome","welcome_channels":[{"channel_id":"channel","description":"Read the rules","emoji_id":null,"emoji_name":"👋"}]}`))
+		case http.MethodPatch:
+			if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "community refresh" {
+				t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "community refresh")
+			}
+
+			var payload map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if got := string(payload["enabled"]); got != "true" {
+				t.Fatalf("enabled = %s, want true", got)
+			}
+			if got := string(payload["description"]); got != "null" {
+				t.Fatalf("description = %s, want null", got)
+			}
+			var channels []GuildWelcomeScreenChannel
+			if err := json.Unmarshal(payload["welcome_channels"], &channels); err != nil {
+				t.Fatalf("json.Unmarshal welcome_channels returned error: %v", err)
+			}
+			if len(channels) != 1 || channels[0].ChannelID != "channel" || channels[0].EmojiID != nil || channels[0].EmojiName == nil || *channels[0].EmojiName != "👋" {
+				t.Fatalf("welcome_channels = %#v", channels)
+			}
+
+			_, _ = w.Write([]byte(`{"description":null,"welcome_channels":[{"channel_id":"channel","description":"Read the rules","emoji_id":null,"emoji_name":"👋"}]}`))
+		default:
+			t.Fatalf("method = %q, want GET or PATCH", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	welcomeScreen, err := session.GuildWelcomeScreen("guild")
+	if err != nil {
+		t.Fatalf("GuildWelcomeScreen returned error: %v", err)
+	}
+	if welcomeScreen == nil || welcomeScreen.Description == nil || *welcomeScreen.Description != "Welcome" || len(welcomeScreen.WelcomeChannels) != 1 {
+		t.Fatalf("welcomeScreen = %#v", welcomeScreen)
+	}
+
+	enabled := true
+	enabledValue := &enabled
+	emojiName := "👋"
+	channels := []GuildWelcomeScreenChannel{{
+		ChannelID:   "channel",
+		Description: "Read the rules",
+		EmojiName:   &emojiName,
+	}}
+	clearDescription := (*string)(nil)
+	welcomeScreen, err = session.GuildWelcomeScreenEdit("guild", &GuildWelcomeScreenParams{
+		Enabled:         &enabledValue,
+		WelcomeChannels: &channels,
+		Description:     &clearDescription,
+	}, WithAuditLogReason("community refresh"))
+	if err != nil {
+		t.Fatalf("GuildWelcomeScreenEdit returned error: %v", err)
+	}
+	if welcomeScreen == nil || welcomeScreen.Description != nil || len(welcomeScreen.WelcomeChannels) != 1 {
+		t.Fatalf("welcomeScreen = %#v", welcomeScreen)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestGuildWelcomeScreenRejectsNullResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session) (*GuildWelcomeScreen, error)
+	}{
+		{"get", func(s *Session) (*GuildWelcomeScreen, error) {
+			return s.GuildWelcomeScreen("guild")
+		}},
+		{"edit", func(s *Session) (*GuildWelcomeScreen, error) {
+			return s.GuildWelcomeScreenEdit("guild", &GuildWelcomeScreenParams{})
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader("null")),
+					Request:    r,
+				}, nil
+			})
+
+			welcomeScreen, err := test.call(session)
+			if !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+			if welcomeScreen != nil {
+				t.Fatalf("welcomeScreen = %#v, want nil", welcomeScreen)
+			}
+		})
+	}
+}
+
 func TestGuildIncidentActionsEdit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
@@ -1349,6 +1475,14 @@ func TestNilRESTPayloadsReturnErrors(t *testing.T) {
 				return err
 			},
 			want: "guild incident actions data cannot be nil",
+		},
+		{
+			name: "guild welcome screen",
+			call: func(s *Session) error {
+				_, err := s.GuildWelcomeScreenEdit("guild", nil)
+				return err
+			},
+			want: "guild welcome screen data cannot be nil",
 		},
 		{
 			name: "webhook execute",

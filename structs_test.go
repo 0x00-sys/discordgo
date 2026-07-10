@@ -251,6 +251,114 @@ func TestGuildTemplateIconHash(t *testing.T) {
 	}
 }
 
+func TestGuildWelcomeScreenJSON(t *testing.T) {
+	var invite Invite
+	if err := json.Unmarshal([]byte(`{"code":"invite","guild":{"id":"guild","welcome_screen":{"description":"Welcome","welcome_channels":[{"channel_id":"channel","description":"Read the rules","emoji_id":null,"emoji_name":"👋"}]}}}`), &invite); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if invite.Guild == nil {
+		t.Fatal("Guild is nil")
+	}
+	if invite.Guild.WelcomeScreen == nil {
+		t.Fatal("WelcomeScreen is nil")
+	}
+	welcomeScreen := invite.Guild.WelcomeScreen
+	if welcomeScreen.Description == nil || *welcomeScreen.Description != "Welcome" {
+		t.Fatalf("Description = %v, want Welcome", welcomeScreen.Description)
+	}
+	if len(welcomeScreen.WelcomeChannels) != 1 {
+		t.Fatalf("len(WelcomeChannels) = %d, want 1", len(welcomeScreen.WelcomeChannels))
+	}
+	channel := welcomeScreen.WelcomeChannels[0]
+	if channel.ChannelID != "channel" || channel.Description != "Read the rules" || channel.EmojiID != nil || channel.EmojiName == nil || *channel.EmojiName != "👋" {
+		t.Fatalf("WelcomeChannels[0] = %#v", channel)
+	}
+
+	var withoutWelcomeScreen Invite
+	if err := json.Unmarshal([]byte(`{"code":"invite","guild":{"id":"guild","welcome_screen":null}}`), &withoutWelcomeScreen); err != nil {
+		t.Fatalf("json.Unmarshal null returned error: %v", err)
+	}
+	if withoutWelcomeScreen.Guild == nil {
+		t.Fatal("Guild is nil for null welcome screen")
+	}
+	if withoutWelcomeScreen.Guild.WelcomeScreen != nil {
+		t.Fatalf("WelcomeScreen = %#v, want nil", withoutWelcomeScreen.Guild.WelcomeScreen)
+	}
+}
+
+func TestGuildWelcomeScreenParamsJSON(t *testing.T) {
+	enabled := true
+	enabledValue := &enabled
+	description := "Welcome"
+	descriptionValue := &description
+	emojiName := "👋"
+	channels := []GuildWelcomeScreenChannel{{
+		ChannelID:   "channel",
+		Description: "Read the rules",
+		EmojiName:   &emojiName,
+	}}
+
+	encoded, err := json.Marshal(GuildWelcomeScreenParams{
+		Enabled:         &enabledValue,
+		WelcomeChannels: &channels,
+		Description:     &descriptionValue,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal values returned error: %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal values returned error: %v", err)
+	}
+	if got := string(payload["enabled"]); got != "true" {
+		t.Fatalf("enabled = %s, want true", got)
+	}
+	if got := string(payload["description"]); got != `"Welcome"` {
+		t.Fatalf("description = %s, want Welcome", got)
+	}
+	var encodedChannels []GuildWelcomeScreenChannel
+	if err := json.Unmarshal(payload["welcome_channels"], &encodedChannels); err != nil {
+		t.Fatalf("json.Unmarshal welcome_channels returned error: %v", err)
+	}
+	if len(encodedChannels) != 1 || encodedChannels[0].ChannelID != "channel" || encodedChannels[0].EmojiID != nil || encodedChannels[0].EmojiName == nil || *encodedChannels[0].EmojiName != "👋" {
+		t.Fatalf("welcome_channels = %#v", encodedChannels)
+	}
+
+	clearEnabled := (*bool)(nil)
+	var clearChannels []GuildWelcomeScreenChannel
+	clearDescription := (*string)(nil)
+	encoded, err = json.Marshal(GuildWelcomeScreenParams{
+		Enabled:         &clearEnabled,
+		WelcomeChannels: &clearChannels,
+		Description:     &clearDescription,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal nulls returned error: %v", err)
+	}
+	payload = nil
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal nulls returned error: %v", err)
+	}
+	for _, field := range []string{"enabled", "welcome_channels", "description"} {
+		if got := string(payload[field]); got != "null" {
+			t.Fatalf("%s = %s, want null", field, got)
+		}
+	}
+
+	encoded, err = json.Marshal(GuildWelcomeScreenParams{})
+	if err != nil {
+		t.Fatalf("json.Marshal omitted fields returned error: %v", err)
+	}
+	payload = nil
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal omitted fields returned error: %v", err)
+	}
+	if len(payload) != 0 {
+		t.Fatalf("omitted fields JSON = %s", encoded)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
