@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestContentWithMoreMentionsReplaced(t *testing.T) {
@@ -446,6 +447,65 @@ func TestMessageSharedClientThemeNullableFields(t *testing.T) {
 	}
 	if strings.Contains(string(payload), `"shared_client_theme"`) {
 		t.Fatalf("MessageSend JSON = %s, want shared_client_theme omitted", payload)
+	}
+}
+
+func TestMessageCallJSON(t *testing.T) {
+	data := []byte(`{"id":"1","call":{"participants":["111","222"],"ended_timestamp":"2026-07-10T08:30:45.123Z"}}`)
+
+	var message Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Call == nil {
+		t.Fatal("Call = nil")
+	}
+	if len(message.Call.Participants) != 2 || message.Call.Participants[0] != "111" || message.Call.Participants[1] != "222" {
+		t.Fatalf("Participants = %#v, want [111 222]", message.Call.Participants)
+	}
+	wantEndedTimestamp := time.Date(2026, time.July, 10, 8, 30, 45, 123000000, time.UTC)
+	if message.Call.EndedTimestamp == nil || !message.Call.EndedTimestamp.Equal(wantEndedTimestamp) {
+		t.Fatalf("EndedTimestamp = %#v, want %s", message.Call.EndedTimestamp, wantEndedTimestamp)
+	}
+}
+
+func TestMessageCallNullableFields(t *testing.T) {
+	var message Message
+	if err := json.Unmarshal([]byte(`{"call":{"participants":[],"ended_timestamp":null}}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Call == nil {
+		t.Fatal("Call = nil")
+	}
+	if message.Call.Participants == nil || len(message.Call.Participants) != 0 {
+		t.Fatalf("Participants = %#v, want empty non-nil slice", message.Call.Participants)
+	}
+	if message.Call.EndedTimestamp != nil {
+		t.Fatalf("EndedTimestamp = %#v, want nil", message.Call.EndedTimestamp)
+	}
+
+	if err := json.Unmarshal([]byte(`{"call":{"participants":["111"]}}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Call == nil || len(message.Call.Participants) != 1 || message.Call.Participants[0] != "111" {
+		t.Fatalf("Call = %#v, want participant 111", message.Call)
+	}
+	if message.Call.EndedTimestamp != nil {
+		t.Fatalf("missing EndedTimestamp = %#v, want nil", message.Call.EndedTimestamp)
+	}
+
+	if err := json.Unmarshal([]byte(`{"call":null}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Call != nil {
+		t.Fatalf("Call = %#v, want nil", message.Call)
+	}
+
+	if err := json.Unmarshal([]byte(`{}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Call != nil {
+		t.Fatalf("Call = %#v, want nil", message.Call)
 	}
 }
 
