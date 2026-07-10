@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1922,6 +1924,145 @@ func TestRequestWithLockedBucketClosesRateLimitBodyBeforeRetry(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestRequestWithLockedBucketRetriesUseBoundedStack(t *testing.T) {
+	const retries = 100
+
+	tests := []struct {
+		name       string
+		statusCode int
+		status     string
+		body       string
+	}{
+		{
+			name:       "rate limit",
+			statusCode: http.StatusTooManyRequests,
+			status:     "429 Too Many Requests",
+			body:       `{"message":"rate limited","retry_after":0.001,"global":false}`,
+		},
+		{
+			name:       "server error",
+			statusCode: http.StatusInternalServerError,
+			status:     "500 Internal Server Error",
+			body:       "server error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			attempts := 0
+			optionCalls := 0
+			callers := make([]uintptr, 1024)
+			minCallers := len(callers)
+			maxCallers := 0
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				attempts++
+				if got := r.Header.Get("X-Retry-Attempt"); got != strconv.Itoa(attempts) {
+					t.Fatalf("X-Retry-Attempt = %q, want %q", got, strconv.Itoa(attempts))
+				}
+				requestBody, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("ReadAll request body returned error: %v", err)
+				}
+				if string(requestBody) != `{"name":"updated"}` {
+					t.Fatalf("request body = %q, want %q", requestBody, `{"name":"updated"}`)
+				}
+
+				depth := runtime.Callers(0, callers)
+				if depth == len(callers) {
+					t.Fatal("retry stack exceeded measurement buffer")
+				}
+				if depth < minCallers {
+					minCallers = depth
+				}
+				if depth > maxCallers {
+					maxCallers = depth
+				}
+
+				if attempts <= retries {
+					return &http.Response{
+						StatusCode: tt.statusCode,
+						Status:     tt.status,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(tt.body)),
+						Request:    r,
+					}, nil
+				}
+
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+					Request:    r,
+				}, nil
+			})
+
+			setAttemptHeader := func(cfg *RequestConfig) {
+				optionCalls++
+				cfg.Request.Header.Set("X-Retry-Attempt", strconv.Itoa(optionCalls))
+			}
+			_, err = session.RequestWithBucketID("PATCH", EndpointGateway, map[string]string{"name": "updated"}, EndpointGateway, WithRestRetries(retries), setAttemptHeader)
+			if err != nil {
+				t.Fatalf("RequestWithBucketID() returned error: %v", err)
+			}
+			if attempts != retries+1 {
+				t.Fatalf("attempts = %d, want %d", attempts, retries+1)
+			}
+			if optionCalls != attempts {
+				t.Fatalf("request option calls = %d, want %d", optionCalls, attempts)
+			}
+			// Recursive retries add frames on every attempt. Allow a small
+			// amount of runtime variation while requiring bounded call depth.
+			if growth := maxCallers - minCallers; growth > 10 {
+				t.Fatalf("retry stack grew by %d frames, want at most 10", growth)
+			}
+		})
+	}
+}
+
+func TestRequestWithLockedBucketRateLimitRetryRespectsContext(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"rate limited","retry_after":1,"global":false}`)),
+			Request:    r,
+		}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RequestWithBucketID() error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("RequestWithBucketID() slept for %v after context deadline", elapsed)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	bucket := session.Ratelimiter.GetBucket(EndpointGateway)
+	if active := atomic.LoadInt32(&bucket.activeRequests); active != 0 {
+		t.Fatalf("activeRequests = %d, want 0", active)
 	}
 }
 
