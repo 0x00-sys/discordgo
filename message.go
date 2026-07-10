@@ -62,6 +62,35 @@ const (
 	MessageTypePollResult                              MessageType = 46
 )
 
+// BaseThemeType is the mode of a shared client theme.
+// https://discord.com/developers/docs/resources/message#base-theme-types
+type BaseThemeType int
+
+// Valid BaseThemeType values.
+const (
+	// BaseThemeTypeUnset is equivalent to BaseThemeTypeDark.
+	BaseThemeTypeUnset BaseThemeType = iota
+	BaseThemeTypeDark
+	BaseThemeTypeLight
+	BaseThemeTypeDarker
+	BaseThemeTypeMidnight
+)
+
+// MessageSharedClientTheme represents a custom client-side theme shared via a message.
+type MessageSharedClientTheme struct {
+	// The hexadecimal-encoded colors of the theme. Limited to 5 colors.
+	Colors []string `json:"colors"`
+
+	// The direction of the theme's colors. Limited to 360 degrees.
+	GradientAngle int `json:"gradient_angle"`
+
+	// The intensity of the theme's colors. Limited to 100.
+	BaseMix int `json:"base_mix"`
+
+	// The mode of the theme, if set.
+	BaseTheme *BaseThemeType `json:"base_theme,omitempty"`
+}
+
 // A Message stores all data related to a specific Discord message.
 type Message struct {
 	// The ID of the message.
@@ -185,6 +214,9 @@ type Message struct {
 
 	// A poll object.
 	Poll *Poll `json:"poll"`
+
+	// The custom client-side theme shared via the message.
+	SharedClientTheme *MessageSharedClientTheme `json:"shared_client_theme"`
 }
 
 // UnmarshalJSON is a helper function to unmarshal the Message.
@@ -285,18 +317,19 @@ type File struct {
 
 // MessageSend stores all parameters you can send with ChannelMessageSendComplex.
 type MessageSend struct {
-	Content         string                  `json:"content,omitempty"`
-	Embeds          []*MessageEmbed         `json:"embeds"`
-	TTS             bool                    `json:"tts"`
-	Components      []MessageComponent      `json:"components"`
-	Files           []*File                 `json:"-"`
-	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
-	Reference       *MessageReference       `json:"message_reference,omitempty"`
-	Nonce           interface{}             `json:"nonce,omitempty"`
-	EnforceNonce    bool                    `json:"enforce_nonce,omitempty"`
-	StickerIDs      []string                `json:"sticker_ids"`
-	Flags           MessageFlags            `json:"flags,omitempty"`
-	Poll            *Poll                   `json:"poll,omitempty"`
+	Content           string                    `json:"content,omitempty"`
+	Embeds            []*MessageEmbed           `json:"embeds"`
+	TTS               bool                      `json:"tts"`
+	Components        []MessageComponent        `json:"components"`
+	Files             []*File                   `json:"-"`
+	AllowedMentions   *MessageAllowedMentions   `json:"allowed_mentions,omitempty"`
+	Reference         *MessageReference         `json:"message_reference,omitempty"`
+	Nonce             interface{}               `json:"nonce,omitempty"`
+	EnforceNonce      bool                      `json:"enforce_nonce,omitempty"`
+	StickerIDs        []string                  `json:"sticker_ids"`
+	Flags             MessageFlags              `json:"flags,omitempty"`
+	Poll              *Poll                     `json:"poll,omitempty"`
+	SharedClientTheme *MessageSharedClientTheme `json:"shared_client_theme,omitempty"`
 
 	// TODO: Remove this when compatibility is not required.
 	File *File `json:"-"`

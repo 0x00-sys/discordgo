@@ -399,6 +399,75 @@ func TestMessageNonceMarshalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMessageSharedClientThemeJSON(t *testing.T) {
+	data := []byte(`{"id":"1","shared_client_theme":{"colors":["5865F2","7258F2","9858F2"],"gradient_angle":45,"base_mix":58,"base_theme":1}}`)
+
+	var message Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.SharedClientTheme == nil {
+		t.Fatal("SharedClientTheme = nil")
+	}
+	theme := message.SharedClientTheme
+	if len(theme.Colors) != 3 || theme.Colors[0] != "5865F2" || theme.GradientAngle != 45 || theme.BaseMix != 58 {
+		t.Fatalf("SharedClientTheme = %#v", theme)
+	}
+	if theme.BaseTheme == nil || *theme.BaseTheme != BaseThemeTypeDark {
+		t.Fatalf("BaseTheme = %#v, want %d", theme.BaseTheme, BaseThemeTypeDark)
+	}
+
+	payload, err := json.Marshal(&MessageSend{SharedClientTheme: theme})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	for _, want := range []string{`"shared_client_theme":`, `"colors":["5865F2","7258F2","9858F2"]`, `"gradient_angle":45`, `"base_mix":58`, `"base_theme":1`} {
+		if !strings.Contains(string(payload), want) {
+			t.Fatalf("MessageSend JSON = %s, want %s", payload, want)
+		}
+	}
+}
+
+func TestMessageSharedClientThemeNullableFields(t *testing.T) {
+	var message Message
+	if err := json.Unmarshal([]byte(`{"shared_client_theme":{"colors":[],"gradient_angle":0,"base_mix":0,"base_theme":null}}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.SharedClientTheme == nil {
+		t.Fatal("SharedClientTheme = nil")
+	}
+	if message.SharedClientTheme.BaseTheme != nil {
+		t.Fatalf("BaseTheme = %#v, want nil", message.SharedClientTheme.BaseTheme)
+	}
+
+	payload, err := json.Marshal(&MessageSend{})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if strings.Contains(string(payload), `"shared_client_theme"`) {
+		t.Fatalf("MessageSend JSON = %s, want shared_client_theme omitted", payload)
+	}
+}
+
+func TestBaseThemeTypeValues(t *testing.T) {
+	tests := []struct {
+		theme BaseThemeType
+		want  int
+	}{
+		{theme: BaseThemeTypeUnset, want: 0},
+		{theme: BaseThemeTypeDark, want: 1},
+		{theme: BaseThemeTypeLight, want: 2},
+		{theme: BaseThemeTypeDarker, want: 3},
+		{theme: BaseThemeTypeMidnight, want: 4},
+	}
+
+	for _, tt := range tests {
+		if got := int(tt.theme); got != tt.want {
+			t.Errorf("theme = %d, want %d", got, tt.want)
+		}
+	}
+}
+
 func TestMessageValueMarshalJSONIncludesComponents(t *testing.T) {
 	m := Message{
 		ID: "811736565172011001",
