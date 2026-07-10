@@ -1124,6 +1124,9 @@ type Guild struct {
 	// The id of the channel where admins and moderators of guilds with the "PUBLIC" feature receive notices from Discord
 	PublicUpdatesChannelID string `json:"public_updates_channel_id"`
 
+	// The id of the channel where admins and moderators receive safety alerts from Discord.
+	SafetyAlertsChannelID string `json:"safety_alerts_channel_id"`
+
 	// The maximum amount of users in a video channel
 	MaxVideoChannelUsers int `json:"max_video_channel_users"`
 
@@ -1594,6 +1597,9 @@ type GuildParams struct {
 	Features                    []GuildFeature     `json:"features,omitempty"`
 	Description                 string             `json:"description,omitempty"`
 	PremiumProgressBarEnabled   *bool              `json:"premium_progress_bar_enabled,omitempty"`
+
+	// A nil field is omitted, while a non-nil pointer to nil clears the channel.
+	SafetyAlertsChannelID **string `json:"safety_alerts_channel_id,omitempty"`
 }
 
 // A Role stores information about Discord guild member roles.
