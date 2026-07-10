@@ -593,6 +593,9 @@ func (s *State) MemberAdd(member *Member) error {
 	if s == nil {
 		return ErrNilState
 	}
+	if member == nil || member.User == nil {
+		return ErrStateInvalidData
+	}
 
 	s.Lock()
 	defer s.Unlock()
@@ -1518,7 +1521,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.GuildRemove(t.Guild)
 		}
 	case *GuildMemberAdd:
-		if t.Member == nil || t.Member.GuildID == "" {
+		if t == nil || t.Member == nil || t.Member.GuildID == "" {
 			return ErrStateInvalidData
 		}
 		if s.TrackMembers && t.Member.User == nil {
@@ -1539,7 +1542,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *GuildMemberUpdate:
 		if s.TrackMembers {
-			if t.Member == nil || t.Member.GuildID == "" || t.Member.User == nil {
+			if t == nil || t.Member == nil || t.Member.GuildID == "" || t.Member.User == nil {
 				return ErrStateInvalidData
 			}
 
@@ -1557,7 +1560,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.MemberAdd(t.Member)
 		}
 	case *GuildMemberRemove:
-		if t.Member == nil || t.Member.GuildID == "" {
+		if t == nil || t.Member == nil || t.Member.GuildID == "" {
 			return ErrStateInvalidData
 		}
 		if s.TrackMembers && t.Member.User == nil {
@@ -1583,6 +1586,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.MemberRemove(t.Member)
 		}
 	case *GuildMembersChunk:
+		if (s.TrackMembers || s.TrackPresences) && t == nil {
+			return ErrStateInvalidData
+		}
 		if s.TrackMembers {
 			for _, m := range t.Members {
 				if m == nil || m.User == nil {

@@ -30,6 +30,10 @@ func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
 			event: &GuildMemberAdd{},
 		},
 		{
+			name:  "nil member add",
+			event: (*GuildMemberAdd)(nil),
+		},
+		{
 			name: "member add missing user",
 			event: &GuildMemberAdd{
 				Member: &Member{GuildID: "guild"},
@@ -42,8 +46,16 @@ func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
 			},
 		},
 		{
+			name:  "nil member update",
+			event: (*GuildMemberUpdate)(nil),
+		},
+		{
 			name:  "member remove missing member",
 			event: &GuildMemberRemove{},
+		},
+		{
+			name:  "nil member remove",
+			event: (*GuildMemberRemove)(nil),
 		},
 		{
 			name: "member remove missing user",
@@ -58,6 +70,10 @@ func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
 				Members: []*Member{nil},
 			},
 		},
+		{
+			name:  "nil members chunk",
+			event: (*GuildMembersChunk)(nil),
+		},
 	}
 
 	for _, tt := range tests {
@@ -70,6 +86,34 @@ func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
 			assertStateInvalidData(t, func() error {
 				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
 			})
+		})
+	}
+}
+
+func TestMemberAddRejectsInvalidMember(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		member *Member
+	}{
+		{name: "nil member"},
+		{name: "missing user", member: &Member{GuildID: "guild"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("MemberAdd panicked: %v", r)
+				}
+			}()
+			if err := state.MemberAdd(tt.member); !errors.Is(err, ErrStateInvalidData) {
+				t.Fatalf("MemberAdd returned error %v, want %v", err, ErrStateInvalidData)
+			}
 		})
 	}
 }
