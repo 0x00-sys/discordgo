@@ -678,6 +678,9 @@ func (s *State) RoleAdd(guildID string, role *Role) error {
 	if s == nil {
 		return ErrNilState
 	}
+	if role == nil {
+		return ErrStateInvalidData
+	}
 
 	s.Lock()
 	defer s.Unlock()
@@ -691,6 +694,9 @@ func (s *State) RoleAdd(guildID string, role *Role) error {
 	role = &roleCopy
 	updated := copyGuild(guild)
 	for i, r := range guild.Roles {
+		if r == nil {
+			continue
+		}
 		if r.ID == role.ID {
 			updated.Roles[i] = role
 			s.replaceGuild(guild, updated)
@@ -719,6 +725,9 @@ func (s *State) RoleRemove(guildID, roleID string) error {
 
 	updated := copyGuild(guild)
 	for i, r := range guild.Roles {
+		if r == nil {
+			continue
+		}
 		if r.ID == roleID {
 			updated.Roles = append(updated.Roles[:i], updated.Roles[i+1:]...)
 			s.replaceGuild(guild, updated)
@@ -744,6 +753,9 @@ func (s *State) Role(guildID, roleID string) (*Role, error) {
 	defer s.RUnlock()
 
 	for _, r := range guild.Roles {
+		if r == nil {
+			continue
+		}
 		if r.ID == roleID {
 			return r, nil
 		}
@@ -1632,14 +1644,14 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *GuildRoleCreate:
 		if s.TrackRoles {
-			if t.GuildRole == nil || t.Role == nil {
+			if t == nil || t.GuildRole == nil || t.Role == nil {
 				return ErrStateInvalidData
 			}
 			err = s.RoleAdd(t.GuildID, t.Role)
 		}
 	case *GuildRoleUpdate:
 		if s.TrackRoles {
-			if t.GuildRole == nil || t.Role == nil {
+			if t == nil || t.GuildRole == nil || t.Role == nil {
 				return ErrStateInvalidData
 			}
 			old, err := s.Role(t.GuildID, t.Role.ID)
@@ -1652,6 +1664,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *GuildRoleDelete:
 		if s.TrackRoles {
+			if t == nil {
+				return ErrStateInvalidData
+			}
 			old, err := s.Role(t.GuildID, t.RoleID)
 			if err == nil {
 				oldCopy := *old

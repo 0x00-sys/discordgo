@@ -239,10 +239,22 @@ func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
 			},
 		},
 		{
+			name:  "nil role create",
+			event: (*GuildRoleCreate)(nil),
+		},
+		{
 			name: "role update missing role",
 			event: &GuildRoleUpdate{
 				GuildRole: &GuildRole{GuildID: "guild"},
 			},
+		},
+		{
+			name:  "nil role update",
+			event: (*GuildRoleUpdate)(nil),
+		},
+		{
+			name:  "nil role delete",
+			event: (*GuildRoleDelete)(nil),
 		},
 		{
 			name:  "channel create missing channel",
@@ -352,6 +364,37 @@ func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
 				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
 			})
 		})
+	}
+}
+
+func TestRoleHelpersHandleNilRoles(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			nil,
+			{ID: "existing"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("role helper panicked: %v", r)
+		}
+	}()
+	if err := state.RoleAdd("guild", nil); !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("RoleAdd(nil) returned error %v, want %v", err, ErrStateInvalidData)
+	}
+	if _, err := state.Role("guild", "existing"); err != nil {
+		t.Fatalf("Role returned error: %v", err)
+	}
+	if err := state.RoleAdd("guild", &Role{ID: "new"}); err != nil {
+		t.Fatalf("RoleAdd returned error: %v", err)
+	}
+	if err := state.RoleRemove("guild", "existing"); err != nil {
+		t.Fatalf("RoleRemove returned error: %v", err)
 	}
 }
 
