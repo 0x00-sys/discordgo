@@ -1753,6 +1753,38 @@ func TestMemberPermissionsSkipsNilRoles(t *testing.T) {
 	}
 }
 
+func TestMemberPermissionsSkipsNilOverwrites(t *testing.T) {
+	guild := &Guild{
+		ID: "guild",
+		Roles: []*Role{
+			{ID: "guild", Permissions: PermissionViewChannel | PermissionSendMessages},
+			{ID: "member"},
+		},
+	}
+	channel := &Channel{
+		GuildID: "guild",
+		PermissionOverwrites: []*PermissionOverwrite{
+			nil,
+			{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionSendMessages, Allow: PermissionReadMessageHistory},
+			nil,
+			{ID: "member", Type: PermissionOverwriteTypeRole, Deny: PermissionViewChannel, Allow: PermissionSendMessages},
+			nil,
+			{ID: "user", Type: PermissionOverwriteTypeMember, Deny: PermissionReadMessageHistory, Allow: PermissionViewChannel},
+		},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("memberPermissions panicked: %v", r)
+		}
+	}()
+	permissions := memberPermissions(guild, channel, "user", []string{"member"})
+	want := int64(PermissionViewChannel | PermissionSendMessages)
+	if permissions != want {
+		t.Fatalf("permissions = %d, want %d", permissions, want)
+	}
+}
+
 func TestGateway(t *testing.T) {
 
 	if dg == nil {
