@@ -1246,6 +1246,9 @@ func (s *State) MessageRemove(message *Message) error {
 	if s == nil {
 		return ErrNilState
 	}
+	if message == nil {
+		return ErrStateInvalidData
+	}
 
 	return s.messageRemoveByID(message.ChannelID, message.ID)
 }
@@ -1747,11 +1750,17 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.ThreadListSync(t)
 		}
 	case *MessageCreate:
+		if t == nil || t.Message == nil {
+			return ErrStateInvalidData
+		}
 		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			err = s.MessageAdd(t.Message)
 		}
 	case *MessageUpdate:
+		if t == nil || t.Message == nil {
+			return ErrStateInvalidData
+		}
 		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			var old *Message
@@ -1764,6 +1773,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.MessageAdd(t.Message)
 		}
 	case *MessageDelete:
+		if t == nil || t.Message == nil {
+			return ErrStateInvalidData
+		}
 		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			var old *Message
