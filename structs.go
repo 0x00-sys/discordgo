@@ -1805,6 +1805,9 @@ type Member struct {
 	// The hash of the banner for the guild member, if any.
 	Banner string `json:"banner"`
 
+	// The member's collectibles.
+	Collectibles *Collectibles `json:"collectibles"`
+
 	// The underlying user on which the member is based.
 	User *User `json:"user"`
 

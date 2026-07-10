@@ -56,6 +56,46 @@ type UserPrimaryGuild struct {
 	Badge string `json:"badge"`
 }
 
+// NameplatePalette represents the background color of a nameplate.
+// https://discord.com/developers/docs/resources/user#nameplate
+type NameplatePalette string
+
+// Valid NameplatePalette values.
+const (
+	NameplatePaletteCrimson   NameplatePalette = "crimson"
+	NameplatePaletteBerry     NameplatePalette = "berry"
+	NameplatePaletteSky       NameplatePalette = "sky"
+	NameplatePaletteTeal      NameplatePalette = "teal"
+	NameplatePaletteForest    NameplatePalette = "forest"
+	NameplatePaletteBubbleGum NameplatePalette = "bubble_gum"
+	NameplatePaletteViolet    NameplatePalette = "violet"
+	NameplatePaletteCobalt    NameplatePalette = "cobalt"
+	NameplatePaletteClover    NameplatePalette = "clover"
+	NameplatePaletteLemon     NameplatePalette = "lemon"
+	NameplatePaletteWhite     NameplatePalette = "white"
+)
+
+// Nameplate represents a user's nameplate collectible.
+type Nameplate struct {
+	// The ID of the nameplate SKU.
+	SKUID string `json:"sku_id"`
+
+	// The path to the nameplate asset.
+	Asset string `json:"asset"`
+
+	// The label of the nameplate. Currently unused.
+	Label string `json:"label"`
+
+	// The background color of the nameplate.
+	Palette NameplatePalette `json:"palette"`
+}
+
+// Collectibles represents a user's collectibles, excluding Avatar Decorations and Profile Effects.
+type Collectibles struct {
+	// The user's nameplate, if any.
+	Nameplate *Nameplate `json:"nameplate"`
+}
+
 // A User stores all data for an individual Discord user.
 type User struct {
 	// The ID of the user.
@@ -116,6 +156,9 @@ type User struct {
 	// The flags on a user's account.
 	// Only available when the request is authorized via a Bearer token.
 	Flags int `json:"flags"`
+
+	// The user's collectibles.
+	Collectibles *Collectibles `json:"collectibles"`
 
 	// The user's primary guild.
 	PrimaryGuild UserPrimaryGuild `json:"primary_guild"`
