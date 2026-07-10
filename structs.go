@@ -958,6 +958,16 @@ const (
 	PremiumTier3    PremiumTier = 3
 )
 
+// GuildHubType type definition
+type GuildHubType int
+
+// Constants for GuildHubType values from 0 to 2 inclusive
+const (
+	GuildHubTypeDefault    GuildHubType = 0
+	GuildHubTypeHighSchool GuildHubType = 1
+	GuildHubTypeCollege    GuildHubType = 2
+)
+
 // GuildIncidentsData stores information about active security incidents and disabled guild features.
 type GuildIncidentsData struct {
 	InvitesDisabledUntil *time.Time `json:"invites_disabled_until"`
@@ -1120,6 +1130,9 @@ type Guild struct {
 
 	// Whether the guild has the boost progress bar enabled.
 	PremiumProgressBarEnabled bool `json:"premium_progress_bar_enabled"`
+
+	// The type of Student Hub the guild is, if any.
+	HubType *GuildHubType `json:"hub_type"`
 
 	// The preferred locale of a guild with the "PUBLIC" feature; used in server discovery and notices from Discord; defaults to "en-US"
 	PreferredLocale string `json:"preferred_locale"`

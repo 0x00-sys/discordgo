@@ -193,6 +193,38 @@ func TestGuildPremiumProgressBarEnabled(t *testing.T) {
 	}
 }
 
+func TestGuildHubType(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    GuildHubType
+	}{
+		{"default", `{"id":"guild","hub_type":0}`, GuildHubTypeDefault},
+		{"high school", `{"id":"guild","hub_type":1}`, GuildHubTypeHighSchool},
+		{"college", `{"id":"guild","hub_type":2}`, GuildHubTypeCollege},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var guild Guild
+			if err := json.Unmarshal([]byte(test.payload), &guild); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if guild.HubType == nil || *guild.HubType != test.want {
+				t.Fatalf("HubType = %v, want %v", guild.HubType, test.want)
+			}
+		})
+	}
+
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{"id":"guild","hub_type":null}`), &guild); err != nil {
+		t.Fatalf("json.Unmarshal null returned error: %v", err)
+	}
+	if guild.HubType != nil {
+		t.Fatalf("HubType = %v, want nil", guild.HubType)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
