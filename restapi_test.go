@@ -123,6 +123,120 @@ func TestUserGuilds(t *testing.T) {
 	}
 }
 
+func TestGuildBulkBan(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/guilds/guild/bulk-ban" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/bulk-ban")
+		}
+		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "raid cleanup" {
+			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "raid cleanup")
+		}
+
+		var data GuildBulkBanParams
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if strings.Join(data.UserIDs, ",") != "user-1,user-2" {
+			t.Fatalf("user_ids = %#v, want user-1 and user-2", data.UserIDs)
+		}
+		if data.DeleteMessageSeconds != 3600 {
+			t.Fatalf("delete_message_seconds = %d, want 3600", data.DeleteMessageSeconds)
+		}
+
+		_, _ = w.Write([]byte(`{"banned_users":["user-1"],"failed_users":["user-2"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	result, err := session.GuildBulkBan("guild", &GuildBulkBanParams{
+		UserIDs:              []string{"user-1", "user-2"},
+		DeleteMessageSeconds: 3600,
+	}, WithAuditLogReason("raid cleanup"))
+	if err != nil {
+		t.Fatalf("GuildBulkBan returned error: %v", err)
+	}
+	if result == nil || strings.Join(result.BannedUsers, ",") != "user-1" || strings.Join(result.FailedUsers, ",") != "user-2" {
+		t.Fatalf("result = %#v, want user-1 banned and user-2 failed", result)
+	}
+
+	if _, err := session.GuildBulkBan("guild", nil); err == nil {
+		t.Fatal("GuildBulkBan returned nil error for nil data")
+	}
+	if _, err := session.GuildBulkBan("guild", &GuildBulkBanParams{}); err == nil {
+		t.Fatal("GuildBulkBan returned nil error for empty user IDs")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestGuildBulkBanResponseValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		valid   bool
+	}{
+		{name: "empty result arrays", payload: `{"banned_users":[],"failed_users":[]}`, valid: true},
+		{name: "malformed JSON", payload: `{`},
+		{name: "null result", payload: `null`},
+		{name: "missing banned users", payload: `{"failed_users":[]}`},
+		{name: "missing failed users", payload: `{"banned_users":[]}`},
+		{name: "null banned users", payload: `{"banned_users":null,"failed_users":[]}`},
+		{name: "null failed users", payload: `{"banned_users":[],"failed_users":null}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.payload)),
+					Request:    r,
+				}, nil
+			})
+
+			result, err := session.GuildBulkBan("guild", &GuildBulkBanParams{UserIDs: []string{"user"}})
+			if tt.valid {
+				if err != nil {
+					t.Fatalf("GuildBulkBan returned error: %v", err)
+				}
+				if result == nil || result.BannedUsers == nil || result.FailedUsers == nil {
+					t.Fatalf("GuildBulkBan result = %#v, want non-nil empty arrays", result)
+				}
+				return
+			}
+			if !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("GuildBulkBan error = %v, want ErrJSONUnmarshal", err)
+			}
+			if result != nil {
+				t.Fatalf("GuildBulkBan result = %#v, want nil", result)
+			}
+		})
+	}
+}
+
 func TestGuildMembersSearchSetsGuildID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/guilds/guild/members/search" {

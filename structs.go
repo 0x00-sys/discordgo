@@ -1940,6 +1940,22 @@ type GuildBan struct {
 	User   *User  `json:"user"`
 }
 
+// GuildBulkBanParams stores data for bulk banning guild members.
+type GuildBulkBanParams struct {
+	// UserIDs contains the IDs of users to ban (max 200).
+	UserIDs []string `json:"user_ids"`
+	// DeleteMessageSeconds is the number of seconds of messages to delete (0-604800).
+	DeleteMessageSeconds int `json:"delete_message_seconds,omitempty"`
+}
+
+// GuildBulkBanResult stores the result of a bulk guild ban.
+type GuildBulkBanResult struct {
+	// BannedUsers contains the IDs of users that were successfully banned.
+	BannedUsers []string `json:"banned_users"`
+	// FailedUsers contains the IDs of users that could not be banned or were already banned.
+	FailedUsers []string `json:"failed_users"`
+}
+
 // AutoModerationRule stores data for an auto moderation rule.
 type AutoModerationRule struct {
 	ID              string                         `json:"id,omitempty"`
