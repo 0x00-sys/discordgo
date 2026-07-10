@@ -425,9 +425,6 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 			if sameConnection {
 
 				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, readErr)
-				if shouldStartNewGatewaySessionOnClose(readErr) {
-					s.resetGatewayResumeState()
-				}
 				closeCode := websocket.CloseNormalClosure
 				if shouldReconnectOnGatewayClose(readErr) {
 					closeCode = websocket.CloseServiceRestart
@@ -435,9 +432,12 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 				// There has been an error reading, close the websocket so that
 				// OnDisconnect event is emitted.
-				err := s.closeWithCode(closeCode, false)
+				closed, err := s.closeWithCodeForConnection(wsConn, closeCode, shouldStartNewGatewaySessionOnClose(readErr))
 				if err != nil {
 					s.log(LogWarning, "error closing session connection, %s", err)
+				}
+				if !closed {
+					return
 				}
 
 				if !shouldReconnectOnGatewayClose(readErr) {
@@ -562,7 +562,10 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			} else {
 				s.log(LogError, "haven't gotten a heartbeat ACK in %v, triggering a reconnection", time.Now().UTC().Sub(last))
 			}
-			s.closeWithCode(websocket.CloseServiceRestart, false)
+			closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
+			if !closed {
+				return
+			}
 			s.reconnect()
 			return
 		}
@@ -1446,9 +1449,24 @@ func (s *Session) CloseWithCode(closeCode int) (err error) {
 }
 
 func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error) {
+	_, err = s.closeGatewayConnection(nil, closeCode, cancelReconnect, false)
+	return
+}
+
+// closeWithCodeForConnection closes the session only if wsConn is still the
+// current gateway connection.
+func (s *Session) closeWithCodeForConnection(wsConn *websocket.Conn, closeCode int, resetGatewayResume bool) (closed bool, err error) {
+	return s.closeGatewayConnection(wsConn, closeCode, false, resetGatewayResume)
+}
+
+func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, cancelReconnect, resetGatewayResume bool) (closed bool, err error) {
 
 	s.log(LogInformational, "called")
 	s.Lock()
+	if wsConn != nil && s.wsConn != wsConn {
+		s.Unlock()
+		return false, nil
+	}
 
 	if cancelReconnect {
 		s.cancelReconnectLocked()
@@ -1456,7 +1474,7 @@ func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error)
 
 	s.DataReady = false
 
-	if shouldResetGatewayResumeStateOnCloseCode(closeCode) {
+	if resetGatewayResume || shouldResetGatewayResumeStateOnCloseCode(closeCode) {
 		s.resetGatewayResumeStateLocked()
 	}
 
@@ -1493,5 +1511,5 @@ func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error)
 	s.log(LogInformational, "emit disconnect event")
 	s.handleEvent(disconnectEventType, &Disconnect{})
 
-	return
+	return true, err
 }
