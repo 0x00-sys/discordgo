@@ -921,6 +921,13 @@ func replaceThreadInGuild(guild *Guild, oldThread, newThread *Channel) bool {
 
 // ThreadListSync syncs guild threads with provided ones.
 func (s *State) ThreadListSync(tls *ThreadListSync) error {
+	if s == nil {
+		return ErrNilState
+	}
+	if tls == nil {
+		return ErrStateInvalidData
+	}
+
 	for _, t := range tls.Threads {
 		if t == nil {
 			return ErrStateInvalidData
@@ -995,6 +1002,13 @@ outer:
 
 // ThreadMembersUpdate updates thread members list
 func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
+	if s == nil {
+		return ErrNilState
+	}
+	if tmu == nil {
+		return ErrStateInvalidData
+	}
+
 	for _, addedMember := range tmu.AddedMembers {
 		if addedMember.ThreadMember == nil {
 			return ErrStateInvalidData
@@ -1061,6 +1075,9 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 func (s *State) ThreadMemberUpdate(mu *ThreadMemberUpdate) error {
 	if s == nil {
 		return ErrNilState
+	}
+	if mu == nil || mu.ThreadMember == nil {
+		return ErrStateInvalidData
 	}
 
 	s.Lock()
@@ -1487,6 +1504,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 	if s == nil {
 		return ErrNilState
 	}
+	if se == nil || i == nil {
+		return ErrStateInvalidData
+	}
 
 	r, ok := i.(*Ready)
 	if ok {
@@ -1686,6 +1706,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *GuildEmojisUpdate:
 		if s.TrackEmojis {
+			if t == nil {
+				return ErrStateInvalidData
+			}
 			s.Lock()
 			defer s.Unlock()
 			guild, ok := s.guildMap[t.GuildID]
@@ -1698,6 +1721,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *GuildStickersUpdate:
 		if s.TrackStickers {
+			if t == nil {
+				return ErrStateInvalidData
+			}
 			s.Lock()
 			defer s.Unlock()
 			guild, ok := s.guildMap[t.GuildID]
@@ -1772,7 +1798,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *ThreadMemberUpdate:
 		if s.TrackThreads && s.TrackThreadMembers {
-			if t.ThreadMember == nil {
+			if t == nil || t.ThreadMember == nil {
 				return ErrStateInvalidData
 			}
 			err = s.ThreadMemberUpdate(t)
@@ -1825,6 +1851,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *MessageDeleteBulk:
 		if s.MaxMessageCount != 0 {
+			if t == nil {
+				return ErrStateInvalidData
+			}
 			for _, mID := range t.Messages {
 				s.messageRemoveByID(t.ChannelID, mID)
 			}
@@ -1845,6 +1874,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			err = s.voiceStateUpdate(t)
 		}
 	case *PresenceUpdate:
+		if (s.TrackPresences || s.TrackMembers) && t == nil {
+			return ErrStateInvalidData
+		}
 		if s.TrackPresences {
 			err = s.PresenceAdd(t.GuildID, &t.Presence)
 			if err != nil {

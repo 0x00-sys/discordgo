@@ -367,6 +367,170 @@ func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
 	}
 }
 
+func TestStateOnInterfaceRejectsRemainingNilInputs(t *testing.T) {
+	tests := []struct {
+		name      string
+		event     interface{}
+		configure func(*State)
+	}{
+		{name: "untyped nil event"},
+		{name: "emoji update", event: (*GuildEmojisUpdate)(nil)},
+		{name: "sticker update", event: (*GuildStickersUpdate)(nil)},
+		{name: "thread member update", event: (*ThreadMemberUpdate)(nil)},
+		{name: "thread members update", event: (*ThreadMembersUpdate)(nil)},
+		{name: "thread list sync", event: (*ThreadListSync)(nil)},
+		{
+			name:  "message delete bulk",
+			event: (*MessageDeleteBulk)(nil),
+			configure: func(state *State) {
+				state.MaxMessageCount = 1
+			},
+		},
+		{name: "presence update", event: (*PresenceUpdate)(nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			if tt.configure != nil {
+				tt.configure(state)
+			}
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+
+	t.Run("nil session", func(t *testing.T) {
+		assertStateInvalidData(t, func() error {
+			return NewState().OnInterface(nil, &Ready{})
+		})
+	})
+}
+
+func TestStateOnInterfaceIgnoresNilEventsWhenTrackingDisabled(t *testing.T) {
+	tests := []struct {
+		name      string
+		event     interface{}
+		configure func(*State)
+	}{
+		{
+			name:  "emoji update",
+			event: (*GuildEmojisUpdate)(nil),
+			configure: func(state *State) {
+				state.TrackEmojis = false
+			},
+		},
+		{
+			name:  "sticker update",
+			event: (*GuildStickersUpdate)(nil),
+			configure: func(state *State) {
+				state.TrackStickers = false
+			},
+		},
+		{
+			name:  "thread member update",
+			event: (*ThreadMemberUpdate)(nil),
+			configure: func(state *State) {
+				state.TrackThreadMembers = false
+			},
+		},
+		{
+			name:  "thread members update",
+			event: (*ThreadMembersUpdate)(nil),
+			configure: func(state *State) {
+				state.TrackThreadMembers = false
+			},
+		},
+		{
+			name:  "thread list sync",
+			event: (*ThreadListSync)(nil),
+			configure: func(state *State) {
+				state.TrackThreads = false
+			},
+		},
+		{
+			name:  "message delete bulk",
+			event: (*MessageDeleteBulk)(nil),
+			configure: func(state *State) {
+				state.MaxMessageCount = 0
+			},
+		},
+		{
+			name:  "presence update",
+			event: (*PresenceUpdate)(nil),
+			configure: func(state *State) {
+				state.TrackPresences = false
+				state.TrackMembers = false
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			tt.configure(state)
+			if err := state.OnInterface(&Session{StateEnabled: true}, tt.event); err != nil {
+				t.Fatalf("OnInterface returned error %v with tracking disabled", err)
+			}
+		})
+	}
+}
+
+func TestThreadStateHelpersRejectNilPayloads(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*State) error
+	}{
+		{name: "list sync", call: func(state *State) error { return state.ThreadListSync(nil) }},
+		{name: "members update", call: func(state *State) error { return state.ThreadMembersUpdate(nil) }},
+		{name: "member update", call: func(state *State) error { return state.ThreadMemberUpdate(nil) }},
+		{name: "member update missing member", call: func(state *State) error {
+			return state.ThreadMemberUpdate(&ThreadMemberUpdate{})
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("thread state helper panicked: %v", r)
+				}
+			}()
+			if err := tt.call(NewState()); !errors.Is(err, ErrStateInvalidData) {
+				t.Fatalf("thread state helper returned error %v, want %v", err, ErrStateInvalidData)
+			}
+		})
+	}
+}
+
+func TestThreadStateHelpersHandleNilState(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*State) error
+	}{
+		{name: "list sync", call: func(state *State) error { return state.ThreadListSync(&ThreadListSync{}) }},
+		{name: "members update", call: func(state *State) error { return state.ThreadMembersUpdate(&ThreadMembersUpdate{}) }},
+		{name: "member update", call: func(state *State) error {
+			return state.ThreadMemberUpdate(&ThreadMemberUpdate{ThreadMember: &ThreadMember{}})
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("thread state helper panicked: %v", r)
+				}
+			}()
+			var state *State
+			if err := tt.call(state); !errors.Is(err, ErrNilState) {
+				t.Fatalf("thread state helper returned error %v, want %v", err, ErrNilState)
+			}
+		})
+	}
+}
+
 func TestRoleHelpersHandleNilRoles(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
