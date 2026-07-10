@@ -225,6 +225,32 @@ func TestGuildHubType(t *testing.T) {
 	}
 }
 
+func TestGuildTemplateIconHash(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"present", `{"code":"template","serialized_source_guild":{"id":"guild","icon_hash":"template-icon"}}`, "template-icon"},
+		{"null", `{"code":"template","serialized_source_guild":{"id":"guild","icon_hash":null}}`, ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var guildTemplate GuildTemplate
+			if err := json.Unmarshal([]byte(test.payload), &guildTemplate); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if guildTemplate.SerializedSourceGuild == nil {
+				t.Fatal("SerializedSourceGuild is nil")
+			}
+			if got := guildTemplate.SerializedSourceGuild.IconHash; got != test.want {
+				t.Fatalf("IconHash = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil

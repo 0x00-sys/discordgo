@@ -996,6 +996,9 @@ type Guild struct {
 	// to retrieve the icon itself.
 	Icon string `json:"icon"`
 
+	// The hash of the guild's icon, returned when in a guild template.
+	IconHash string `json:"icon_hash"`
+
 	// The voice region of the guild.
 	Region string `json:"region"`
 
