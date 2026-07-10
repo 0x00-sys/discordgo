@@ -74,6 +74,60 @@ func TestStateOnInterfaceRejectsMalformedMemberEvents(t *testing.T) {
 	}
 }
 
+func TestStateOnInterfaceRejectsMalformedMessageEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{
+			name:  "message create missing message",
+			event: &MessageCreate{},
+		},
+		{
+			name:  "message update missing message",
+			event: &MessageUpdate{},
+		},
+		{
+			name:  "message delete missing message",
+			event: &MessageDelete{},
+		},
+		{
+			name:  "nil message create",
+			event: (*MessageCreate)(nil),
+		},
+		{
+			name:  "nil message update",
+			event: (*MessageUpdate)(nil),
+		},
+		{
+			name:  "nil message delete",
+			event: (*MessageDelete)(nil),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			state.MaxMessageCount = 1
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
+func TestMessageRemoveRejectsNilMessage(t *testing.T) {
+	state := NewState()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("MessageRemove panicked: %v", r)
+		}
+	}()
+	if err := state.MessageRemove(nil); !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("MessageRemove returned error %v, want %v", err, ErrStateInvalidData)
+	}
+}
+
 func TestStateOnInterfaceRejectsMalformedVoiceStateEvent(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -282,6 +336,35 @@ func TestSessionOnEventHandlesNullVoiceStateDispatch(t *testing.T) {
 	_, err = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"VOICE_STATE_UPDATE","d":null}`))
 	if err != nil {
 		t.Fatalf("onEvent returned error: %v", err)
+	}
+}
+
+func TestSessionOnEventHandlesNullMessageDispatch(t *testing.T) {
+	tests := []string{
+		"MESSAGE_CREATE",
+		"MESSAGE_UPDATE",
+		"MESSAGE_DELETE",
+	}
+
+	for _, eventType := range tests {
+		t.Run(eventType, func(t *testing.T) {
+			session, err := New("Bot token")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.State.MaxMessageCount = 1
+
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("onEvent panicked: %v", r)
+				}
+			}()
+
+			_, err = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"`+eventType+`","d":null}`))
+			if err != nil {
+				t.Fatalf("onEvent returned error: %v", err)
+			}
+		})
 	}
 }
 
