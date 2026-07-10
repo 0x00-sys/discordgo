@@ -1218,6 +1218,44 @@ func (s *Session) GuildBanDelete(guildID, userID string, options ...RequestOptio
 	return
 }
 
+// GuildBulkBan bans up to 200 users from the guild.
+// guildID : The ID of a Guild.
+// data    : The users to ban and number of seconds of messages to delete.
+func (s *Session) GuildBulkBan(guildID string, data *GuildBulkBanParams, options ...RequestOption) (result *GuildBulkBanResult, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("guild bulk ban data cannot be nil")
+	}
+	if len(data.UserIDs) == 0 {
+		return nil, fmt.Errorf("guild bulk ban user IDs cannot be empty")
+	}
+
+	endpoint := EndpointGuildBulkBan(guildID)
+	body, err := s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &result)
+	if err != nil {
+		result = nil
+		return
+	}
+	if result == nil {
+		err = fmt.Errorf("%w: guild bulk ban response is null", ErrJSONUnmarshal)
+		return
+	}
+	if result.BannedUsers == nil {
+		result = nil
+		err = fmt.Errorf("%w: guild bulk ban response is missing banned users", ErrJSONUnmarshal)
+		return
+	}
+	if result.FailedUsers == nil {
+		result = nil
+		err = fmt.Errorf("%w: guild bulk ban response is missing failed users", ErrJSONUnmarshal)
+	}
+	return
+}
+
 func validateGuildMember(member *Member) error {
 	if member == nil {
 		return fmt.Errorf("%w: guild member response is null", ErrJSONUnmarshal)
