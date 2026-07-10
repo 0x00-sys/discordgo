@@ -56,6 +56,16 @@ type UserPrimaryGuild struct {
 	Badge string `json:"badge"`
 }
 
+// AvatarDecorationData represents the data for a user's avatar decoration.
+// https://discord.com/developers/docs/resources/user#avatar-decoration-data-object
+type AvatarDecorationData struct {
+	// The avatar decoration hash.
+	Asset string `json:"asset"`
+
+	// The ID of the avatar decoration's SKU.
+	SKUID string `json:"sku_id"`
+}
+
 // NameplatePalette represents the background color of a nameplate.
 // https://discord.com/developers/docs/resources/user#nameplate
 type NameplatePalette string
@@ -157,6 +167,9 @@ type User struct {
 	// Only available when the request is authorized via a Bearer token.
 	Flags int `json:"flags"`
 
+	// The data for the user's avatar decoration.
+	AvatarDecorationData *AvatarDecorationData `json:"avatar_decoration_data"`
+
 	// The user's collectibles.
 	Collectibles *Collectibles `json:"collectibles"`
 
@@ -194,6 +207,15 @@ func (u *User) AvatarURL(size string) string {
 		EndpointUserAvatarAnimated(u.ID, u.Avatar),
 		size,
 	)
+}
+
+// AvatarDecorationURL returns the URL of the user's avatar decoration.
+// It returns an empty string if the user has no avatar decoration.
+func (u *User) AvatarDecorationURL() string {
+	if u == nil || u.AvatarDecorationData == nil || u.AvatarDecorationData.Asset == "" {
+		return ""
+	}
+	return EndpointAvatarDecoration(u.AvatarDecorationData.Asset)
 }
 
 // BannerURL returns the URL of the users's banner image.

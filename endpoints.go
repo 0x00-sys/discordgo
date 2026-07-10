@@ -35,15 +35,16 @@ var (
 	EndpointStageInstances = EndpointAPI + "stage-instances"
 	EndpointSKUs           = EndpointAPI + "skus"
 
-	EndpointCDN             = "https://cdn.discordapp.com/"
-	EndpointCDNAttachments  = EndpointCDN + "attachments/"
-	EndpointCDNAvatars      = EndpointCDN + "avatars/"
-	EndpointCDNIcons        = EndpointCDN + "icons/"
-	EndpointCDNSplashes     = EndpointCDN + "splashes/"
-	EndpointCDNChannelIcons = EndpointCDN + "channel-icons/"
-	EndpointCDNBanners      = EndpointCDN + "banners/"
-	EndpointCDNGuilds       = EndpointCDN + "guilds/"
-	EndpointCDNRoleIcons    = EndpointCDN + "role-icons/"
+	EndpointCDN                  = "https://cdn.discordapp.com/"
+	EndpointCDNAttachments       = EndpointCDN + "attachments/"
+	EndpointCDNAvatars           = EndpointCDN + "avatars/"
+	EndpointCDNAvatarDecorations = EndpointCDN + "avatar-decoration-presets/"
+	EndpointCDNIcons             = EndpointCDN + "icons/"
+	EndpointCDNSplashes          = EndpointCDN + "splashes/"
+	EndpointCDNChannelIcons      = EndpointCDN + "channel-icons/"
+	EndpointCDNBanners           = EndpointCDN + "banners/"
+	EndpointCDNGuilds            = EndpointCDN + "guilds/"
+	EndpointCDNRoleIcons         = EndpointCDN + "role-icons/"
 
 	EndpointVoice        = EndpointAPI + "/voice/"
 	EndpointVoiceRegions = EndpointVoice + "regions"
@@ -51,6 +52,7 @@ var (
 	EndpointUser               = func(uID string) string { return EndpointUsers + uID }
 	EndpointUserAvatar         = func(uID, aID string) string { return EndpointCDNAvatars + uID + "/" + aID + ".png" }
 	EndpointUserAvatarAnimated = func(uID, aID string) string { return EndpointCDNAvatars + uID + "/" + aID + ".gif" }
+	EndpointAvatarDecoration   = func(asset string) string { return EndpointCDNAvatarDecorations + asset + ".png" }
 	EndpointDefaultUserAvatar  = func(idx int) string {
 		return EndpointCDN + "embed/avatars/" + strconv.Itoa(idx) + ".png"
 	}

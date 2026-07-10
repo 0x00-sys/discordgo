@@ -1805,6 +1805,9 @@ type Member struct {
 	// The hash of the banner for the guild member, if any.
 	Banner string `json:"banner"`
 
+	// The data for the member's guild avatar decoration.
+	AvatarDecorationData *AvatarDecorationData `json:"avatar_decoration_data"`
+
 	// The member's collectibles.
 	Collectibles *Collectibles `json:"collectibles"`
 
@@ -1850,6 +1853,18 @@ func (m *Member) AvatarURL(size string) string {
 	return avatarURL(m.Avatar, "", EndpointGuildMemberAvatar(m.GuildID, m.User.ID, m.Avatar),
 		EndpointGuildMemberAvatarAnimated(m.GuildID, m.User.ID, m.Avatar), size)
 
+}
+
+// AvatarDecorationURL returns the URL of the member's guild avatar decoration.
+// If the member has none, it returns the user's avatar decoration URL.
+func (m *Member) AvatarDecorationURL() string {
+	if m == nil {
+		return ""
+	}
+	if m.AvatarDecorationData != nil && m.AvatarDecorationData.Asset != "" {
+		return EndpointAvatarDecoration(m.AvatarDecorationData.Asset)
+	}
+	return m.User.AvatarDecorationURL()
 }
 
 // BannerURL returns the URL of the member's banner image.
