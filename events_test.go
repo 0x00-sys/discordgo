@@ -125,6 +125,42 @@ func TestCurrentGatewayEventDispatch(t *testing.T) {
 				})
 			},
 		},
+		{
+			name:    "stage instance create",
+			payload: `{"op":0,"s":7,"t":"STAGE_INSTANCE_CREATE","d":{"id":"stage","guild_id":"guild","channel_id":"channel","topic":"Topic","privacy_level":2}}`,
+			handle: func(t *testing.T, session *Session, called *bool) {
+				session.AddHandler(func(_ *Session, event *StageInstanceEventCreate) {
+					*called = true
+					if event.StageInstance == nil || event.ID != "stage" || event.GuildID != "guild" {
+						t.Fatalf("StageInstanceEventCreate = %#v", event)
+					}
+				})
+			},
+		},
+		{
+			name:    "stage instance update",
+			payload: `{"op":0,"s":8,"t":"STAGE_INSTANCE_UPDATE","d":{"id":"stage","guild_id":"guild","channel_id":"channel","topic":"Updated","privacy_level":2}}`,
+			handle: func(t *testing.T, session *Session, called *bool) {
+				session.AddHandler(func(_ *Session, event *StageInstanceEventUpdate) {
+					*called = true
+					if event.StageInstance == nil || event.ID != "stage" || event.Topic != "Updated" {
+						t.Fatalf("StageInstanceEventUpdate = %#v", event)
+					}
+				})
+			},
+		},
+		{
+			name:    "stage instance delete",
+			payload: `{"op":0,"s":9,"t":"STAGE_INSTANCE_DELETE","d":{"id":"stage","guild_id":"guild","channel_id":"channel","topic":"Topic","privacy_level":2}}`,
+			handle: func(t *testing.T, session *Session, called *bool) {
+				session.AddHandler(func(_ *Session, event *StageInstanceEventDelete) {
+					*called = true
+					if event.StageInstance == nil || event.ID != "stage" || event.ChannelID != "channel" {
+						t.Fatalf("StageInstanceEventDelete = %#v", event)
+					}
+				})
+			},
+		},
 	}
 
 	for _, tt := range tests {
