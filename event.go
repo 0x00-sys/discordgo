@@ -262,14 +262,21 @@ func setGuildIds(g *Guild) {
 func (s *Session) onInterface(i interface{}) {
 	switch t := i.(type) {
 	case *Ready:
+		if t == nil {
+			break
+		}
 		for _, g := range t.Guilds {
 			setGuildIds(g)
 		}
 		s.onReady(t)
 	case *GuildCreate:
-		setGuildIds(t.Guild)
+		if t != nil {
+			setGuildIds(t.Guild)
+		}
 	case *GuildUpdate:
-		setGuildIds(t.Guild)
+		if t != nil {
+			setGuildIds(t.Guild)
+		}
 	case *VoiceServerUpdate:
 		go s.onVoiceServerUpdate(t)
 	case *VoiceStateUpdate:

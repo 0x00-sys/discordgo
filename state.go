@@ -1490,6 +1490,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 
 	r, ok := i.(*Ready)
 	if ok {
+		if r == nil {
+			return ErrStateInvalidData
+		}
 		return s.onReady(se, r)
 	}
 
@@ -1499,11 +1502,17 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 
 	switch t := i.(type) {
 	case *GuildCreate:
+		if t == nil {
+			return ErrStateInvalidData
+		}
 		err = s.GuildAdd(t.Guild)
 	case *GuildUpdate:
+		if t == nil {
+			return ErrStateInvalidData
+		}
 		err = s.GuildAdd(t.Guild)
 	case *GuildDelete:
-		if t.Guild == nil {
+		if t == nil || t.Guild == nil {
 			return ErrStateInvalidData
 		}
 
