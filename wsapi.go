@@ -1306,6 +1306,28 @@ func redactedIdentify(op identifyOp) identifyOp {
 	return op
 }
 
+func (s *Session) reconnectVoiceConnections() {
+	s.RLock()
+	voiceConnections := make([]*VoiceConnection, 0, len(s.VoiceConnections))
+	for _, voice := range s.VoiceConnections {
+		if voice != nil {
+			voiceConnections = append(voiceConnections, voice)
+		}
+	}
+	s.RUnlock()
+
+	for i, voice := range voiceConnections {
+		s.log(LogInformational, "reconnecting voice connection to guild %s", voice.GuildID)
+		go voice.reconnect()
+
+		// This is here just to prevent violently spamming the
+		// voice reconnects.
+		if i < len(voiceConnections)-1 {
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
 func (s *Session) reconnect() {
 
 	s.log(LogInformational, "called")
@@ -1345,17 +1367,7 @@ func (s *Session) reconnect() {
 				// happens.  So we're doing this for now just to improve
 				// stability in those edge cases.
 				if s.ShouldReconnectVoiceOnSessionError {
-					s.RLock()
-					defer s.RUnlock()
-					for _, v := range s.VoiceConnections {
-
-						s.log(LogInformational, "reconnecting voice connection to guild %s", v.GuildID)
-						go v.reconnect()
-
-						// This is here just to prevent violently spamming the
-						// voice reconnects
-						time.Sleep(1 * time.Second)
-					}
+					s.reconnectVoiceConnections()
 				}
 				return
 			}
