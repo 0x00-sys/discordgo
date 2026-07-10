@@ -215,6 +215,7 @@ func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
 		"application_id":"app",
 		"type":2,
 		"data":{"id":"command","name":"launch","type":4},
+		"guild":{"id":"guild","features":["COMMUNITY"],"locale":"en-US"},
 		"channel":{"id":"channel","type":0,"guild_id":"guild","name":"general"},
 		"attachment_size_limit":10485760,
 		"token":"token",
@@ -228,6 +229,9 @@ func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
 	}
 	if interaction.Channel == nil || interaction.Channel.ID != "channel" || interaction.Channel.GuildID != "guild" || interaction.Channel.Name != "general" {
 		t.Fatalf("Channel = %#v, want decoded channel metadata", interaction.Channel)
+	}
+	if interaction.Guild == nil || interaction.Guild.ID != "guild" || interaction.Guild.Locale != EnglishUS || len(interaction.Guild.Features) != 1 || interaction.Guild.Features[0] != GuildFeatureCommunity {
+		t.Fatalf("Guild = %#v, want decoded guild metadata", interaction.Guild)
 	}
 	data, ok := interaction.Data.(ApplicationCommandInteractionData)
 	if !ok {
