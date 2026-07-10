@@ -1218,6 +1218,17 @@ func (s *Session) GuildBanDelete(guildID, userID string, options ...RequestOptio
 	return
 }
 
+func validateGuildMember(member *Member) error {
+	if member == nil {
+		return fmt.Errorf("%w: guild member response is null", ErrJSONUnmarshal)
+	}
+	if member.User == nil {
+		return fmt.Errorf("%w: guild member response is missing user", ErrJSONUnmarshal)
+	}
+
+	return nil
+}
+
 // GuildMembers returns a list of members for a guild.
 // guildID  : The ID of a Guild.
 // after    : The id of the member to return members after
@@ -1246,8 +1257,20 @@ func (s *Session) GuildMembers(guildID string, after string, limit int, options 
 	}
 
 	err = unmarshal(body, &st)
+	if err != nil {
+		st = nil
+		return
+	}
+	if st == nil {
+		err = fmt.Errorf("%w: guild members response is null", ErrJSONUnmarshal)
+		return
+	}
 	// The returned objects don't have the GuildID attribute so we will set it here.
 	for _, member := range st {
+		if err = validateGuildMember(member); err != nil {
+			st = nil
+			return
+		}
 		member.GuildID = guildID
 	}
 	return
@@ -1273,8 +1296,20 @@ func (s *Session) GuildMembersSearch(guildID, query string, limit int, options .
 	}
 
 	err = unmarshal(body, &st)
+	if err != nil {
+		st = nil
+		return
+	}
+	if st == nil {
+		err = fmt.Errorf("%w: guild members response is null", ErrJSONUnmarshal)
+		return
+	}
 	// The returned objects don't have the GuildID attribute so we will set it here.
 	for _, member := range st {
+		if err = validateGuildMember(member); err != nil {
+			st = nil
+			return
+		}
 		member.GuildID = guildID
 	}
 	return
@@ -1366,6 +1401,14 @@ func (s *Session) GuildMember(guildID, userID string, options ...RequestOption) 
 	}
 
 	err = unmarshal(body, &st)
+	if err != nil {
+		st = nil
+		return
+	}
+	if err = validateGuildMember(st); err != nil {
+		st = nil
+		return
+	}
 	// The returned object doesn't have the GuildID attribute so we will set it here.
 	st.GuildID = guildID
 	return

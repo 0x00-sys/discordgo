@@ -165,6 +165,131 @@ func TestGuildMembersSearchSetsGuildID(t *testing.T) {
 	}
 }
 
+func TestGuildMemberMethodsRejectMalformedResponses(t *testing.T) {
+	tests := []struct {
+		name    string
+		method  string
+		payload string
+	}{
+		{name: "get null member", method: "get", payload: `null`},
+		{name: "get malformed JSON", method: "get", payload: `{`},
+		{name: "get missing user", method: "get", payload: `{}`},
+		{name: "list null response", method: "list", payload: `null`},
+		{name: "list partial JSON", method: "list", payload: `[{"user":{"id":"user"}},`},
+		{name: "list null member", method: "list", payload: `[null]`},
+		{name: "list missing user", method: "list", payload: `[{}]`},
+		{name: "search null response", method: "search", payload: `null`},
+		{name: "search partial JSON", method: "search", payload: `[{"user":{"id":"user"}},`},
+		{name: "search null member", method: "search", payload: `[null]`},
+		{name: "search missing user", method: "search", payload: `[{}]`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.payload)),
+					Request:    r,
+				}, nil
+			})
+
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Errorf("guild member method panicked: %v", recovered)
+				}
+			}()
+
+			var resultNonNil bool
+			switch tt.method {
+			case "get":
+				member, callErr := session.GuildMember("guild", "user")
+				resultNonNil, err = member != nil, callErr
+			case "list":
+				members, callErr := session.GuildMembers("guild", "", 1000)
+				resultNonNil, err = members != nil, callErr
+			case "search":
+				members, callErr := session.GuildMembersSearch("guild", "user", 1000)
+				resultNonNil, err = members != nil, callErr
+			}
+
+			if !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("guild member method error = %v, want ErrJSONUnmarshal", err)
+			}
+			if resultNonNil {
+				t.Fatal("guild member method returned malformed data with an error")
+			}
+		})
+	}
+}
+
+func TestGuildMemberMethodsAcceptValidResponses(t *testing.T) {
+	getMember := func(session *Session) ([]*Member, error) {
+		member, err := session.GuildMember("guild", "user")
+		if member == nil {
+			return nil, err
+		}
+		return []*Member{member}, err
+	}
+	listMembers := func(session *Session) ([]*Member, error) {
+		return session.GuildMembers("guild", "", 1000)
+	}
+	searchMembers := func(session *Session) ([]*Member, error) {
+		return session.GuildMembersSearch("guild", "user", 1000)
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+		call    func(*Session) ([]*Member, error)
+		want    int
+	}{
+		{name: "get member", payload: `{"user":{"id":"user"}}`, call: getMember, want: 1},
+		{name: "list members", payload: `[{"user":{"id":"user"}}]`, call: listMembers, want: 1},
+		{name: "search members", payload: `[{"user":{"id":"user"}}]`, call: searchMembers, want: 1},
+		{name: "empty member list", payload: `[]`, call: listMembers},
+		{name: "empty member search", payload: `[]`, call: searchMembers},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.payload)),
+					Request:    r,
+				}, nil
+			})
+
+			members, err := tt.call(session)
+			if err != nil {
+				t.Fatalf("guild member method returned error: %v", err)
+			}
+			if members == nil {
+				t.Fatal("guild member method returned a nil result")
+			}
+			if len(members) != tt.want {
+				t.Fatalf("len(members) = %d, want %d", len(members), tt.want)
+			}
+			if tt.want == 1 && (members[0].GuildID != "guild" || members[0].User.ID != "user") {
+				t.Fatalf("member = %#v, want guild and user IDs populated", members[0])
+			}
+		})
+	}
+}
+
 func TestGuildMessagesSearchBuildsQuery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
