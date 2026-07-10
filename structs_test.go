@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMember_DisplayName(t *testing.T) {
@@ -101,6 +102,37 @@ func TestMemberHelpersPreserveCompleteMember(t *testing.T) {
 	}
 	if got := member.DisplayName(); got != "Server" {
 		t.Fatalf("DisplayName = %q, want %q", got, "Server")
+	}
+}
+
+func TestGuildIncidentsData(t *testing.T) {
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{
+		"id":"guild",
+		"incidents_data":{
+			"invites_disabled_until":"2026-07-11T10:00:00Z",
+			"dms_disabled_until":null,
+			"dm_spam_detected_at":"2026-07-10T09:30:00.123Z",
+			"raid_detected_at":"2026-07-10T09:00:00+02:00"
+		}
+	}`), &guild); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+
+	if guild.IncidentsData == nil {
+		t.Fatal("IncidentsData is nil")
+	}
+	if guild.IncidentsData.InvitesDisabledUntil == nil || !guild.IncidentsData.InvitesDisabledUntil.Equal(time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("InvitesDisabledUntil = %v", guild.IncidentsData.InvitesDisabledUntil)
+	}
+	if guild.IncidentsData.DMsDisabledUntil != nil {
+		t.Fatalf("DMsDisabledUntil = %v, want nil", guild.IncidentsData.DMsDisabledUntil)
+	}
+	if guild.IncidentsData.DMSpamDetectedAt == nil || !guild.IncidentsData.DMSpamDetectedAt.Equal(time.Date(2026, 7, 10, 9, 30, 0, 123000000, time.UTC)) {
+		t.Fatalf("DMSpamDetectedAt = %v", guild.IncidentsData.DMSpamDetectedAt)
+	}
+	if guild.IncidentsData.RaidDetectedAt == nil || !guild.IncidentsData.RaidDetectedAt.Equal(time.Date(2026, 7, 10, 7, 0, 0, 0, time.UTC)) {
+		t.Fatalf("RaidDetectedAt = %v", guild.IncidentsData.RaidDetectedAt)
 	}
 }
 
