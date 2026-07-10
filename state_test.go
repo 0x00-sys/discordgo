@@ -2230,6 +2230,52 @@ func TestChannelRemoveReplacesParentGuildPointer(t *testing.T) {
 	}
 }
 
+func TestChannelRemoveSkipsNilCachedChannels(t *testing.T) {
+	dm := &Channel{ID: "dm", Type: ChannelTypeDM}
+	channel := &Channel{ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText}
+	thread := &Channel{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread}
+
+	state := NewState()
+	if err := state.OnInterface(&Session{StateEnabled: true}, &Ready{
+		Guilds: []*Guild{{
+			ID:       "guild",
+			Channels: []*Channel{nil, channel},
+			Threads:  []*Channel{nil, thread},
+		}},
+		PrivateChannels: []*Channel{nil, dm},
+	}); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ChannelRemove panicked: %v", r)
+		}
+	}()
+	for _, cached := range []*Channel{dm, channel, thread} {
+		if err := state.ChannelRemove(cached); err != nil {
+			t.Fatalf("ChannelRemove(%q) returned error: %v", cached.ID, err)
+		}
+		if _, err := state.Channel(cached.ID); !errors.Is(err, ErrStateNotFound) {
+			t.Fatalf("Channel(%q) returned error %v, want %v", cached.ID, err, ErrStateNotFound)
+		}
+	}
+
+	if len(state.PrivateChannels) != 1 || state.PrivateChannels[0] != nil {
+		t.Fatalf("PrivateChannels = %#v, want one nil entry", state.PrivateChannels)
+	}
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.Channels) != 1 || guild.Channels[0] != nil {
+		t.Fatalf("Channels = %#v, want one nil entry", guild.Channels)
+	}
+	if len(guild.Threads) != 1 || guild.Threads[0] != nil {
+		t.Fatalf("Threads = %#v, want one nil entry", guild.Threads)
+	}
+}
+
 func TestChannelAddDoesNotRaceReturnedGuildChannels(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{

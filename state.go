@@ -872,7 +872,7 @@ func (s *State) ChannelRemove(channel *Channel) error {
 
 	if cached.Type == ChannelTypeDM || cached.Type == ChannelTypeGroupDM {
 		for i, c := range s.PrivateChannels {
-			if c.ID == channel.ID {
+			if c != nil && c.ID == channel.ID {
 				s.PrivateChannels = append(s.PrivateChannels[:i], s.PrivateChannels[i+1:]...)
 				break
 			}
@@ -889,14 +889,14 @@ func (s *State) ChannelRemove(channel *Channel) error {
 	updated := copyGuild(guild)
 	if cached.IsThread() {
 		for i, t := range guild.Threads {
-			if t.ID == channel.ID {
+			if t != nil && t.ID == channel.ID {
 				updated.Threads = append(updated.Threads[:i], updated.Threads[i+1:]...)
 				break
 			}
 		}
 	} else {
 		for i, c := range guild.Channels {
-			if c.ID == channel.ID {
+			if c != nil && c.ID == channel.ID {
 				updated.Channels = append(updated.Channels[:i], updated.Channels[i+1:]...)
 				break
 			}
