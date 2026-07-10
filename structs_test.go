@@ -183,6 +183,16 @@ func TestGuildMaxStageVideoChannelUsers(t *testing.T) {
 	}
 }
 
+func TestGuildPremiumProgressBarEnabled(t *testing.T) {
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{"id":"guild","premium_progress_bar_enabled":true}`), &guild); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if !guild.PremiumProgressBarEnabled {
+		t.Fatal("PremiumProgressBarEnabled is false, want true")
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
