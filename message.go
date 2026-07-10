@@ -247,6 +247,9 @@ type Message struct {
 	// Data for the role subscription purchase or renewal that prompted the message.
 	RoleSubscriptionData *MessageRoleSubscriptionData `json:"role_subscription_data"`
 
+	// Data for users, members, channels, roles, and attachments referenced in the message.
+	Resolved *ComponentInteractionDataResolved `json:"resolved"`
+
 	// A poll object.
 	Poll *Poll `json:"poll"`
 

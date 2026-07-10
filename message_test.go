@@ -608,6 +608,60 @@ func TestMessageRoleSubscriptionDataNullableFields(t *testing.T) {
 	}
 }
 
+func TestMessageResolvedDataJSON(t *testing.T) {
+	data := []byte(`{
+		"resolved":{
+			"users":{"100":{"id":"100","username":"User"}},
+			"members":{"100":{"nick":"Nick","roles":["200"],"permissions":"8"}},
+			"roles":{"200":{"id":"200","name":"Role","permissions":"8"}},
+			"channels":{"300":{"id":"300","name":"channel","type":0,"permissions":"8"}},
+			"attachments":{"400":{"id":"400","filename":"file.txt","size":1,"url":"https://example.com/file.txt","proxy_url":"https://example.com/file.txt"}}
+		}
+	}`)
+
+	var message Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Resolved == nil {
+		t.Fatal("Resolved = nil")
+	}
+	resolved := message.Resolved
+	if resolved.Users["100"] == nil || resolved.Users["100"].ID != "100" {
+		t.Fatalf("resolved users = %#v", resolved.Users)
+	}
+	if resolved.Members["100"] == nil || resolved.Members["100"].User != resolved.Users["100"] {
+		t.Fatalf("resolved member user = %#v, want linked user", resolved.Members["100"])
+	}
+	if resolved.Roles["200"] == nil || resolved.Roles["200"].ID != "200" {
+		t.Fatalf("resolved roles = %#v", resolved.Roles)
+	}
+	if resolved.Channels["300"] == nil || resolved.Channels["300"].ID != "300" {
+		t.Fatalf("resolved channels = %#v", resolved.Channels)
+	}
+	if resolved.Attachments["400"] == nil || resolved.Attachments["400"].ID != "400" {
+		t.Fatalf("resolved attachments = %#v", resolved.Attachments)
+	}
+}
+
+func TestMessageResolvedDataNullableFields(t *testing.T) {
+	message := Message{Resolved: &ComponentInteractionDataResolved{Users: map[string]*User{"stale": {ID: "stale"}}}}
+	if err := json.Unmarshal([]byte(`{"resolved":null}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Resolved != nil {
+		t.Fatalf("Resolved = %#v after null, want nil", message.Resolved)
+	}
+
+	message.Resolved = &ComponentInteractionDataResolved{Users: map[string]*User{"stale": {ID: "stale"}}}
+	if err := json.Unmarshal([]byte(`{}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Resolved != nil {
+		t.Fatalf("Resolved = %#v after omission, want nil", message.Resolved)
+	}
+}
+
 func TestBaseThemeTypeValues(t *testing.T) {
 	tests := []struct {
 		theme BaseThemeType
