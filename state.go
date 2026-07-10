@@ -788,6 +788,9 @@ func (s *State) ChannelAdd(channel *Channel) error {
 	if s == nil {
 		return ErrNilState
 	}
+	if channel == nil {
+		return ErrStateInvalidData
+	}
 
 	s.Lock()
 	defer s.Unlock()
@@ -839,6 +842,9 @@ func (s *State) ChannelAdd(channel *Channel) error {
 func (s *State) ChannelRemove(channel *Channel) error {
 	if s == nil {
 		return ErrNilState
+	}
+	if channel == nil {
+		return ErrStateInvalidData
 	}
 
 	s.Lock()
@@ -1674,14 +1680,14 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *ChannelCreate:
 		if s.TrackChannels {
-			if t.Channel == nil {
+			if t == nil || t.Channel == nil {
 				return ErrStateInvalidData
 			}
 			err = s.ChannelAdd(t.Channel)
 		}
 	case *ChannelUpdate:
 		if s.TrackChannels {
-			if t.Channel == nil {
+			if t == nil || t.Channel == nil {
 				return ErrStateInvalidData
 			}
 			old, err := s.Channel(t.ID)
@@ -1693,7 +1699,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *ChannelDelete:
 		if s.TrackChannels {
-			if t.Channel == nil {
+			if t == nil || t.Channel == nil {
 				return ErrStateInvalidData
 			}
 			old, err := s.Channel(t.ID)
@@ -1705,14 +1711,14 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *ThreadCreate:
 		if s.TrackThreads {
-			if t.Channel == nil {
+			if t == nil || t.Channel == nil {
 				return ErrStateInvalidData
 			}
 			err = s.ChannelAdd(t.Channel)
 		}
 	case *ThreadUpdate:
 		if s.TrackThreads {
-			if t.Channel == nil {
+			if t == nil || t.Channel == nil {
 				return ErrStateInvalidData
 			}
 			old, err := s.Channel(t.ID)
@@ -1724,7 +1730,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 	case *ThreadDelete:
 		if s.TrackThreads {
-			if t.Channel == nil {
+			if t == nil || t.Channel == nil {
 				return ErrStateInvalidData
 			}
 			old, err := s.Channel(t.ID)

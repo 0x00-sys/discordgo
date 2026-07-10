@@ -128,6 +128,29 @@ func TestMessageRemoveRejectsNilMessage(t *testing.T) {
 	}
 }
 
+func TestChannelHelpersRejectNilChannel(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*State) error
+	}{
+		{name: "add", call: func(state *State) error { return state.ChannelAdd(nil) }},
+		{name: "remove", call: func(state *State) error { return state.ChannelRemove(nil) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("channel helper panicked: %v", r)
+				}
+			}()
+			if err := tt.call(NewState()); !errors.Is(err, ErrStateInvalidData) {
+				t.Fatalf("channel helper returned error %v, want %v", err, ErrStateInvalidData)
+			}
+		})
+	}
+}
+
 func TestStateOnInterfaceRejectsMalformedVoiceStateEvent(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -182,24 +205,48 @@ func TestStateOnInterfaceRejectsMalformedRoleChannelThreadEvents(t *testing.T) {
 			event: &ChannelCreate{},
 		},
 		{
+			name:  "nil channel create",
+			event: (*ChannelCreate)(nil),
+		},
+		{
 			name:  "channel update missing channel",
 			event: &ChannelUpdate{},
+		},
+		{
+			name:  "nil channel update",
+			event: (*ChannelUpdate)(nil),
 		},
 		{
 			name:  "channel delete missing channel",
 			event: &ChannelDelete{},
 		},
 		{
+			name:  "nil channel delete",
+			event: (*ChannelDelete)(nil),
+		},
+		{
 			name:  "thread create missing thread",
 			event: &ThreadCreate{},
+		},
+		{
+			name:  "nil thread create",
+			event: (*ThreadCreate)(nil),
 		},
 		{
 			name:  "thread update missing thread",
 			event: &ThreadUpdate{},
 		},
 		{
+			name:  "nil thread update",
+			event: (*ThreadUpdate)(nil),
+		},
+		{
 			name:  "thread delete missing thread",
 			event: &ThreadDelete{},
+		},
+		{
+			name:  "nil thread delete",
+			event: (*ThreadDelete)(nil),
 		},
 		{
 			name:  "thread member update missing member",
