@@ -233,6 +233,13 @@ const (
 	InteractionContextPrivateChannel InteractionContextType = 2
 )
 
+// InteractionGuild represents the partial guild object included with an interaction.
+type InteractionGuild struct {
+	ID       string         `json:"id"`
+	Features []GuildFeature `json:"features"`
+	Locale   Locale         `json:"locale"`
+}
+
 // Interaction represents data of an interaction.
 type Interaction struct {
 	ID        string          `json:"id"`
@@ -241,6 +248,9 @@ type Interaction struct {
 	Data      InteractionData `json:"data"`
 	GuildID   string          `json:"guild_id"`
 	ChannelID string          `json:"channel_id"`
+
+	// The partial guild object where this interaction was sent.
+	Guild *InteractionGuild `json:"guild"`
 
 	// The partial channel object where this interaction was sent.
 	Channel *Channel `json:"channel"`
