@@ -348,12 +348,13 @@ func (s *Session) openGatewayControlEvent(messageType int, message []byte, expec
 	case 9:
 		var resumable bool
 		if err := json.Unmarshal(e.RawData, &resumable); err != nil {
+			// The session cannot safely be resumed when Discord's answer
+			// cannot be interpreted, so force the next attempt to identify.
+			s.resetGatewayResumeStateLocked()
 			return fmt.Errorf("error unmarshalling invalid session event, %s", err)
 		}
 		if !resumable {
-			s.resumeGatewayURL = ""
-			s.sessionID = ""
-			atomic.StoreInt64(s.sequence, 0)
+			s.resetGatewayResumeStateLocked()
 		}
 		return fmt.Errorf("received Op 9 invalid session during open")
 	}
@@ -976,12 +977,15 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		s.closeWithCode(websocket.CloseServiceRestart, false)
 
 		var resumable bool
-		if err := json.Unmarshal(e.RawData, &resumable); err != nil {
+		err = json.Unmarshal(e.RawData, &resumable)
+		if err != nil {
 			s.log(LogError, "error unmarshalling invalid session event, %s", err)
-			return e, err
 		}
 
-		if !resumable {
+		// If Discord sends an invalid payload, discard the session rather
+		// than leaving the gateway closed or repeatedly attempting a resume
+		// that cannot be known to be valid.
+		if err != nil || !resumable {
 			s.log(LogInformational, "Gateway session is not resumable, discarding its information")
 			s.Lock()
 			s.resumeGatewayURL = ""
@@ -991,7 +995,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		}
 
 		s.reconnect()
-		return e, nil
+		return e, err
 	}
 
 	if e.Operation == 10 {

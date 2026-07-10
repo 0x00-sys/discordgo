@@ -119,6 +119,35 @@ func TestOnEventRejectsNullEvent(t *testing.T) {
 	}
 }
 
+func TestOnEventReconnectsAfterMalformedInvalidSession(t *testing.T) {
+	var attempts int32
+	server := newGatewayCloseAfterIdentifyTestServer(t, 4014, &attempts)
+	s, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	s.sessionID = "old-session"
+	s.resumeGatewayURL = s.gateway
+	atomic.StoreInt64(s.sequence, 42)
+
+	_, err = s.onEvent(websocket.TextMessage, []byte(`{"op":9,"d":{"unexpected":true}}`))
+	if err == nil {
+		t.Fatal("onEvent() error = nil, want malformed invalid session error")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("gateway reconnect attempts = %d, want 1", got)
+	}
+	if s.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty", s.sessionID)
+	}
+	if s.resumeGatewayURL != "" {
+		t.Fatalf("resumeGatewayURL = %q, want empty", s.resumeGatewayURL)
+	}
+	if sequence := atomic.LoadInt64(s.sequence); sequence != 0 {
+		t.Fatalf("sequence = %d, want 0", sequence)
+	}
+}
+
 func TestOnVoiceStateUpdateHandlesMalformedEvent(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -199,6 +228,35 @@ func TestChannelVoiceJoinReplacesDisconnectingConnection(t *testing.T) {
 
 func TestOpenReturnsOnInvalidSessionDuringOpen(t *testing.T) {
 	server := newGatewayOpenTestServer(t, []byte(`{"op":9,"d":false}`))
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.sessionID = "old-session"
+	session.resumeGatewayURL = session.gateway
+	atomic.StoreInt64(session.sequence, 42)
+
+	err = openWithTimeout(t, session)
+	if err == nil {
+		t.Fatal("expected Open to return an invalid session error")
+	}
+
+	if session.wsConn != nil {
+		t.Fatal("Open returned an error without clearing the websocket")
+	}
+	if session.sessionID != "" {
+		t.Fatalf("sessionID = %q, want empty", session.sessionID)
+	}
+	if session.resumeGatewayURL != "" {
+		t.Fatalf("resumeGatewayURL = %q, want empty", session.resumeGatewayURL)
+	}
+	if sequence := atomic.LoadInt64(session.sequence); sequence != 0 {
+		t.Fatalf("sequence = %d, want 0", sequence)
+	}
+}
+
+func TestOpenClearsResumeStateOnMalformedInvalidSessionDuringOpen(t *testing.T) {
+	server := newGatewayOpenTestServer(t, []byte(`{"op":9,"d":{"unexpected":true}}`))
 	session, err := newGatewayOpenTestSession(server, "Bot test")
 	if err != nil {
 		t.Fatalf("error creating session: %v", err)
