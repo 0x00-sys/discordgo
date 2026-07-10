@@ -1130,6 +1130,9 @@ type Guild struct {
 	// The maximum amount of users in a video channel
 	MaxVideoChannelUsers int `json:"max_video_channel_users"`
 
+	// The maximum amount of users in a stage video channel.
+	MaxStageVideoChannelUsers int `json:"max_stage_video_channel_users"`
+
 	// Approximate number of members in this guild, returned from the GET /guild/<id> endpoint when with_counts is true
 	ApproximateMemberCount int `json:"approximate_member_count"`
 

@@ -173,6 +173,16 @@ func TestGuildSafetyAlertsChannelID(t *testing.T) {
 	}
 }
 
+func TestGuildMaxStageVideoChannelUsers(t *testing.T) {
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{"id":"guild","max_stage_video_channel_users":300}`), &guild); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if guild.MaxStageVideoChannelUsers != 300 {
+		t.Fatalf("MaxStageVideoChannelUsers = %d, want 300", guild.MaxStageVideoChannelUsers)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
