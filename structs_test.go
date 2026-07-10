@@ -391,6 +391,31 @@ func TestGuildCreateSoundboardSounds(t *testing.T) {
 	}
 }
 
+func TestGuildAuditLogReferenceCollections(t *testing.T) {
+	var auditLog GuildAuditLog
+	if err := json.Unmarshal([]byte(`{
+		"application_commands":[{"id":"command","application_id":"application","name":"ping","description":"Ping"}],
+		"auto_moderation_rules":[{"id":"rule","guild_id":"guild","name":"Spam"}],
+		"guild_scheduled_events":[{"id":"event","guild_id":"guild","name":"Town Hall"}],
+		"threads":[{"id":"thread","guild_id":"guild","type":11,"name":"archived"}]
+	}`), &auditLog); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+
+	if len(auditLog.ApplicationCommands) != 1 || auditLog.ApplicationCommands[0] == nil || auditLog.ApplicationCommands[0].ID != "command" {
+		t.Fatalf("ApplicationCommands = %#v", auditLog.ApplicationCommands)
+	}
+	if len(auditLog.AutoModerationRules) != 1 || auditLog.AutoModerationRules[0] == nil || auditLog.AutoModerationRules[0].ID != "rule" {
+		t.Fatalf("AutoModerationRules = %#v", auditLog.AutoModerationRules)
+	}
+	if len(auditLog.GuildScheduledEvents) != 1 || auditLog.GuildScheduledEvents[0] == nil || auditLog.GuildScheduledEvents[0].ID != "event" {
+		t.Fatalf("GuildScheduledEvents = %#v", auditLog.GuildScheduledEvents)
+	}
+	if len(auditLog.Threads) != 1 || auditLog.Threads[0] == nil || auditLog.Threads[0].ID != "thread" {
+		t.Fatalf("Threads = %#v", auditLog.Threads)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil

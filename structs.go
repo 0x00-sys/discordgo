@@ -2196,10 +2196,14 @@ type GuildEmbed struct {
 // A GuildAuditLog stores data for a guild audit log.
 // https://discord.com/developers/docs/resources/audit-log#audit-log-object-audit-log-structure
 type GuildAuditLog struct {
-	Webhooks        []*Webhook       `json:"webhooks,omitempty"`
-	Users           []*User          `json:"users,omitempty"`
-	AuditLogEntries []*AuditLogEntry `json:"audit_log_entries"`
-	Integrations    []*Integration   `json:"integrations"`
+	ApplicationCommands  []*ApplicationCommand  `json:"application_commands"`
+	Webhooks             []*Webhook             `json:"webhooks,omitempty"`
+	Users                []*User                `json:"users,omitempty"`
+	AuditLogEntries      []*AuditLogEntry       `json:"audit_log_entries"`
+	AutoModerationRules  []*AutoModerationRule  `json:"auto_moderation_rules"`
+	Integrations         []*Integration         `json:"integrations"`
+	Threads              []*Channel             `json:"threads"`
+	GuildScheduledEvents []*GuildScheduledEvent `json:"guild_scheduled_events"`
 }
 
 // AuditLogEntry for a GuildAuditLog
