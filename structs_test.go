@@ -38,6 +38,72 @@ func TestMember_DisplayName(t *testing.T) {
 	})
 }
 
+func TestMemberHelpersHandlePartialMember(t *testing.T) {
+	member := &Member{
+		Nick:   "Server",
+		Avatar: "guild-avatar",
+		Banner: "guild-banner",
+	}
+
+	if got := member.Mention(); got != "" {
+		t.Fatalf("Mention = %q, want empty", got)
+	}
+	if got := member.AvatarURL(""); got != "" {
+		t.Fatalf("AvatarURL = %q, want empty", got)
+	}
+	if got := member.BannerURL(""); got != "" {
+		t.Fatalf("BannerURL = %q, want empty", got)
+	}
+	if got := member.DisplayName(); got != "Server" {
+		t.Fatalf("DisplayName = %q, want %q", got, "Server")
+	}
+
+	member.Nick = ""
+	if got := member.DisplayName(); got != "" {
+		t.Fatalf("DisplayName without user or nickname = %q, want empty", got)
+	}
+}
+
+func TestMemberHelpersHandleNilMember(t *testing.T) {
+	var member *Member
+
+	if got := member.Mention(); got != "" {
+		t.Fatalf("Mention = %q, want empty", got)
+	}
+	if got := member.AvatarURL(""); got != "" {
+		t.Fatalf("AvatarURL = %q, want empty", got)
+	}
+	if got := member.BannerURL(""); got != "" {
+		t.Fatalf("BannerURL = %q, want empty", got)
+	}
+	if got := member.DisplayName(); got != "" {
+		t.Fatalf("DisplayName = %q, want empty", got)
+	}
+}
+
+func TestMemberHelpersPreserveCompleteMember(t *testing.T) {
+	member := &Member{
+		GuildID: "guild",
+		Nick:    "Server",
+		Avatar:  "guild-avatar",
+		Banner:  "guild-banner",
+		User:    &User{ID: "user"},
+	}
+
+	if got := member.Mention(); got != "<@!user>" {
+		t.Fatalf("Mention = %q, want %q", got, "<@!user>")
+	}
+	if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("guild", "user", "guild-avatar"); got != want {
+		t.Fatalf("AvatarURL = %q, want %q", got, want)
+	}
+	if got, want := member.BannerURL(""), EndpointGuildMemberBanner("guild", "user", "guild-banner"); got != want {
+		t.Fatalf("BannerURL = %q, want %q", got, want)
+	}
+	if got := member.DisplayName(); got != "Server" {
+		t.Fatalf("DisplayName = %q, want %q", got, "Server")
+	}
+}
+
 func TestActivityUnmarshalApplicationID(t *testing.T) {
 	tests := []struct {
 		name string
