@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -697,6 +698,45 @@ func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
 	}
 }
 
+func newGatewayTestConnection(t *testing.T) (*websocket.Conn, *websocket.Conn) {
+	t.Helper()
+
+	peerReady := make(chan *websocket.Conn, 1)
+	done := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade() error = %v", err)
+			return
+		}
+		peerReady <- conn
+		<-done
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(done) })
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	peer := <-peerReady
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = peer.Close()
+	})
+
+	return conn, peer
+}
+
+func closeChannel(channel chan struct{}) {
+	select {
+	case <-channel:
+	default:
+		close(channel)
+	}
+}
+
 func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -733,6 +773,209 @@ func TestHeartbeatDoesNotReconnectAfterListeningClosed(t *testing.T) {
 	if disconnected {
 		t.Fatal("heartbeat emitted disconnect after listening channel was closed")
 	}
+}
+
+func TestListenDoesNotCloseReplacementConnection(t *testing.T) {
+	oldConn, oldPeer := newGatewayTestConnection(t)
+	newConn, _ := newGatewayTestConnection(t)
+	oldListening := make(chan interface{})
+	newListening := make(chan interface{})
+
+	oldLogger := Logger
+	defer func() { Logger = oldLogger }()
+
+	logReached := make(chan struct{})
+	releaseLog := make(chan struct{})
+	defer closeChannel(releaseLog)
+	var blockLog sync.Once
+	Logger = func(msgL, caller int, format string, a ...interface{}) {
+		if strings.Contains(fmt.Sprintf(format, a...), "error reading from gateway") {
+			blockLog.Do(func() {
+				close(logReached)
+				<-releaseLog
+			})
+		}
+	}
+
+	session := &Session{
+		LogLevel:               LogWarning,
+		ShouldReconnectOnError: false,
+		SyncEvents:             true,
+		sequence:               new(int64),
+		wsConn:                 oldConn,
+		listening:              oldListening,
+	}
+
+	disconnected := false
+	session.AddHandler(func(*Session, *Disconnect) {
+		disconnected = true
+	})
+
+	done := make(chan struct{})
+	go func() {
+		session.listen(oldConn, oldListening)
+		close(done)
+	}()
+
+	if err := oldPeer.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4007, "invalid sequence"), time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("old peer WriteControl returned error: %v", err)
+	}
+
+	select {
+	case <-logReached:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not reach gateway read error")
+	}
+
+	session.Lock()
+	session.DataReady = true
+	session.resumeGatewayURL = "wss://replacement.gateway"
+	session.sessionID = "replacement-session"
+	atomic.StoreInt64(session.sequence, 42)
+	session.wsConn = newConn
+	session.listening = newListening
+	session.Unlock()
+	close(releaseLog)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not return")
+	}
+
+	session.RLock()
+	gotConn := session.wsConn
+	gotListening := session.listening
+	gotDataReady := session.DataReady
+	gotResumeGatewayURL := session.resumeGatewayURL
+	gotSessionID := session.sessionID
+	session.RUnlock()
+	if gotConn != newConn {
+		t.Fatal("stale listener replaced the current gateway connection")
+	}
+	if gotListening != newListening {
+		t.Fatal("stale listener replaced the current listening channel")
+	}
+	if !gotDataReady {
+		t.Fatal("stale listener marked the replacement connection not ready")
+	}
+	if gotResumeGatewayURL != "wss://replacement.gateway" || gotSessionID != "replacement-session" || atomic.LoadInt64(session.sequence) != 42 {
+		t.Fatal("stale listener reset the replacement gateway session")
+	}
+	select {
+	case <-newListening:
+		t.Fatal("stale listener closed the replacement listening channel")
+	default:
+	}
+	if disconnected {
+		t.Fatal("stale listener emitted a disconnect for the replacement connection")
+	}
+	if err := newConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("replacement connection WriteControl returned error: %v", err)
+	}
+
+	close(oldListening)
+	close(newListening)
+}
+
+func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter
+	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
+	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+
+	oldConn, _ := newGatewayTestConnection(t)
+	newConn, _ := newGatewayTestConnection(t)
+	oldListening := make(chan interface{})
+	newListening := make(chan interface{})
+
+	oldLogger := Logger
+	defer func() { Logger = oldLogger }()
+
+	logReached := make(chan struct{})
+	releaseLog := make(chan struct{})
+	defer closeChannel(releaseLog)
+	var blockLog sync.Once
+	Logger = func(msgL, caller int, format string, a ...interface{}) {
+		if strings.Contains(fmt.Sprintf(format, a...), "error sending heartbeat") {
+			blockLog.Do(func() {
+				close(logReached)
+				<-releaseLog
+			})
+		}
+	}
+
+	session := &Session{
+		LastHeartbeatAck:       time.Now().Add(time.Hour).UTC(),
+		LogLevel:               LogError,
+		ShouldReconnectOnError: false,
+		SyncEvents:             true,
+		sequence:               new(int64),
+		wsConn:                 oldConn,
+		listening:              oldListening,
+	}
+
+	disconnected := false
+	session.AddHandler(func(*Session, *Disconnect) {
+		disconnected = true
+	})
+
+	if err := oldConn.Close(); err != nil {
+		t.Fatalf("old connection Close returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		session.heartbeat(oldConn, oldListening, 1)
+		close(done)
+	}()
+
+	select {
+	case <-logReached:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not reach gateway write error")
+	}
+
+	session.Lock()
+	session.DataReady = true
+	session.wsConn = newConn
+	session.listening = newListening
+	session.Unlock()
+	close(releaseLog)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not return")
+	}
+
+	session.RLock()
+	gotConn := session.wsConn
+	gotListening := session.listening
+	gotDataReady := session.DataReady
+	session.RUnlock()
+	if gotConn != newConn {
+		t.Fatal("stale heartbeat replaced the current gateway connection")
+	}
+	if gotListening != newListening {
+		t.Fatal("stale heartbeat replaced the current listening channel")
+	}
+	if !gotDataReady {
+		t.Fatal("stale heartbeat marked the replacement connection not ready")
+	}
+	select {
+	case <-newListening:
+		t.Fatal("stale heartbeat closed the replacement listening channel")
+	default:
+	}
+	if disconnected {
+		t.Fatal("stale heartbeat emitted a disconnect for the replacement connection")
+	}
+	if err := newConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("replacement connection WriteControl returned error: %v", err)
+	}
+
+	close(oldListening)
+	close(newListening)
 }
 
 func TestRequestGuildMembersUsesSingleGuildID(t *testing.T) {
