@@ -136,6 +136,43 @@ func TestGuildIncidentsData(t *testing.T) {
 	}
 }
 
+func TestGuildIncidentActionsParamsJSON(t *testing.T) {
+	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	invitesAction := &invitesUntil
+	disableDMs := (*time.Time)(nil)
+
+	encoded, err := json.Marshal(GuildIncidentActionsParams{
+		InvitesDisabledUntil: &invitesAction,
+		DMsDisabledUntil:     &disableDMs,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if got := string(payload["invites_disabled_until"]); got != `"2026-07-11T10:00:00Z"` {
+		t.Fatalf("invites_disabled_until = %s", got)
+	}
+	if got := string(payload["dms_disabled_until"]); got != "null" {
+		t.Fatalf("dms_disabled_until = %s, want null", got)
+	}
+
+	encoded, err = json.Marshal(GuildIncidentActionsParams{InvitesDisabledUntil: &invitesAction})
+	if err != nil {
+		t.Fatalf("json.Marshal invite params returned error: %v", err)
+	}
+	payload = nil
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal invite params returned error: %v", err)
+	}
+	if _, ok := payload["dms_disabled_until"]; ok {
+		t.Fatalf("invite-only params included dms_disabled_until: %s", encoded)
+	}
+}
+
 func TestActivityUnmarshalApplicationID(t *testing.T) {
 	tests := []struct {
 		name string
