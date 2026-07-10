@@ -151,6 +151,52 @@ func TestChannelVoiceJoinManualNilWsConn(t *testing.T) {
 	}
 }
 
+func TestChannelVoiceJoinManualWaitsForVoiceOperation(t *testing.T) {
+	s := &Session{}
+	s.voiceMutex.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.ChannelVoiceJoinManual("guild", "channel", false, false)
+	}()
+
+	select {
+	case err := <-done:
+		s.voiceMutex.Unlock()
+		t.Fatalf("ChannelVoiceJoinManual returned before voice operation completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	s.voiceMutex.Unlock()
+	if err := <-done; !errors.Is(err, ErrWSNotFound) {
+		t.Fatalf("ChannelVoiceJoinManual() error = %v, want %v", err, ErrWSNotFound)
+	}
+}
+
+func TestChannelVoiceJoinReplacesDisconnectingConnection(t *testing.T) {
+	stale := &VoiceConnection{disconnecting: true}
+	s := &Session{
+		VoiceConnections: map[string]*VoiceConnection{
+			"guild": stale,
+		},
+	}
+
+	voice, err := s.ChannelVoiceJoin("guild", "channel", false, false)
+	if !errors.Is(err, ErrWSNotFound) {
+		t.Fatalf("ChannelVoiceJoin() error = %v, want %v", err, ErrWSNotFound)
+	}
+	if voice == stale {
+		t.Fatal("ChannelVoiceJoin reused a disconnecting voice connection")
+	}
+
+	s.RLock()
+	registered := s.VoiceConnections["guild"]
+	s.RUnlock()
+	if registered != voice {
+		t.Fatal("replacement voice connection was not registered")
+	}
+}
+
 func TestOpenReturnsOnInvalidSessionDuringOpen(t *testing.T) {
 	server := newGatewayOpenTestServer(t, []byte(`{"op":9,"d":false}`))
 	session, err := newGatewayOpenTestSession(server, "Bot test")

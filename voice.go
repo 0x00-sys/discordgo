@@ -32,16 +32,17 @@ import (
 type VoiceConnection struct {
 	sync.RWMutex
 
-	Debug        bool // If true, print extra logging -- DEPRECATED
-	LogLevel     int
-	Ready        bool // If true, voice is ready to send/receive audio
-	UserID       string
-	GuildID      string
-	ChannelID    string
-	deaf         bool
-	mute         bool
-	speaking     bool
-	reconnecting bool // If true, voice connection is trying to reconnect
+	Debug         bool // If true, print extra logging -- DEPRECATED
+	LogLevel      int
+	Ready         bool // If true, voice is ready to send/receive audio
+	UserID        string
+	GuildID       string
+	ChannelID     string
+	deaf          bool
+	mute          bool
+	speaking      bool
+	reconnecting  bool // If true, voice connection is trying to reconnect
+	disconnecting bool // If true, voice connection is being permanently torn down
 
 	OpusSend chan []byte  // Chan for sending opus audio
 	OpusRecv chan *Packet // Chan for receiving opus audio
@@ -129,31 +130,97 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 
 	v.log(LogInformational, "called")
 
-	data := voiceChannelJoinOp{4, voiceChannelJoinData{&v.GuildID, &channelID, mute, deaf}}
-	err = v.session.GatewayWriteStruct(data)
-	if err != nil {
+	for {
+		v.RLock()
+		session := v.session
+		v.RUnlock()
+		if session == nil {
+			return ErrWSNotFound
+		}
+
+		session.voiceMutex.Lock()
+		v.RLock()
+		if v.session != session {
+			v.RUnlock()
+			session.voiceMutex.Unlock()
+			continue
+		}
+		if v.disconnecting {
+			v.RUnlock()
+			session.voiceMutex.Unlock()
+			return ErrWSNotFound
+		}
+		guildID := v.GuildID
+		v.RUnlock()
+
+		err = session.channelVoiceJoinManual(guildID, channelID, mute, deaf)
+		if err == nil {
+			v.Lock()
+			v.ChannelID = channelID
+			v.deaf = deaf
+			v.mute = mute
+			v.speaking = false
+			v.Unlock()
+		}
+		session.voiceMutex.Unlock()
 		return
 	}
-	v.ChannelID = channelID
-	v.deaf = deaf
-	v.mute = mute
-	v.speaking = false
-
-	return
 }
 
 // Disconnect disconnects from this voice channel and closes the websocket
 // and udp connections to Discord.
 func (v *VoiceConnection) Disconnect() (err error) {
 
-	// Send a OP4 with a nil channel to disconnect
-	v.Lock()
-	if v.sessionID != "" {
-		data := voiceChannelJoinOp{4, voiceChannelJoinData{&v.GuildID, nil, true, true}}
-		err = v.session.GatewayWriteStruct(data)
+	var session *Session
+	var sessionID, guildID string
+	for {
+		// Wait for the voice state operation slot without holding the voice
+		// lock. A stalled voice lock must not block unrelated gateway writes.
+		v.RLock()
+		session = v.session
+		v.RUnlock()
+		if session != nil {
+			session.voiceMutex.Lock()
+		}
+
+		v.Lock()
+		if v.session != session {
+			v.Unlock()
+			if session != nil {
+				session.voiceMutex.Unlock()
+			}
+			continue
+		}
+
+		sessionID = v.sessionID
+		guildID = v.GuildID
 		v.sessionID = ""
+		v.disconnecting = true
+		v.Unlock()
+		break
 	}
-	v.Unlock()
+
+	// Unregister before the blocking gateway write so a new join uses a
+	// replacement connection. Only remove this connection's own entry.
+	if session != nil {
+		session.Lock()
+		if session.VoiceConnections[guildID] == v {
+			delete(session.VoiceConnections, guildID)
+		}
+		session.Unlock()
+	}
+
+	// Send an OP4 with a nil channel to disconnect.
+	if sessionID != "" {
+		if session == nil {
+			err = ErrWSNotFound
+		} else {
+			err = session.channelVoiceJoinManual(guildID, "", true, true)
+		}
+	}
+	if session != nil {
+		session.voiceMutex.Unlock()
+	}
 
 	// Close websocket and udp connections
 	v.Close()
@@ -167,11 +234,7 @@ func (v *VoiceConnection) Disconnect() (err error) {
 	v.OpusRecv = nil
 	v.Unlock()
 
-	v.log(LogInformational, "Deleting VoiceConnection %s", v.GuildID)
-
-	v.session.Lock()
-	delete(v.session.VoiceConnections, v.GuildID)
-	v.session.Unlock()
+	v.log(LogInformational, "Deleting VoiceConnection %s", guildID)
 
 	return
 }
@@ -1126,9 +1189,10 @@ func (v *VoiceConnection) reconnect() {
 
 		// if the reconnect above didn't work lets just send a disconnect
 		// packet to reset things.
-		// Send a OP4 with a nil channel to disconnect
-		data := voiceChannelJoinOp{4, voiceChannelJoinData{&v.GuildID, nil, true, true}}
-		err = v.session.GatewayWriteStruct(data)
+		sent, err := v.sendDisconnectIfCurrent()
+		if !sent {
+			return
+		}
 		if err != nil {
 			v.log(LogError, "error sending disconnect packet, %s", err)
 		}
@@ -1136,13 +1200,46 @@ func (v *VoiceConnection) reconnect() {
 	}
 }
 
+// sendDisconnectIfCurrent sends a voice state reset only while this
+// connection still owns its guild entry. The ownership check and OP4
+// write are serialized with joins and permanent disconnects.
+func (v *VoiceConnection) sendDisconnectIfCurrent() (sent bool, err error) {
+	v.RLock()
+	session := v.session
+	guildID := v.GuildID
+	v.RUnlock()
+	if session == nil {
+		return false, nil
+	}
+
+	session.voiceMutex.Lock()
+	v.RLock()
+	current := v.session == session && v.GuildID == guildID && !v.disconnecting
+	v.RUnlock()
+	if current {
+		session.RLock()
+		current = session.VoiceConnections[guildID] == v
+		session.RUnlock()
+	}
+	if current {
+		err = session.channelVoiceJoinManual(guildID, "", true, true)
+		sent = true
+	}
+	session.voiceMutex.Unlock()
+	return
+}
+
 func (v *VoiceConnection) isSessionVoiceConnection() bool {
-	if v.session == nil {
+	v.RLock()
+	session := v.session
+	guildID := v.GuildID
+	v.RUnlock()
+	if session == nil {
 		return false
 	}
 
-	v.session.RLock()
-	defer v.session.RUnlock()
+	session.RLock()
+	defer session.RUnlock()
 
-	return v.session.VoiceConnections[v.GuildID] == v
+	return session.VoiceConnections[guildID] == v
 }
