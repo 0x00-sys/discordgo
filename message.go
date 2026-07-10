@@ -62,6 +62,16 @@ const (
 	MessageTypePollResult                              MessageType = 46
 )
 
+// MessageCall contains information about a call associated with a message.
+// https://discord.com/developers/docs/resources/message#message-call-object
+type MessageCall struct {
+	// The IDs of the users who participated in the call.
+	Participants []string `json:"participants"`
+
+	// The time when the call ended, if it has ended.
+	EndedTimestamp *time.Time `json:"ended_timestamp"`
+}
+
 // BaseThemeType is the mode of a shared client theme.
 // https://discord.com/developers/docs/resources/message#base-theme-types
 type BaseThemeType int
@@ -214,6 +224,9 @@ type Message struct {
 
 	// A poll object.
 	Poll *Poll `json:"poll"`
+
+	// The call associated with the message.
+	Call *MessageCall `json:"call"`
 
 	// The custom client-side theme shared via the message.
 	SharedClientTheme *MessageSharedClientTheme `json:"shared_client_theme"`
