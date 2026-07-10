@@ -242,6 +242,9 @@ type Interaction struct {
 	GuildID   string          `json:"guild_id"`
 	ChannelID string          `json:"channel_id"`
 
+	// The partial channel object where this interaction was sent.
+	Channel *Channel `json:"channel"`
+
 	// The message on which interaction was used.
 	// NOTE: this field is only filled when a button click triggered the interaction. Otherwise it will be nil.
 	Message *Message `json:"message"`

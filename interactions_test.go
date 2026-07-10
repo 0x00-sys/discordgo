@@ -215,6 +215,7 @@ func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
 		"application_id":"app",
 		"type":2,
 		"data":{"id":"command","name":"launch","type":4},
+		"channel":{"id":"channel","type":0,"guild_id":"guild","name":"general"},
 		"attachment_size_limit":10485760,
 		"token":"token",
 		"version":1
@@ -224,6 +225,9 @@ func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
 
 	if interaction.AttachmentSizeLimit != 10485760 {
 		t.Fatalf("AttachmentSizeLimit = %d, want 10485760", interaction.AttachmentSizeLimit)
+	}
+	if interaction.Channel == nil || interaction.Channel.ID != "channel" || interaction.Channel.GuildID != "guild" || interaction.Channel.Name != "general" {
+		t.Fatalf("Channel = %#v, want decoded channel metadata", interaction.Channel)
 	}
 	data, ok := interaction.Data.(ApplicationCommandInteractionData)
 	if !ok {
