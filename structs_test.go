@@ -375,6 +375,22 @@ func TestGuildCreateScheduledEvents(t *testing.T) {
 	}
 }
 
+func TestGuildCreateSoundboardSounds(t *testing.T) {
+	var event GuildCreate
+	if err := json.Unmarshal([]byte(`{"id":"guild","soundboard_sounds":[{"sound_id":"sound","name":"Airhorn","volume":1,"emoji_id":null,"emoji_name":"📣","guild_id":"guild","available":true}]}`), &event); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if event.Guild == nil {
+		t.Fatal("Guild is nil")
+	}
+	if len(event.SoundboardSounds) != 1 {
+		t.Fatalf("len(SoundboardSounds) = %d, want 1", len(event.SoundboardSounds))
+	}
+	if sound := event.SoundboardSounds[0]; sound == nil || sound.SoundID != "sound" || sound.Name != "Airhorn" || sound.GuildID != "guild" || !sound.Available {
+		t.Fatalf("SoundboardSounds[0] = %#v", sound)
+	}
+}
+
 func TestGuildIncidentActionsParamsJSON(t *testing.T) {
 	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	invitesAction := &invitesUntil
