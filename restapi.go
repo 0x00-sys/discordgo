@@ -4480,6 +4480,29 @@ func (s *Session) GuildOnboardingEdit(guildID string, o *GuildOnboarding, option
 	return
 }
 
+// GuildIncidentActionsEdit modifies the incident actions of a guild.
+// guildID : The ID of the guild
+// data    : The incident actions to modify
+func (s *Session) GuildIncidentActionsEdit(guildID string, data *GuildIncidentActionsParams, options ...RequestOption) (incidents *GuildIncidentsData, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("guild incident actions data cannot be nil")
+	}
+
+	endpoint := EndpointGuildIncidentActions(guildID)
+	body, err := s.RequestWithBucketID("PUT", endpoint, data, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &incidents); err != nil {
+		return nil, err
+	}
+	if incidents == nil {
+		return nil, fmt.Errorf("%w: guild incident actions response is null", ErrJSONUnmarshal)
+	}
+	return incidents, nil
+}
+
 // ----------------------------------------------------------------------
 // Functions specific to auto moderation
 // ----------------------------------------------------------------------

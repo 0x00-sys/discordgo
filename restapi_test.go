@@ -503,6 +503,81 @@ func TestGuildMessagesSearchBuildsQuery(t *testing.T) {
 	}
 }
 
+func TestGuildIncidentActionsEdit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPut)
+		}
+		if r.URL.Path != "/guilds/guild/incident-actions" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/incident-actions")
+		}
+
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if got := string(payload["invites_disabled_until"]); got != `"2026-07-11T10:00:00Z"` {
+			t.Fatalf("invites_disabled_until = %s", got)
+		}
+		if got := string(payload["dms_disabled_until"]); got != "null" {
+			t.Fatalf("dms_disabled_until = %s, want null", got)
+		}
+
+		_, _ = w.Write([]byte(`{"invites_disabled_until":"2026-07-11T10:00:00Z","dms_disabled_until":null,"dm_spam_detected_at":null,"raid_detected_at":null}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	invitesUntil := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	invitesAction := &invitesUntil
+	disableDMs := (*time.Time)(nil)
+	incidents, err := session.GuildIncidentActionsEdit("guild", &GuildIncidentActionsParams{
+		InvitesDisabledUntil: &invitesAction,
+		DMsDisabledUntil:     &disableDMs,
+	})
+	if err != nil {
+		t.Fatalf("GuildIncidentActionsEdit returned error: %v", err)
+	}
+	if incidents == nil || incidents.InvitesDisabledUntil == nil || !incidents.InvitesDisabledUntil.Equal(invitesUntil) || incidents.DMsDisabledUntil != nil {
+		t.Fatalf("incidents = %#v", incidents)
+	}
+}
+
+func TestGuildIncidentActionsEditRejectsNullResponse(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader("null")),
+			Request:    r,
+		}, nil
+	})
+
+	incidents, err := session.GuildIncidentActionsEdit("guild", &GuildIncidentActionsParams{})
+	if !errors.Is(err, ErrJSONUnmarshal) {
+		t.Fatalf("GuildIncidentActionsEdit error = %v, want ErrJSONUnmarshal", err)
+	}
+	if incidents != nil {
+		t.Fatalf("incidents = %#v, want nil", incidents)
+	}
+}
+
 func TestChannelInviteCreateWithTargetUsersFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1266,6 +1341,14 @@ func TestNilRESTPayloadsReturnErrors(t *testing.T) {
 				return err
 			},
 			want: "role data cannot be nil",
+		},
+		{
+			name: "guild incident actions",
+			call: func(s *Session) error {
+				_, err := s.GuildIncidentActionsEdit("guild", nil)
+				return err
+			},
+			want: "guild incident actions data cannot be nil",
 		},
 		{
 			name: "webhook execute",

@@ -966,6 +966,13 @@ type GuildIncidentsData struct {
 	RaidDetectedAt       *time.Time `json:"raid_detected_at"`
 }
 
+// GuildIncidentActionsParams stores the incident actions to modify for a guild.
+// A nil field is omitted, while a non-nil pointer to a nil time disables the action.
+type GuildIncidentActionsParams struct {
+	InvitesDisabledUntil **time.Time `json:"invites_disabled_until,omitempty"`
+	DMsDisabledUntil     **time.Time `json:"dms_disabled_until,omitempty"`
+}
+
 // A Guild holds all data related to a specific Discord Guild.  Guilds are also
 // sometimes referred to as Servers in the Discord client.
 type Guild struct {
