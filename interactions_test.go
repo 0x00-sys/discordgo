@@ -208,6 +208,69 @@ func TestCurrentApplicationCommandEntryPointFields(t *testing.T) {
 	}
 }
 
+func TestApplicationCommandResolvedLocalizations(t *testing.T) {
+	var command ApplicationCommand
+	if err := json.Unmarshal([]byte(`{
+		"name":"birthday",
+		"name_localized":"生日",
+		"description":"Wish a friend a happy birthday",
+		"description_localized":"祝你朋友生日快乐",
+		"options":[{
+			"type":1,
+			"name":"friend",
+			"name_localized":"朋友",
+			"description":"The friend to celebrate",
+			"description_localized":"要庆祝的朋友",
+			"options":[{
+				"type":3,
+				"name":"age",
+				"name_localized":"岁数",
+				"description":"Your friend's age",
+				"description_localized":"你朋友的岁数",
+				"choices":[{
+					"name":"Adult",
+					"name_localized":"成年人",
+					"value":"adult"
+				}]
+			}]
+		}]
+	}`), &command); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+
+	if command.NameLocalized != "生日" || command.DescriptionLocalized != "祝你朋友生日快乐" {
+		t.Fatalf("command localizations = %q, %q", command.NameLocalized, command.DescriptionLocalized)
+	}
+	if len(command.Options) != 1 || command.Options[0] == nil {
+		t.Fatalf("Options = %#v", command.Options)
+	}
+	option := command.Options[0]
+	if option.NameLocalized != "朋友" || option.DescriptionLocalized != "要庆祝的朋友" {
+		t.Fatalf("option localizations = %q, %q", option.NameLocalized, option.DescriptionLocalized)
+	}
+	if len(option.Options) != 1 || option.Options[0] == nil {
+		t.Fatalf("nested Options = %#v", option.Options)
+	}
+	nestedOption := option.Options[0]
+	if nestedOption.NameLocalized != "岁数" || nestedOption.DescriptionLocalized != "你朋友的岁数" {
+		t.Fatalf("nested option localizations = %q, %q", nestedOption.NameLocalized, nestedOption.DescriptionLocalized)
+	}
+	if len(nestedOption.Choices) != 1 || nestedOption.Choices[0] == nil {
+		t.Fatalf("Choices = %#v", nestedOption.Choices)
+	}
+	if got := nestedOption.Choices[0].NameLocalized; got != "成年人" {
+		t.Fatalf("choice NameLocalized = %q, want %q", got, "成年人")
+	}
+
+	encoded, err := json.Marshal(ApplicationCommand{Name: "birthday"})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(encoded), "_localized") {
+		t.Fatalf("empty resolved localizations were encoded: %s", encoded)
+	}
+}
+
 func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
 	var interaction Interaction
 	if err := json.Unmarshal([]byte(`{
