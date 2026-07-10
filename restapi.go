@@ -360,7 +360,31 @@ func (s *Session) requestConfig(method, urlStr, contentType string, b []byte, op
 	return cfg, nil
 }
 
+type requestRetry struct {
+	bucket   *Bucket
+	sequence int
+}
+
 func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, cfg *RequestConfig, options ...RequestOption) (response []byte, err error) {
+	for {
+		var retry requestRetry
+		response, retry, err = s.requestWithLockedBucketAttempt(method, urlStr, contentType, b, bucket, sequence, cfg)
+		if err != nil || retry.bucket == nil {
+			return
+		}
+
+		bucket = retry.bucket
+		sequence = retry.sequence
+		cfg, err = s.requestConfig(method, urlStr, contentType, b, options...)
+		if err != nil {
+			_ = bucket.Release(nil)
+			response = nil
+			return
+		}
+	}
+}
+
+func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType string, b []byte, bucket *Bucket, sequence int, cfg *RequestConfig) (response []byte, retry requestRetry, err error) {
 	if s.Debug {
 		log.Printf("API REQUEST %8s :: %s\n", method, redactedURL(urlStr))
 		log.Printf("API REQUEST  PAYLOAD :: [%s]\n", redactedRESTBody(b, contentType))
@@ -435,7 +459,7 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 			if err != nil {
 				return
 			}
-			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence+1, options...)
+			retry = requestRetry{bucket: bucket, sequence: sequence + 1}
 		} else {
 			err = fmt.Errorf("Exceeded Max retries HTTP %s, %s", resp.Status, response)
 		}
@@ -483,7 +507,7 @@ func (s *Session) requestWithLockedBucket(method, urlStr, contentType string, b 
 			if err != nil {
 				return
 			}
-			response, err = s.RequestWithLockedBucket(method, urlStr, contentType, b, bucket, sequence, options...)
+			retry = requestRetry{bucket: bucket, sequence: sequence}
 		} else {
 			err = &RateLimitError{rateLimit}
 		}
