@@ -241,6 +241,11 @@ type Message struct {
 	// An array of StickerItem objects, representing sent stickers, if there were any.
 	StickerItems []*StickerItem `json:"sticker_items"`
 
+	// Stickers contains the legacy full sticker objects sent with the message.
+	//
+	// Deprecated: Use StickerItems instead.
+	Stickers []*Sticker `json:"stickers"`
+
 	// The approximate position of the message in a thread.
 	Position *int `json:"position"`
 

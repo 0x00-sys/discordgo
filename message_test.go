@@ -662,6 +662,42 @@ func TestMessageResolvedDataNullableFields(t *testing.T) {
 	}
 }
 
+func TestMessageLegacyStickersJSON(t *testing.T) {
+	data := []byte(`{
+		"sticker_items":[{"id":"item","name":"Wave","format_type":1}],
+		"stickers":[{"id":"legacy","name":"Wave","description":null,"tags":"wave","type":1,"format_type":1}]
+	}`)
+
+	var message Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if len(message.StickerItems) != 1 || message.StickerItems[0] == nil || message.StickerItems[0].ID != "item" {
+		t.Fatalf("StickerItems = %#v", message.StickerItems)
+	}
+	if len(message.Stickers) != 1 || message.Stickers[0] == nil || message.Stickers[0].ID != "legacy" || message.Stickers[0].Type != StickerTypeStandard {
+		t.Fatalf("Stickers = %#v", message.Stickers)
+	}
+}
+
+func TestMessageLegacyStickersNullableFields(t *testing.T) {
+	message := Message{Stickers: []*Sticker{{ID: "stale"}}}
+	if err := json.Unmarshal([]byte(`{"stickers":null}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Stickers != nil {
+		t.Fatalf("Stickers = %#v after null, want nil", message.Stickers)
+	}
+
+	message.Stickers = []*Sticker{{ID: "stale"}}
+	if err := json.Unmarshal([]byte(`{}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Stickers != nil {
+		t.Fatalf("Stickers = %#v after omission, want nil", message.Stickers)
+	}
+}
+
 func TestBaseThemeTypeValues(t *testing.T) {
 	tests := []struct {
 		theme BaseThemeType
