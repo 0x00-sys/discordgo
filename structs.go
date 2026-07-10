@@ -1835,17 +1835,24 @@ type Member struct {
 	CommunicationDisabledUntil *time.Time `json:"communication_disabled_until"`
 }
 
-// Mention creates a member mention
+// Mention creates a member mention. It returns an empty string if the member's user is unavailable.
 func (m *Member) Mention() string {
+	if m == nil || m.User == nil {
+		return ""
+	}
 	return "<@!" + m.User.ID + ">"
 }
 
-// AvatarURL returns the URL of the member's avatar
+// AvatarURL returns the URL of the member's avatar.
+// It returns an empty string if the member's user is unavailable.
 //
 //	size:    The size of the user's avatar as a power of two
 //	         if size is an empty string, no size parameter will
 //	         be added to the URL.
 func (m *Member) AvatarURL(size string) string {
+	if m == nil || m.User == nil {
+		return ""
+	}
 	if m.Avatar == "" {
 		return m.User.AvatarURL(size)
 	}
@@ -1868,10 +1875,14 @@ func (m *Member) AvatarDecorationURL() string {
 }
 
 // BannerURL returns the URL of the member's banner image.
+// It returns an empty string if the member's user is unavailable.
 //
 //	size:    The size of the desired banner image as a power of two
 //	         Image size can be any power of two between 16 and 4096.
 func (m *Member) BannerURL(size string) string {
+	if m == nil || m.User == nil {
+		return ""
+	}
 	if m.Banner == "" {
 		return m.User.BannerURL(size)
 	}
@@ -1885,9 +1896,16 @@ func (m *Member) BannerURL(size string) string {
 
 // DisplayName returns the member's guild nickname if they have one,
 // otherwise it returns their discord display name.
+// It returns an empty string if neither is available.
 func (m *Member) DisplayName() string {
+	if m == nil {
+		return ""
+	}
 	if m.Nick != "" {
 		return m.Nick
+	}
+	if m.User == nil {
+		return ""
 	}
 	return m.User.DisplayName()
 }
