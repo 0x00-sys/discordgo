@@ -534,6 +534,39 @@ func TestMessageApplicationIDJSON(t *testing.T) {
 	}
 }
 
+func TestMessagePositionJSON(t *testing.T) {
+	var message Message
+	if err := json.Unmarshal([]byte(`{"position":0}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Position == nil || *message.Position != 0 {
+		t.Fatalf("Position = %#v, want pointer to 0", message.Position)
+	}
+
+	if err := json.Unmarshal([]byte(`{"position":42}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Position == nil || *message.Position != 42 {
+		t.Fatalf("Position = %#v, want pointer to 42", message.Position)
+	}
+
+	if err := json.Unmarshal([]byte(`{"position":null}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Position != nil {
+		t.Fatalf("Position = %#v after null, want nil", message.Position)
+	}
+
+	stale := 7
+	message.Position = &stale
+	if err := json.Unmarshal([]byte(`{}`), &message); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if message.Position != nil {
+		t.Fatalf("Position = %#v after omission, want nil", message.Position)
+	}
+}
+
 func TestBaseThemeTypeValues(t *testing.T) {
 	tests := []struct {
 		theme BaseThemeType
