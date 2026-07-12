@@ -13,6 +13,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -1574,6 +1575,192 @@ func (s *State) MessageAdd(message *Message) error {
 	return nil
 }
 
+func mergeMessageUpdate(cached, update *Message, fields map[string]json.RawMessage) *Message {
+	merged := *cached
+	for field := range fields {
+		switch field {
+		case "id":
+			merged.ID = update.ID
+		case "channel_id":
+			merged.ChannelID = update.ChannelID
+		case "channel_type":
+			merged.ChannelType = update.ChannelType
+		case "guild_id":
+			merged.GuildID = update.GuildID
+		case "content":
+			merged.Content = update.Content
+		case "timestamp":
+			merged.Timestamp = update.Timestamp
+		case "edited_timestamp":
+			merged.EditedTimestamp = update.EditedTimestamp
+		case "mention_roles":
+			merged.MentionRoles = update.MentionRoles
+		case "tts":
+			merged.TTS = update.TTS
+		case "mention_everyone":
+			merged.MentionEveryone = update.MentionEveryone
+		case "author":
+			merged.Author = update.Author
+		case "attachments":
+			merged.Attachments = update.Attachments
+		case "components":
+			merged.Components = update.Components
+		case "embeds":
+			merged.Embeds = update.Embeds
+		case "mentions":
+			merged.Mentions = update.Mentions
+		case "reactions":
+			merged.Reactions = update.Reactions
+		case "nonce":
+			merged.Nonce = update.Nonce
+		case "pinned":
+			merged.Pinned = update.Pinned
+		case "type":
+			merged.Type = update.Type
+		case "webhook_id":
+			merged.WebhookID = update.WebhookID
+		case "member":
+			merged.Member = update.Member
+		case "mention_channels":
+			merged.MentionChannels = update.MentionChannels
+		case "activity":
+			merged.Activity = update.Activity
+		case "application":
+			merged.Application = update.Application
+		case "application_id":
+			merged.ApplicationID = update.ApplicationID
+		case "message_reference":
+			merged.MessageReference = update.MessageReference
+		case "referenced_message":
+			merged.ReferencedMessage = update.ReferencedMessage
+		case "message_snapshots":
+			merged.MessageSnapshots = update.MessageSnapshots
+		case "interaction":
+			merged.Interaction = update.Interaction
+		case "interaction_metadata":
+			merged.InteractionMetadata = update.InteractionMetadata
+		case "flags":
+			merged.Flags = update.Flags
+		case "thread":
+			merged.Thread = update.Thread
+		case "sticker_items":
+			merged.StickerItems = update.StickerItems
+		case "stickers":
+			merged.Stickers = update.Stickers
+		case "position":
+			merged.Position = update.Position
+		case "role_subscription_data":
+			merged.RoleSubscriptionData = update.RoleSubscriptionData
+		case "resolved":
+			merged.Resolved = update.Resolved
+		case "poll":
+			merged.Poll = update.Poll
+		case "call":
+			merged.Call = update.Call
+		case "shared_client_theme":
+			merged.SharedClientTheme = update.SharedClientTheme
+		}
+	}
+
+	linkMessageMemberUser(&merged)
+	linkMessageInteractionMemberUser(&merged)
+	return &merged
+}
+
+func legacyMessageUpdateFields(message *Message) map[string]json.RawMessage {
+	fields := make(map[string]json.RawMessage)
+	if message.Content != "" {
+		fields["content"] = nil
+	}
+	if message.EditedTimestamp != nil {
+		fields["edited_timestamp"] = nil
+	}
+	if message.Mentions != nil {
+		fields["mentions"] = nil
+	}
+	if message.Embeds != nil {
+		fields["embeds"] = nil
+	}
+	if message.Attachments != nil {
+		fields["attachments"] = nil
+	}
+	if !message.Timestamp.IsZero() {
+		fields["timestamp"] = nil
+	}
+	if message.Author != nil {
+		fields["author"] = nil
+	}
+	if message.Components != nil {
+		fields["components"] = nil
+	}
+	return fields
+}
+
+func messageUpdateCopy(update *MessageUpdate) (*Message, error) {
+	if update.fields == nil {
+		return update.Message, nil
+	}
+
+	data, err := json.Marshal(update.fields)
+	if err != nil {
+		return nil, err
+	}
+	var message Message
+	if err = json.Unmarshal(data, &message); err != nil {
+		return nil, err
+	}
+	if message.GuildID == "" {
+		message.GuildID = update.GuildID
+	}
+	linkMessageMemberUser(&message)
+	return &message, nil
+}
+
+func (s *State) messageUpdate(update *MessageUpdate) error {
+	if update == nil || update.Message == nil {
+		return ErrStateInvalidData
+	}
+
+	message, err := messageUpdateCopy(update)
+	if err != nil {
+		return err
+	}
+	fields := update.fields
+	if fields == nil {
+		fields = legacyMessageUpdateFields(message)
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	c, ok := s.channelMap[update.ChannelID]
+	if !ok {
+		return ErrStateNotFound
+	}
+
+	updated := copyChannel(c)
+	for i, cached := range updated.Messages {
+		if cached == nil || cached.ID != update.ID {
+			continue
+		}
+
+		before := *cached
+		update.BeforeUpdate = &before
+		updated.Messages[i] = mergeMessageUpdate(cached, message, fields)
+		s.channelMap[updated.ID] = updated
+		s.replaceChannel(c, updated)
+		return nil
+	}
+
+	updated.Messages = append(updated.Messages, message)
+	if len(updated.Messages) > s.MaxMessageCount {
+		updated.Messages = updated.Messages[len(updated.Messages)-s.MaxMessageCount:]
+	}
+	s.channelMap[updated.ID] = updated
+	s.replaceChannel(c, updated)
+	return nil
+}
+
 // MessageRemove removes a message from the world state.
 func (s *State) MessageRemove(message *Message) error {
 	if s == nil {
@@ -2422,14 +2609,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
-			var old *Message
-			old, err = s.Message(t.ChannelID, t.ID)
-			if err == nil {
-				oldCopy := *old
-				t.BeforeUpdate = &oldCopy
-			}
-
-			err = s.MessageAdd(t.Message)
+			err = s.messageUpdate(t)
 		}
 	case *MessageDelete:
 		if t == nil || t.Message == nil {
