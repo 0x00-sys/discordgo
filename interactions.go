@@ -676,6 +676,34 @@ type InteractionResponse struct {
 	Data *InteractionResponseData `json:"data,omitempty"`
 }
 
+// InteractionCallbackResponse is returned when an interaction response requests callback data.
+type InteractionCallbackResponse struct {
+	Interaction *InteractionCallback         `json:"interaction"`
+	Resource    *InteractionCallbackResource `json:"resource,omitempty"`
+}
+
+// InteractionCallback contains metadata about the interaction and its response.
+type InteractionCallback struct {
+	ID                       string          `json:"id"`
+	Type                     InteractionType `json:"type"`
+	ActivityInstanceID       string          `json:"activity_instance_id,omitempty"`
+	ResponseMessageID        string          `json:"response_message_id,omitempty"`
+	ResponseMessageLoading   *bool           `json:"response_message_loading,omitempty"`
+	ResponseMessageEphemeral *bool           `json:"response_message_ephemeral,omitempty"`
+}
+
+// InteractionCallbackResource contains the resource created by an interaction response.
+type InteractionCallbackResource struct {
+	Type             InteractionResponseType              `json:"type"`
+	ActivityInstance *InteractionCallbackActivityInstance `json:"activity_instance,omitempty"`
+	Message          *Message                             `json:"message,omitempty"`
+}
+
+// InteractionCallbackActivityInstance identifies an Activity launched by an interaction response.
+type InteractionCallbackActivityInstance struct {
+	ID string `json:"id"`
+}
+
 // InteractionResponseData is response data for an interaction.
 type InteractionResponseData struct {
 	TTS             bool                    `json:"tts"`

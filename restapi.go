@@ -4353,14 +4353,27 @@ func (s *Session) ApplicationCommandPermissionsBatchEdit(appID, guildID string, 
 // interaction : Interaction instance.
 // resp        : Response message data.
 func (s *Session) InteractionRespond(interaction *Interaction, resp *InteractionResponse, options ...RequestOption) error {
+	_, err := s.interactionRespond(interaction, resp, false, options...)
+	return err
+}
+
+// InteractionRespondWithResponse creates a response to an interaction and returns its callback data.
+func (s *Session) InteractionRespondWithResponse(interaction *Interaction, resp *InteractionResponse, options ...RequestOption) (*InteractionCallbackResponse, error) {
+	return s.interactionRespond(interaction, resp, true, options...)
+}
+
+func (s *Session) interactionRespond(interaction *Interaction, resp *InteractionResponse, withResponse bool, options ...RequestOption) (*InteractionCallbackResponse, error) {
 	if interaction == nil {
-		return fmt.Errorf("interaction cannot be nil")
+		return nil, fmt.Errorf("interaction cannot be nil")
 	}
 	if resp == nil {
-		return fmt.Errorf("interaction response cannot be nil")
+		return nil, fmt.Errorf("interaction response cannot be nil")
 	}
 
 	endpoint := EndpointInteractionResponse(interaction.ID, interaction.Token)
+	if withResponse {
+		endpoint += "?with_response=true"
+	}
 	bucketID := interactionResponseBucketID(interaction.ID)
 	options = withoutAuthorizationOptions(options)
 
@@ -4368,18 +4381,27 @@ func (s *Session) InteractionRespond(interaction *Interaction, resp *Interaction
 		s.applyAllowedMentionsToInteractionResponse(resp.Data)
 	}
 
+	var response []byte
+	var err error
 	if resp.Data != nil && len(resp.Data.Files) > 0 {
-		contentType, body, err := MultipartBodyWithJSON(resp, resp.Data.Files)
-		if err != nil {
-			return err
+		contentType, body, encodeErr := MultipartBodyWithJSON(resp, resp.Data.Files)
+		if encodeErr != nil {
+			return nil, encodeErr
 		}
 
-		_, err = s.requestRawWithEphemeralBucket("POST", endpoint, contentType, body, bucketID, 0, false, options...)
-		return err
+		response, err = s.requestRawWithEphemeralBucket("POST", endpoint, contentType, body, bucketID, 0, false, options...)
+	} else {
+		response, err = s.requestWithEphemeralBucketID("POST", endpoint, *resp, bucketID, false, options...)
+	}
+	if err != nil || !withResponse {
+		return nil, err
 	}
 
-	_, err := s.requestWithEphemeralBucketID("POST", endpoint, *resp, bucketID, false, options...)
-	return err
+	var callback *InteractionCallbackResponse
+	if err := unmarshal(response, &callback); err != nil {
+		return nil, err
+	}
+	return callback, nil
 }
 
 // InteractionResponse gets the response to an interaction.
