@@ -98,6 +98,8 @@ const (
 	voiceGatewayVersion               = 8
 	voiceModeAES256GCMRTPSize         = "aead_aes256_gcm_rtpsize"
 	voiceModeXChaCha20Poly1305RTPSize = "aead_xchacha20_poly1305_rtpsize"
+	voiceOpusSilenceFrame             = "\xf8\xff\xfe"
+	voiceOpusSilenceFrameCount        = 5
 )
 
 // VoiceSpeakingFlags describes the type of audio being transmitted.
@@ -1208,7 +1210,11 @@ func (v *VoiceConnection) udpKeepAlive(udpConn *net.UDPConn, close <-chan struct
 // pre-encoded opus audio to Discord.  Supposedly.
 func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}, opus <-chan []byte, rate, size int) {
 
-	if udpConn == nil || close == nil {
+	if udpConn == nil || close == nil || rate <= 0 || size <= 0 {
+		return
+	}
+	frameDuration := time.Second * time.Duration(size) / time.Duration(rate)
+	if frameDuration <= 0 {
 		return
 	}
 
@@ -1225,6 +1231,9 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	var err error
 	udpHeader := make([]byte, 12)
 	var nonce []byte
+	var lastPacketAt time.Time
+	sentAudio := false
+	silenceFrames := 0
 
 	// build the parts that don't change in the udpHeader
 	udpHeader[0] = 0x80
@@ -1235,19 +1244,43 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	binary.BigEndian.PutUint32(udpHeader[8:], ssrc)
 
 	// start a send loop that loops until buf chan is closed
-	ticker := time.NewTicker(time.Millisecond * time.Duration(size/(rate/1000)))
+	ticker := time.NewTicker(frameDuration)
 	defer ticker.Stop()
 	for {
+		received := false
+		paced := false
+		trailingSilence := false
+		var silenceTick <-chan time.Time
+		if sentAudio && silenceFrames < voiceOpusSilenceFrameCount {
+			silenceTick = ticker.C
+		}
 
-		// Get data from chan.  If chan is closed, return.
+		// Prefer queued audio on each send tick. When the source pauses or
+		// closes, send the five silence frames required by Discord before
+		// stopping transmission.
 		select {
 		case <-close:
 			return
 		case recvbuf, ok = <-opus:
-			if !ok {
-				return
+			received = true
+		case <-silenceTick:
+			paced = true
+			select {
+			case recvbuf, ok = <-opus:
+				received = true
+			default:
 			}
-			// else, continue loop
+		}
+
+		if !received || !ok {
+			if !sentAudio || silenceFrames >= voiceOpusSilenceFrameCount {
+				if received && !ok {
+					return
+				}
+				continue
+			}
+			recvbuf = []byte(voiceOpusSilenceFrame)
+			trailingSilence = true
 		}
 
 		v.RLock()
@@ -1259,10 +1292,6 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 				v.log(LogError, "error sending speaking packet, %s", err)
 			}
 		}
-
-		// Add sequence and timestamp to udpPacket
-		binary.BigEndian.PutUint16(udpHeader[2:], sequence)
-		binary.BigEndian.PutUint32(udpHeader[4:], timestamp)
 
 		var daveFrame []byte
 		waitedForDAVE := false
@@ -1291,6 +1320,36 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		}
 		recvbuf = daveFrame
 
+		// Block until this frame's send time unless the ticker or a pending
+		// DAVE transition already provided the pacing delay.
+		if !paced && !waitedForDAVE {
+			select {
+			case <-close:
+				return
+			case <-ticker.C:
+			}
+		} else {
+			select {
+			case <-close:
+				return
+			default:
+			}
+		}
+
+		packetAt := time.Now()
+		if !lastPacketAt.IsZero() {
+			timestamp = interpolateVoiceTimestamp(
+				timestamp,
+				packetAt.Sub(lastPacketAt),
+				frameDuration,
+				uint32(size),
+			)
+		}
+
+		// Add sequence and timestamp to udpPacket.
+		binary.BigEndian.PutUint16(udpHeader[2:], sequence)
+		binary.BigEndian.PutUint32(udpHeader[4:], timestamp)
+
 		// encrypt the opus data
 		// add incrementing nonce counter as per discord's requirements
 		v.Lock()
@@ -1313,22 +1372,6 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		sendbuf = append(sendbuf, nonce[:4]...) // 4 byte nonce to ciphertext appended
 		sendbuf = append(udpHeader, sendbuf...) // final
 
-		// block here until we're exactly at the right time :)
-		// Then send rtp audio packet to Discord over UDP
-		if !waitedForDAVE {
-			select {
-			case <-close:
-				return
-			case <-ticker.C:
-				// continue
-			}
-		} else {
-			select {
-			case <-close:
-				return
-			default:
-			}
-		}
 		_, err = udpConn.Write(sendbuf)
 
 		if err != nil {
@@ -1336,19 +1379,36 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 			v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 			return
 		}
+		lastPacketAt = packetAt
 
-		if (sequence) == 0xFFFF {
-			sequence = 0
+		sequence++
+		timestamp += uint32(size)
+		if trailingSilence {
+			silenceFrames++
+			if silenceFrames == voiceOpusSilenceFrameCount {
+				if err := v.Speaking(false); err != nil {
+					v.log(LogError, "error sending stop speaking packet, %s", err)
+				}
+			}
 		} else {
-			sequence++
-		}
-
-		if (timestamp + uint32(size)) >= 0xFFFFFFFF {
-			timestamp = 0
-		} else {
-			timestamp += uint32(size)
+			sentAudio = true
+			silenceFrames = 0
 		}
 	}
+}
+
+func interpolateVoiceTimestamp(timestamp uint32, elapsed, frameDuration time.Duration, frameSize uint32) uint32 {
+	if frameDuration <= 0 {
+		return timestamp
+	}
+
+	elapsedFrames := elapsed / frameDuration
+	if elapsedFrames < 2 {
+		return timestamp
+	}
+
+	missedFrames := uint64(elapsedFrames - 1)
+	return timestamp + uint32(missedFrames*uint64(frameSize))
 }
 
 // A Packet contains the headers and content of a received voice packet.

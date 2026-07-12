@@ -40,6 +40,140 @@ func TestOpusSenderNilAEAD(t *testing.T) {
 	v.opusSender(udpConn, make(chan struct{}), opus, 48000, 960)
 }
 
+func TestInterpolateVoiceTimestamp(t *testing.T) {
+	const (
+		frameDuration = 20 * time.Millisecond
+		frameSize     = 960
+	)
+	tests := []struct {
+		name      string
+		timestamp uint32
+		elapsed   time.Duration
+		want      uint32
+	}{
+		{name: "normal frame", timestamp: 960, elapsed: frameDuration, want: 960},
+		{name: "sub-frame jitter", timestamp: 960, elapsed: 39 * time.Millisecond, want: 960},
+		{name: "one missed frame", timestamp: 960, elapsed: 2 * frameDuration, want: 1920},
+		{name: "four missed frames", timestamp: 960, elapsed: 5 * frameDuration, want: 4800},
+		{name: "one second gap", timestamp: 960, elapsed: time.Second, want: 48000},
+		{name: "wraps", timestamp: 4294967195, elapsed: 3 * frameDuration, want: 1819},
+		{name: "invalid frame duration", timestamp: 960, elapsed: time.Second, want: 960},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			duration := frameDuration
+			if test.name == "invalid frame duration" {
+				duration = 0
+			}
+			got := interpolateVoiceTimestamp(
+				test.timestamp,
+				test.elapsed,
+				duration,
+				frameSize,
+			)
+			if got != test.want {
+				t.Fatalf("interpolateVoiceTimestamp(%d, %s) = %d, want %d", test.timestamp, test.elapsed, got, test.want)
+			}
+		})
+	}
+}
+
+func TestOpusSenderSendsTrailingSilence(t *testing.T) {
+	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	defer server.Close()
+
+	client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("net.DialUDP() error = %v", err)
+	}
+	defer client.Close()
+
+	aead, err := newVoiceAEAD(voiceModeAES256GCMRTPSize, make([]int, 32))
+	if err != nil {
+		t.Fatalf("newVoiceAEAD() error = %v", err)
+	}
+	opus := make(chan []byte, 1)
+	opus <- []byte{0x01, 0x02, 0x03}
+
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		speaking: true,
+		aead:     aead,
+		op2:      voiceOP2{SSRC: 42},
+	}
+	done := make(chan struct{})
+	go func() {
+		voice.opusSender(client, make(chan struct{}), opus, 48000, 960)
+		close(done)
+	}()
+
+	wantPayloads := [][]byte{
+		{0x01, 0x02, 0x03},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0x04, 0x05, 0x06},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+		{0xf8, 0xff, 0xfe},
+	}
+	packet := make([]byte, 2048)
+	var previousTimestamp uint32
+	for i, wantPayload := range wantPayloads {
+		if i == 6 {
+			time.Sleep(80 * time.Millisecond)
+			opus <- []byte{0x04, 0x05, 0x06}
+			close(opus)
+		}
+		if err := server.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("SetReadDeadline() error = %v", err)
+		}
+		n, _, err := server.ReadFromUDP(packet)
+		if err != nil {
+			t.Fatalf("ReadFromUDP() packet %d error = %v", i, err)
+		}
+		wirePacket := packet[:n]
+		if sequence := binary.BigEndian.Uint16(wirePacket[2:4]); sequence != uint16(i) {
+			t.Fatalf("packet %d sequence = %d, want %d", i, sequence, i)
+		}
+		timestamp := binary.BigEndian.Uint32(wirePacket[4:8])
+		if i > 0 {
+			delta := timestamp - previousTimestamp
+			if delta < 960 || delta%960 != 0 {
+				t.Fatalf("packet %d timestamp delta = %d, want a positive frame multiple", i, delta)
+			}
+			if i == 6 && delta < 4*960 {
+				t.Fatalf("packet %d timestamp delta = %d, want interpolation across the source gap", i, delta)
+			}
+		}
+		previousTimestamp = timestamp
+
+		nonce := make([]byte, aead.NonceSize())
+		copy(nonce[:4], wirePacket[n-4:])
+		payload, err := aead.Open(nil, nonce, wirePacket[12:n-4], wirePacket[:12])
+		if err != nil {
+			t.Fatalf("decrypt packet %d error = %v", i, err)
+		}
+		if !bytes.Equal(payload, wantPayload) {
+			t.Fatalf("packet %d payload = %x, want %x", i, payload, wantPayload)
+		}
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("opusSender did not stop after trailing silence")
+	}
+}
+
 func TestSelectVoiceEncryptionMode(t *testing.T) {
 	tests := []struct {
 		name     string
