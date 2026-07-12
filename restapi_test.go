@@ -3285,6 +3285,69 @@ func TestChannelMessagesPinnedUsesPerChannelBucket(t *testing.T) {
 	}
 }
 
+func TestMessageReactionsByType(t *testing.T) {
+	tests := []struct {
+		name          string
+		wantQueryType string
+		call          func(*Session) ([]*User, error)
+	}{
+		{
+			name:          "legacy method fetches normal reactions",
+			wantQueryType: "0",
+			call: func(s *Session) ([]*User, error) {
+				return s.MessageReactions("channel", "message", "wave", 25, "", "after")
+			},
+		},
+		{
+			name:          "type method fetches burst reactions",
+			wantQueryType: "1",
+			call: func(s *Session) ([]*User, error) {
+				return s.MessageReactionsByType("channel", "message", "wave", ReactionTypeBurst, 25, "", "after")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+				}
+				wantPath := "/api/v" + APIVersion + "/channels/channel/messages/message/reactions/wave"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q", r.URL.Path)
+				}
+				query := r.URL.Query()
+				if query.Get("type") != tt.wantQueryType {
+					t.Fatalf("type = %q, want %q", query.Get("type"), tt.wantQueryType)
+				}
+				if query.Get("limit") != "25" || query.Get("after") != "after" {
+					t.Fatalf("query = %q", r.URL.RawQuery)
+				}
+
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`[{"id":"user","username":"User"}]`)),
+					Request:    r,
+				}, nil
+			})
+
+			users, err := tt.call(session)
+			if err != nil {
+				t.Fatalf("reaction fetch returned error: %v", err)
+			}
+			if len(users) != 1 || users[0].ID != "user" {
+				t.Fatalf("users = %#v", users)
+			}
+		})
+	}
+}
+
 func TestPollAnswerVotersOptions(t *testing.T) {
 	tests := []struct {
 		name      string

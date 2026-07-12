@@ -38,6 +38,53 @@ func TestVoiceChannelEffectSendSoundIDUnmarshal(t *testing.T) {
 	}
 }
 
+func TestMessageReactionGatewayFieldsUnmarshal(t *testing.T) {
+	t.Run("add burst reaction", func(t *testing.T) {
+		var event MessageReactionAdd
+		data := `{"user_id":"user","channel_id":"channel","message_id":"message","guild_id":"guild","member":{},"emoji":{"name":"sparkle"},"message_author_id":"author","burst":true,"burst_colors":["#ff00ff"],"type":1}`
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		if event.MessageReaction == nil {
+			t.Fatal("MessageReaction is nil")
+		}
+		if event.MessageAuthorID != "author" || !event.Burst || event.Type != ReactionTypeBurst {
+			t.Fatalf("MessageReaction = %#v", event.MessageReaction)
+		}
+		if len(event.BurstColors) != 1 || event.BurstColors[0] != "#ff00ff" {
+			t.Fatalf("BurstColors = %#v", event.BurstColors)
+		}
+	})
+
+	t.Run("remove burst reaction", func(t *testing.T) {
+		var event MessageReactionRemove
+		data := `{"user_id":"user","channel_id":"channel","message_id":"message","guild_id":"guild","emoji":{"name":"sparkle"},"burst":true,"type":1}`
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		if event.MessageReaction == nil {
+			t.Fatal("MessageReaction is nil")
+		}
+		if !event.Burst || event.Type != ReactionTypeBurst {
+			t.Fatalf("MessageReaction = %#v", event.MessageReaction)
+		}
+	})
+
+	t.Run("omitted fields default to normal", func(t *testing.T) {
+		var event MessageReactionAdd
+		data := `{"user_id":"user","channel_id":"channel","message_id":"message","emoji":{"name":"wave"}}`
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		if event.MessageReaction == nil {
+			t.Fatal("MessageReaction is nil")
+		}
+		if event.Burst || event.Type != ReactionTypeNormal || event.BurstColors != nil {
+			t.Fatalf("MessageReaction = %#v", event.MessageReaction)
+		}
+	})
+}
+
 func TestCurrentGatewayEventDispatch(t *testing.T) {
 	tests := []struct {
 		name    string
