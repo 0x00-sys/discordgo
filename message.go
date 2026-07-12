@@ -395,6 +395,8 @@ type MessageEdit struct {
 	Embeds          *[]*MessageEmbed        `json:"embeds,omitempty"`
 	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
 	Flags           MessageFlags            `json:"flags,omitempty"`
+	// FlagsSet sends Flags even when it is zero, allowing MessageFlagsSuppressEmbeds to be unset.
+	FlagsSet bool `json:"-"`
 	// Files to append to the message
 	Files []*File `json:"-"`
 	// Overwrite existing attachments
@@ -405,6 +407,24 @@ type MessageEdit struct {
 
 	// TODO: Remove this when compatibility is not required.
 	Embed *MessageEmbed `json:"-"`
+}
+
+// MarshalJSON ensures message edit flags can be explicitly cleared.
+func (m MessageEdit) MarshalJSON() ([]byte, error) {
+	type messageEdit MessageEdit
+
+	var flags *MessageFlags
+	if m.Flags != 0 || m.FlagsSet {
+		flags = &m.Flags
+	}
+
+	return json.Marshal(struct {
+		messageEdit
+		Flags *MessageFlags `json:"flags,omitempty"`
+	}{
+		messageEdit: messageEdit(m),
+		Flags:       flags,
+	})
 }
 
 // NewMessageEdit returns a MessageEdit struct, initialized

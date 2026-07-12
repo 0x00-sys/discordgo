@@ -3306,6 +3306,80 @@ func TestSessionAllowedMentionsAppliedToRESTPayloads(t *testing.T) {
 	}
 }
 
+func TestChannelMessageEditFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		flags       MessageFlags
+		flagsSet    bool
+		wantFlags   string
+		wantPresent bool
+	}{
+		{name: "omitted"},
+		{
+			name:        "nonzero",
+			flags:       MessageFlagsSuppressEmbeds,
+			wantFlags:   "4",
+			wantPresent: true,
+		},
+		{
+			name:        "explicit zero",
+			flagsSet:    true,
+			wantFlags:   "0",
+			wantPresent: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPatch {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+				}
+				wantPath := "/api/v" + APIVersion + "/channels/channel/messages/message"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("Decode returned error: %v", err)
+				}
+				flags, present := payload["flags"]
+				if present != test.wantPresent {
+					t.Fatalf("flags present = %t, want %t", present, test.wantPresent)
+				}
+				if present && string(flags) != test.wantFlags {
+					t.Fatalf("flags = %s, want %s", flags, test.wantFlags)
+				}
+
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"channel"}`)),
+					Request:    r,
+				}, nil
+			})
+
+			message, err := session.ChannelMessageEditComplex(&MessageEdit{
+				ID:       "message",
+				Channel:  "channel",
+				Flags:    test.flags,
+				FlagsSet: test.flagsSet,
+			})
+			if err != nil {
+				t.Fatalf("ChannelMessageEditComplex returned error: %v", err)
+			}
+			if message == nil || message.ID != "message" {
+				t.Fatalf("message = %#v", message)
+			}
+		})
+	}
+}
+
 func TestSessionAllowedMentionsDoesNotOverridePayload(t *testing.T) {
 	content := "@everyone hello"
 
