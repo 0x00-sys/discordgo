@@ -848,6 +848,59 @@ type ThreadsList struct {
 	HasMore bool            `json:"has_more"`
 }
 
+// ThreadSearchTagSetting controls how tags are matched when searching threads.
+type ThreadSearchTagSetting string
+
+// Thread search tag settings.
+const (
+	ThreadSearchTagSettingMatchAll  ThreadSearchTagSetting = "match_all"
+	ThreadSearchTagSettingMatchSome ThreadSearchTagSetting = "match_some"
+)
+
+// ThreadSearchSortBy controls how thread search results are sorted.
+type ThreadSearchSortBy string
+
+// Thread search sorting modes.
+const (
+	ThreadSearchSortByRelevance       ThreadSearchSortBy = "relevance"
+	ThreadSearchSortByCreationTime    ThreadSearchSortBy = "creation_time"
+	ThreadSearchSortByLastMessageTime ThreadSearchSortBy = "last_message_time"
+	ThreadSearchSortByArchiveTime     ThreadSearchSortBy = "archive_time"
+)
+
+// ThreadSearchSortOrder controls the direction of thread search results.
+type ThreadSearchSortOrder string
+
+// Thread search sort orders.
+const (
+	ThreadSearchSortOrderAscending  ThreadSearchSortOrder = "asc"
+	ThreadSearchSortOrderDescending ThreadSearchSortOrder = "desc"
+)
+
+// ThreadSearchOptions stores query parameters for thread search.
+type ThreadSearchOptions struct {
+	Name       string
+	Slop       *int
+	MinID      string
+	MaxID      string
+	Tags       []string
+	TagSetting ThreadSearchTagSetting
+	Archived   *bool
+	SortBy     ThreadSearchSortBy
+	SortOrder  ThreadSearchSortOrder
+	Limit      int
+	Offset     int
+}
+
+// ThreadSearchResult stores a thread search response.
+type ThreadSearchResult struct {
+	Threads       []*Channel      `json:"threads"`
+	Members       []*ThreadMember `json:"members"`
+	HasMore       bool            `json:"has_more"`
+	FirstMessages []*Message      `json:"first_messages"`
+	TotalResults  int             `json:"total_results"`
+}
+
 // AddedThreadMember holds information about the user who was added to the thread
 type AddedThreadMember struct {
 	*ThreadMember

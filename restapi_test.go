@@ -835,6 +835,209 @@ func TestGuildMessagesSearchBuildsQuery(t *testing.T) {
 	}
 }
 
+func TestThreadsSearchBuildsQueryAndDecodesResponse(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		wantPath := "/api/v" + APIVersion + "/channels/channel/threads/search"
+		if r.URL.Path != wantPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+		}
+		if got := r.Header.Get("X-Test"); got != "thread-search" {
+			t.Fatalf("X-Test = %q, want %q", got, "thread-search")
+		}
+
+		query := r.URL.Query()
+		for key, want := range map[string]string{
+			"name":        "release notes",
+			"slop":        "0",
+			"min_id":      "100",
+			"max_id":      "200",
+			"tag_setting": "match_all",
+			"archived":    "false",
+			"sort_by":     "last_message_time",
+			"sort_order":  "desc",
+			"limit":       "25",
+			"offset":      "50",
+		} {
+			if got := query.Get(key); got != want {
+				t.Fatalf("%s = %q, want %q", key, got, want)
+			}
+		}
+		if got, want := query["tag"], []string{"tag-one", "tag-two"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("tag = %#v, want %#v", got, want)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"threads":[{"id":"thread","name":"release notes","type":11}],
+				"members":[{"id":"thread","user_id":"user","join_timestamp":"2026-07-13T12:00:00Z","flags":0}],
+				"has_more":true,
+				"first_messages":[{"id":"message","channel_id":"thread","content":"first"}],
+				"total_results":2
+			}`)),
+			Request: r,
+		}, nil
+	})
+
+	archived := false
+	slop := 0
+	result, err := session.ThreadsSearch("channel", &ThreadSearchOptions{
+		Name:       "release notes",
+		Slop:       &slop,
+		MinID:      "100",
+		MaxID:      "200",
+		Tags:       []string{"tag-one", "tag-two"},
+		TagSetting: ThreadSearchTagSettingMatchAll,
+		Archived:   &archived,
+		SortBy:     ThreadSearchSortByLastMessageTime,
+		SortOrder:  ThreadSearchSortOrderDescending,
+		Limit:      25,
+		Offset:     50,
+	}, WithHeader("X-Test", "thread-search"))
+	if err != nil {
+		t.Fatalf("ThreadsSearch returned error: %v", err)
+	}
+	if result.TotalResults != 2 || !result.HasMore {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.Threads) != 1 || result.Threads[0].ID != "thread" || result.Threads[0].Name != "release notes" {
+		t.Fatalf("threads = %#v", result.Threads)
+	}
+	if len(result.Members) != 1 || result.Members[0].ID != "thread" || result.Members[0].UserID != "user" {
+		t.Fatalf("members = %#v", result.Members)
+	}
+	if len(result.FirstMessages) != 1 || result.FirstMessages[0].ID != "message" || result.FirstMessages[0].Content != "first" {
+		t.Fatalf("first_messages = %#v", result.FirstMessages)
+	}
+}
+
+func TestThreadsSearchDefaultsOmitQuery(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *ThreadSearchOptions
+	}{
+		{name: "nil options"},
+		{name: "zero options", opts: &ThreadSearchOptions{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.RawQuery != "" {
+					t.Fatalf("RawQuery = %q, want empty", r.URL.RawQuery)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"threads":[],"members":[],"has_more":false,"total_results":0}`)),
+					Request:    r,
+				}, nil
+			})
+
+			result, err := session.ThreadsSearch("channel", tt.opts)
+			if err != nil {
+				t.Fatalf("ThreadsSearch returned error: %v", err)
+			}
+			if result == nil || result.TotalResults != 0 || result.FirstMessages != nil {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestThreadsSearchResponseErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		wantIndex     bool
+		wantREST      bool
+		wantUnmarshal bool
+	}{
+		{
+			name:      "index not ready",
+			status:    http.StatusAccepted,
+			body:      `{"message":"Index not yet available. Try again later","code":110000,"documents_indexed":7,"retry_after":2}`,
+			wantIndex: true,
+		},
+		{name: "malformed index response", status: http.StatusAccepted, body: `{`, wantREST: true},
+		{name: "null index response", status: http.StatusAccepted, body: `null`, wantREST: true},
+		{name: "http error", status: http.StatusBadRequest, body: `{"code":50035,"message":"Invalid Form Body"}`, wantREST: true},
+		{name: "malformed success response", status: http.StatusOK, body: `{`, wantUnmarshal: true},
+		{name: "null success response", status: http.StatusOK, body: `null`, wantUnmarshal: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     strconv.Itoa(tt.status) + " " + http.StatusText(tt.status),
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			result, err := session.ThreadsSearch("channel", nil)
+			if result != nil {
+				t.Fatalf("result = %#v, want nil", result)
+			}
+
+			if tt.wantIndex {
+				var indexErr *ThreadSearchIndexNotReadyError
+				if !errors.As(err, &indexErr) {
+					t.Fatalf("error = %T %v, want *ThreadSearchIndexNotReadyError", err, err)
+				}
+				if indexErr.Message != "Index not yet available. Try again later" || indexErr.Code != 110000 || indexErr.DocumentsIndexed != 7 || indexErr.RetryAfter != 2 {
+					t.Fatalf("index error = %#v", indexErr)
+				}
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != http.StatusAccepted {
+					t.Fatalf("error = %T %v, want wrapped 202 RESTError", err, err)
+				}
+				return
+			}
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+				}
+				var indexErr *ThreadSearchIndexNotReadyError
+				if errors.As(err, &indexErr) {
+					t.Fatalf("error = %T %v, do not want typed index error", err, err)
+				}
+				return
+			}
+			if tt.wantUnmarshal {
+				if !errors.Is(err, ErrJSONUnmarshal) {
+					t.Fatalf("error = %T %v, want ErrJSONUnmarshal", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ThreadsSearch returned error: %v", err)
+			}
+		})
+	}
+}
+
 func TestGuildWelcomeScreen(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
