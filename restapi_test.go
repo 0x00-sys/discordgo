@@ -3079,6 +3079,14 @@ func TestVoiceRegions(t *testing.T) {
 		t.Errorf("VoiceRegions() returned error: %+v", err)
 	}
 }
+
+func TestVoiceRegionsEndpointPath(t *testing.T) {
+	want := EndpointAPI + "voice/regions"
+	if EndpointVoiceRegions != want {
+		t.Fatalf("EndpointVoiceRegions = %q, want %q", EndpointVoiceRegions, want)
+	}
+}
+
 func TestGuildRoles(t *testing.T) {
 
 	if envGuild == "" {

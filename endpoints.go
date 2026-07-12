@@ -46,7 +46,7 @@ var (
 	EndpointCDNGuilds            = EndpointCDN + "guilds/"
 	EndpointCDNRoleIcons         = EndpointCDN + "role-icons/"
 
-	EndpointVoice        = EndpointAPI + "/voice/"
+	EndpointVoice        = EndpointAPI + "voice/"
 	EndpointVoiceRegions = EndpointVoice + "regions"
 
 	EndpointUser               = func(uID string) string { return EndpointUsers + uID }
