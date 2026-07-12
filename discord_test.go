@@ -80,6 +80,15 @@ func TestNewIncludesPollIntents(t *testing.T) {
 	}
 }
 
+func TestCurrentAPIVersion(t *testing.T) {
+	if APIVersion != "10" {
+		t.Fatalf("APIVersion = %q, want %q", APIVersion, "10")
+	}
+	if EndpointAPI != "https://discord.com/api/v10/" {
+		t.Fatalf("EndpointAPI = %q, want current API base URL", EndpointAPI)
+	}
+}
+
 func TestOpenClose(t *testing.T) {
 	if envOAuth2Token == "" {
 		t.Skip("Skipping TestClose, DGU_TOKEN not set")
