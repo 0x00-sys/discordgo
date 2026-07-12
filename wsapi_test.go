@@ -102,6 +102,35 @@ func TestOnEventOp1NilWsConn(t *testing.T) {
 	if !errors.Is(err, ErrWSNotFound) {
 		t.Fatalf("onEvent() error = %v, want %v", err, ErrWSNotFound)
 	}
+	if !s.LastHeartbeatSent.IsZero() {
+		t.Fatalf("LastHeartbeatSent = %v after failed write, want zero", s.LastHeartbeatSent)
+	}
+}
+
+func TestOnEventOp1RecordsHeartbeatSent(t *testing.T) {
+	conn, peer := newGatewayTestConnection(t)
+	s := &Session{sequence: new(int64), wsConn: conn}
+
+	read := make(chan error, 1)
+	go func() {
+		_, _, err := peer.ReadMessage()
+		read <- err
+	}()
+
+	if _, err := s.onEvent(websocket.TextMessage, []byte(`{"op":1,"d":null}`)); err != nil {
+		t.Fatalf("onEvent() error = %v", err)
+	}
+	select {
+	case err := <-read:
+		if err != nil {
+			t.Fatalf("gateway peer ReadMessage returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway peer did not receive requested heartbeat")
+	}
+	if s.LastHeartbeatSent.IsZero() {
+		t.Fatal("LastHeartbeatSent was not recorded for requested heartbeat")
+	}
 }
 
 func TestOnEventRejectsNullEvent(t *testing.T) {
@@ -476,11 +505,9 @@ func TestOpenRejectsInvalidHeartbeatInterval(t *testing.T) {
 	}
 }
 
-func TestOpenRejectsHeartbeatIntervalOverflowingAckDeadline(t *testing.T) {
-	// 3e12 msec passes a bound that only protects the msec-to-Duration
-	// conversion, but interval*FailedHeartbeatAcks overflows int64 and
-	// turns the missed-ACK deadline negative.
-	server := newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":3000000000000}}`))
+func TestOpenRejectsHeartbeatIntervalOverflow(t *testing.T) {
+	// 1e13 msec overflows the millisecond-to-Duration conversion.
+	server := newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":10000000000000}}`))
 	session, err := newGatewayOpenTestSession(server, "Bot test")
 	if err != nil {
 		t.Fatalf("error creating session: %v", err)
@@ -496,9 +523,9 @@ func TestOpenRejectsHeartbeatIntervalOverflowingAckDeadline(t *testing.T) {
 	}
 }
 
-func TestMaxGatewayHeartbeatIntervalCannotOverflowAckDeadline(t *testing.T) {
-	if maxGatewayHeartbeatIntervalMsec > time.Duration(1<<63-1)/FailedHeartbeatAcks {
-		t.Fatalf("maxGatewayHeartbeatIntervalMsec %d allows interval*FailedHeartbeatAcks to overflow", maxGatewayHeartbeatIntervalMsec)
+func TestMaxGatewayHeartbeatIntervalCannotOverflowDuration(t *testing.T) {
+	if FailedHeartbeatAcks != time.Millisecond {
+		t.Fatalf("FailedHeartbeatAcks = %v, want one interval", FailedHeartbeatAcks)
 	}
 	if maxGatewayHeartbeatIntervalMsec > time.Duration(1<<63-1)/time.Millisecond {
 		t.Fatalf("maxGatewayHeartbeatIntervalMsec %d allows interval*time.Millisecond to overflow", maxGatewayHeartbeatIntervalMsec)
@@ -1491,37 +1518,29 @@ func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
 	}
 }
 
-func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
+func TestHeartbeatReconnectsAfterOneMissedAck(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter
+	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
+	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+
+	conn, peer := newGatewayTestConnection(t)
 	closeCode := make(chan int, 1)
-
-	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		conn.SetCloseHandler(func(code int, text string) error {
-			closeCode <- code
-			return nil
-		})
-
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+	heartbeats := make(chan int, 16)
+	peer.SetCloseHandler(func(code int, text string) error {
+		closeCode <- code
+		return nil
+	})
+	go func() {
+		for count := 1; ; count++ {
+			if _, _, err := peer.ReadMessage(); err != nil {
 				return
 			}
+			select {
+			case heartbeats <- count:
+			default:
+			}
 		}
-	}))
-	t.Cleanup(server.Close)
-
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
-	if err != nil {
-		t.Fatalf("Dial returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
+	}()
 
 	listening := make(chan interface{})
 	session := &Session{
@@ -1530,13 +1549,22 @@ func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
 		wsConn:                 conn,
 		listening:              listening,
 	}
-	session.LastHeartbeatAck = time.Now().Add(-time.Second)
+	session.LastHeartbeatAck = time.Now().UTC()
 
 	done := make(chan struct{})
 	go func() {
-		session.heartbeat(conn, listening, 1)
+		session.heartbeat(conn, listening, 20)
 		close(done)
 	}()
+
+	select {
+	case count := <-heartbeats:
+		if count != 1 {
+			t.Fatalf("first heartbeat count = %d, want 1", count)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive first heartbeat")
+	}
 
 	select {
 	case code := <-closeCode:
@@ -1546,12 +1574,185 @@ func TestHeartbeatUsesRestartCloseOnMissedAck(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("server did not receive heartbeat close frame")
 	}
+	select {
+	case count := <-heartbeats:
+		t.Fatalf("received heartbeat %d before reconnect, want exactly one", count)
+	default:
+	}
 
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("heartbeat did not return")
 	}
+}
+
+func TestHeartbeatContinuesAfterAck(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter
+	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
+	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+
+	conn, peer := newGatewayTestConnection(t)
+	listening := make(chan interface{})
+	session := &Session{
+		ShouldReconnectOnError: false,
+		sequence:               new(int64),
+		wsConn:                 conn,
+		listening:              listening,
+		LastHeartbeatAck:       time.Now().UTC(),
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2; i++ {
+			if _, _, err := peer.ReadMessage(); err != nil {
+				serverErr <- err
+				return
+			}
+			if err := peer.WriteJSON(map[string]interface{}{"op": 11, "d": nil}); err != nil {
+				serverErr <- err
+				return
+			}
+		}
+		serverErr <- nil
+	}()
+
+	ackErr := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2; i++ {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				ackErr <- err
+				return
+			}
+			if _, err = session.onEvent(messageType, message); err != nil {
+				ackErr <- err
+				return
+			}
+		}
+		ackErr <- nil
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		session.heartbeat(conn, listening, 50)
+		close(done)
+	}()
+
+	if err := <-serverErr; err != nil {
+		t.Fatalf("gateway peer returned error: %v", err)
+	}
+	if err := <-ackErr; err != nil {
+		t.Fatalf("heartbeat ACK reader returned error: %v", err)
+	}
+	close(listening)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not stop after listening closed")
+	}
+
+	session.RLock()
+	lastAck := session.LastHeartbeatAck
+	lastSent := session.LastHeartbeatSent
+	currentConn := session.wsConn
+	session.RUnlock()
+	if lastAck.Before(lastSent) {
+		t.Fatalf("last heartbeat ACK %v is before sent heartbeat %v", lastAck, lastSent)
+	}
+	if currentConn != conn {
+		t.Fatal("acknowledged heartbeat closed the gateway connection")
+	}
+}
+
+func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter
+	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
+	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+
+	oldConn, _ := newGatewayTestConnection(t)
+	newConn, _ := newGatewayTestConnection(t)
+	oldListening := make(chan interface{})
+	newListening := make(chan interface{})
+
+	oldLogger := Logger
+	defer func() { Logger = oldLogger }()
+	logReached := make(chan struct{})
+	releaseLog := make(chan struct{})
+	defer closeChannel(releaseLog)
+	var blockLog sync.Once
+	Logger = func(msgL, caller int, format string, a ...interface{}) {
+		if strings.Contains(fmt.Sprintf(format, a...), "haven't gotten a heartbeat ACK") {
+			blockLog.Do(func() {
+				close(logReached)
+				<-releaseLog
+			})
+		}
+	}
+
+	session := &Session{
+		LastHeartbeatAck:       time.Now().Add(-time.Second).UTC(),
+		LastHeartbeatSent:      time.Now().UTC(),
+		LogLevel:               LogError,
+		ShouldReconnectOnError: false,
+		SyncEvents:             true,
+		sequence:               new(int64),
+		wsConn:                 oldConn,
+		listening:              oldListening,
+	}
+
+	disconnected := int32(0)
+	session.AddHandler(func(*Session, *Disconnect) {
+		atomic.StoreInt32(&disconnected, 1)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		session.heartbeat(oldConn, oldListening, 20)
+		close(done)
+	}()
+
+	select {
+	case <-logReached:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not detect the missed ACK")
+	}
+
+	session.Lock()
+	session.DataReady = true
+	session.wsConn = newConn
+	session.listening = newListening
+	session.Unlock()
+	close(releaseLog)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not return")
+	}
+
+	session.RLock()
+	currentConn := session.wsConn
+	currentListening := session.listening
+	dataReady := session.DataReady
+	session.RUnlock()
+	if currentConn != newConn || currentListening != newListening || !dataReady {
+		t.Fatal("stale heartbeat changed the replacement gateway state")
+	}
+	select {
+	case <-newListening:
+		t.Fatal("stale heartbeat closed the replacement listening channel")
+	default:
+	}
+	if atomic.LoadInt32(&disconnected) != 0 {
+		t.Fatal("stale heartbeat emitted a disconnect for the replacement connection")
+	}
+	if err := newConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("replacement connection WriteControl returned error: %v", err)
+	}
+
+	close(oldListening)
+	close(newListening)
 }
 
 func TestReconnectCanceledAfterOpenKeepsNewerSession(t *testing.T) {
