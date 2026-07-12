@@ -152,6 +152,9 @@ type Session struct {
 
 	// used to make sure gateway websocket writes do not happen concurrently
 	wsMutex sync.Mutex
+
+	// limits non-critical gateway writes for the current connection
+	gatewaySendRateLimiter gatewaySendRateLimiter
 }
 
 // ApplicationIntegrationType dictates where application can be installed and its available interaction contexts.
