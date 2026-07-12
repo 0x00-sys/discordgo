@@ -1,8 +1,10 @@
 package discordgo
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +38,459 @@ func TestOpusSenderNilAEAD(t *testing.T) {
 	}()
 
 	v.opusSender(udpConn, make(chan struct{}), opus, 48000, 960)
+}
+
+func TestSelectVoiceEncryptionMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		modes    []string
+		expected string
+		wantErr  bool
+	}{
+		{
+			name: "aes preferred over xchacha",
+			modes: []string{
+				voiceModeXChaCha20Poly1305RTPSize,
+				voiceModeAES256GCMRTPSize,
+			},
+			expected: voiceModeAES256GCMRTPSize,
+		},
+		{
+			name:     "xchacha fallback",
+			modes:    []string{voiceModeXChaCha20Poly1305RTPSize},
+			expected: voiceModeXChaCha20Poly1305RTPSize,
+		},
+		{
+			name:    "unsupported modes",
+			modes:   []string{"xsalsa20_poly1305"},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := selectVoiceEncryptionMode(test.modes)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("selectVoiceEncryptionMode(%v) = %q, want error", test.modes, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("selectVoiceEncryptionMode(%v) error = %v", test.modes, err)
+			}
+			if got != test.expected {
+				t.Fatalf("selectVoiceEncryptionMode(%v) = %q, want %q", test.modes, got, test.expected)
+			}
+		})
+	}
+}
+
+func TestVoiceReadyRejectsUnsupportedEncryptionModes(t *testing.T) {
+	key := make([]int, 32)
+	aead, err := newVoiceAEAD(voiceModeAES256GCMRTPSize, key)
+	if err != nil {
+		t.Fatalf("newVoiceAEAD() error = %v", err)
+	}
+	vc := &VoiceConnection{
+		LogLevel:       -1,
+		aead:           aead,
+		encryptionMode: voiceModeAES256GCMRTPSize,
+	}
+	defer vc.Close()
+
+	vc.onEvent([]byte(`{"op":2,"d":{"ssrc":1,"ip":"127.0.0.1","port":1,"modes":["xsalsa20_poly1305"]}}`))
+
+	vc.RLock()
+	defer vc.RUnlock()
+	if vc.encryptionMode != "" {
+		t.Fatalf("encryptionMode = %q, want empty", vc.encryptionMode)
+	}
+	if vc.aead != nil {
+		t.Fatal("unsupported Ready payload retained an AEAD")
+	}
+}
+
+func TestVoiceSessionDescription(t *testing.T) {
+	validKey := make([]int, 32)
+	for i := range validKey {
+		validKey[i] = i
+	}
+	invalidByteKey := append([]int(nil), validKey...)
+	invalidByteKey[7] = 256
+
+	tests := []struct {
+		name          string
+		selectedMode  string
+		op4Mode       string
+		key           []int
+		expectedNonce int
+	}{
+		{
+			name:          "matching aes mode",
+			selectedMode:  voiceModeAES256GCMRTPSize,
+			op4Mode:       voiceModeAES256GCMRTPSize,
+			key:           validKey,
+			expectedNonce: 12,
+		},
+		{
+			name:          "matching xchacha mode",
+			selectedMode:  voiceModeXChaCha20Poly1305RTPSize,
+			op4Mode:       voiceModeXChaCha20Poly1305RTPSize,
+			key:           validKey,
+			expectedNonce: 24,
+		},
+		{
+			name:         "mismatched mode",
+			selectedMode: voiceModeAES256GCMRTPSize,
+			op4Mode:      voiceModeXChaCha20Poly1305RTPSize,
+			key:          validKey,
+		},
+		{
+			name:         "short key",
+			selectedMode: voiceModeAES256GCMRTPSize,
+			op4Mode:      voiceModeAES256GCMRTPSize,
+			key:          []int{1, 2, 3},
+		},
+		{
+			name:         "invalid key byte",
+			selectedMode: voiceModeAES256GCMRTPSize,
+			op4Mode:      voiceModeAES256GCMRTPSize,
+			key:          invalidByteKey,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vc := &VoiceConnection{LogLevel: -1, encryptionMode: test.selectedMode}
+			vc.onEvent(voiceSessionDescriptionMessage(t, test.op4Mode, test.key))
+
+			vc.RLock()
+			defer vc.RUnlock()
+			if test.expectedNonce == 0 {
+				if vc.aead != nil {
+					t.Fatal("invalid session description installed an AEAD")
+				}
+				if vc.op4.Mode != "" {
+					t.Fatalf("invalid session description stored mode %q", vc.op4.Mode)
+				}
+				return
+			}
+			if vc.aead == nil {
+				t.Fatal("valid session description did not install an AEAD")
+			}
+			if got := vc.aead.NonceSize(); got != test.expectedNonce {
+				t.Fatalf("NonceSize() = %d, want %d", got, test.expectedNonce)
+			}
+			if vc.op4.Mode != test.op4Mode {
+				t.Fatalf("stored mode = %q, want %q", vc.op4.Mode, test.op4Mode)
+			}
+		})
+	}
+}
+
+func TestVoiceReadyRequiresValidSessionDescription(t *testing.T) {
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+
+	key := make([]int, 32)
+	vc := &VoiceConnection{
+		LogLevel:       -1,
+		close:          make(chan struct{}),
+		udpConn:        udpConn,
+		deaf:           true,
+		encryptionMode: voiceModeAES256GCMRTPSize,
+	}
+	defer vc.Close()
+
+	vc.RLock()
+	ready := vc.Ready
+	vc.RUnlock()
+	if ready {
+		t.Fatal("voice connection was ready before Session Description")
+	}
+
+	vc.onEvent(voiceSessionDescriptionMessage(t, voiceModeAES256GCMRTPSize, key))
+
+	vc.RLock()
+	ready = vc.Ready
+	aead := vc.aead
+	vc.RUnlock()
+	if !ready {
+		t.Fatal("voice connection was not ready after valid Session Description")
+	}
+	if aead == nil {
+		t.Fatal("valid Session Description did not install an AEAD")
+	}
+
+	vc.Close()
+	vc.RLock()
+	ready = vc.Ready
+	vc.RUnlock()
+	if ready {
+		t.Fatal("voice connection remained ready after Close")
+	}
+}
+
+func TestVoiceInvalidSessionDescriptionFailsClosed(t *testing.T) {
+	key := make([]int, 32)
+	tests := []struct {
+		name   string
+		mode   string
+		secret []int
+	}{
+		{
+			name:   "mismatched mode",
+			mode:   voiceModeXChaCha20Poly1305RTPSize,
+			secret: key,
+		},
+		{
+			name:   "invalid key",
+			mode:   voiceModeAES256GCMRTPSize,
+			secret: []int{1, 2, 3},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			closeChan := make(chan struct{})
+			opusSend := make(chan []byte, 1)
+			opusSend <- []byte{0x01}
+			vc := &VoiceConnection{
+				LogLevel:       -1,
+				Ready:          true,
+				close:          closeChan,
+				OpusSend:       opusSend,
+				encryptionMode: voiceModeAES256GCMRTPSize,
+			}
+
+			vc.onEvent(voiceSessionDescriptionMessage(t, test.mode, test.secret))
+
+			vc.RLock()
+			ready := vc.Ready
+			aead := vc.aead
+			vc.RUnlock()
+			if ready {
+				t.Fatal("invalid Session Description left voice ready")
+			}
+			if aead != nil {
+				t.Fatal("invalid Session Description retained an AEAD")
+			}
+			select {
+			case <-closeChan:
+			default:
+				t.Fatal("invalid Session Description did not close the transport")
+			}
+			if len(opusSend) != 1 {
+				t.Fatal("invalid Session Description consumed a queued Opus frame")
+			}
+		})
+	}
+}
+
+func TestVoiceAEADVectors(t *testing.T) {
+	key := make([]int, 32)
+	for i := range key {
+		key[i] = i
+	}
+	header := []byte{0x80, 0x78, 0x12, 0x34, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	opus := []byte{0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03}
+	const counter = uint32(0x01020304)
+
+	tests := []struct {
+		name        string
+		mode        string
+		expectedHex string
+	}{
+		{
+			name:        "aes",
+			mode:        voiceModeAES256GCMRTPSize,
+			expectedHex: "d9aa235c15923492100db0e5ecb54fc68012861b231901020304",
+		},
+		{
+			name:        "xchacha",
+			mode:        voiceModeXChaCha20Poly1305RTPSize,
+			expectedHex: "8e97ee4d9c69cb0a20bf07d083536831aa523a1138c201020304",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			aead, err := newVoiceAEAD(test.mode, key)
+			if err != nil {
+				t.Fatalf("newVoiceAEAD() error = %v", err)
+			}
+			nonce := make([]byte, aead.NonceSize())
+			setVoiceNonce(nonce, counter)
+			ciphertext := aead.Seal(nil, nonce, opus, header)
+			payload := append(append([]byte(nil), ciphertext...), nonce[:4]...)
+			if !bytes.Equal(payload[len(payload)-4:], []byte{0x01, 0x02, 0x03, 0x04}) {
+				t.Fatalf("nonce suffix = %x, want 01020304", payload[len(payload)-4:])
+			}
+			if got := hex.EncodeToString(payload); got != test.expectedHex {
+				t.Fatalf("encrypted payload = %s, want %s", got, test.expectedHex)
+			}
+
+			counterBytes := payload[len(payload)-4:]
+			decryptNonce := make([]byte, aead.NonceSize())
+			copy(decryptNonce[:4], counterBytes)
+			plain, err := aead.Open(nil, decryptNonce, payload[:len(payload)-4], header)
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			if !bytes.Equal(plain, opus) {
+				t.Fatalf("decrypted payload = %x, want %x", plain, opus)
+			}
+		})
+	}
+}
+
+func TestUDPOpenSendsSelectedEncryptionMode(t *testing.T) {
+	udpServer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	defer udpServer.Close()
+
+	udpResult := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 74)
+		n, addr, readErr := udpServer.ReadFromUDP(buf)
+		if readErr != nil {
+			udpResult <- readErr
+			return
+		}
+		if n != len(buf) {
+			udpResult <- fmt.Errorf("discovery request length %d", n)
+			return
+		}
+		response := make([]byte, 74)
+		copy(response[8:], []byte("203.0.113.10"))
+		binary.BigEndian.PutUint16(response[72:], 4242)
+		_, writeErr := udpServer.WriteToUDP(response, addr)
+		udpResult <- writeErr
+	}()
+
+	opResult := make(chan voiceUDPOp, 1)
+	upgrader := websocket.Upgrader{}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, upgradeErr := upgrader.Upgrade(w, r, nil)
+		if upgradeErr != nil {
+			return
+		}
+		defer conn.Close()
+		var op voiceUDPOp
+		if readErr := conn.ReadJSON(&op); readErr == nil {
+			opResult <- op
+		}
+	}))
+	defer wsServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(wsServer.URL, "http")
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer wsConn.Close()
+
+	closeChan := make(chan struct{})
+	udpAddr := udpServer.LocalAddr().(*net.UDPAddr)
+	vc := &VoiceConnection{
+		LogLevel:       -1,
+		close:          closeChan,
+		endpoint:       "voice.example.com",
+		wsConn:         wsConn,
+		encryptionMode: voiceModeXChaCha20Poly1305RTPSize,
+		op2: voiceOP2{
+			IP:   udpAddr.IP.String(),
+			Port: udpAddr.Port,
+			SSRC: 1,
+		},
+	}
+	defer func() {
+		close(closeChan)
+		vc.Lock()
+		if vc.udpConn != nil {
+			_ = vc.udpConn.Close()
+		}
+		vc.Unlock()
+	}()
+
+	if err = vc.udpOpen(); err != nil {
+		t.Fatalf("udpOpen() error = %v", err)
+	}
+	if err = <-udpResult; err != nil {
+		t.Fatalf("UDP discovery error = %v", err)
+	}
+
+	select {
+	case op := <-opResult:
+		if op.Op != 1 {
+			t.Fatalf("OP = %d, want 1", op.Op)
+		}
+		if op.Data.Protocol != "udp" {
+			t.Fatalf("protocol = %q, want udp", op.Data.Protocol)
+		}
+		if op.Data.Data.Mode != voiceModeXChaCha20Poly1305RTPSize {
+			t.Fatalf("mode = %q, want %q", op.Data.Data.Mode, voiceModeXChaCha20Poly1305RTPSize)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("did not receive Select Protocol payload")
+	}
+}
+
+func TestVoiceSessionDescriptionConcurrent(t *testing.T) {
+	key := make([]int, 32)
+	message := voiceSessionDescriptionMessage(t, voiceModeAES256GCMRTPSize, key)
+	vc := &VoiceConnection{LogLevel: -1, encryptionMode: voiceModeAES256GCMRTPSize}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			vc.onEvent(message)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 100; j++ {
+				vc.RLock()
+				if vc.aead != nil {
+					_ = vc.aead.NonceSize()
+				}
+				vc.RUnlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	vc.RLock()
+	defer vc.RUnlock()
+	if vc.aead == nil {
+		t.Fatal("valid concurrent session descriptions did not install an AEAD")
+	}
+}
+
+func voiceSessionDescriptionMessage(t *testing.T, mode string, key []int) []byte {
+	t.Helper()
+	payload := struct {
+		Op   int      `json:"op"`
+		Data voiceOP4 `json:"d"`
+	}{
+		Op:   4,
+		Data: voiceOP4{Mode: mode, SecretKey: key},
+	}
+	message, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return message
 }
 
 func TestVoiceClose4022DoesNotReconnect(t *testing.T) {
