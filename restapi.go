@@ -2738,14 +2738,33 @@ func (s *Session) GuildTemplates(guildID string, options ...RequestOption) (st [
 // GuildTemplateCreate creates a template for the guild
 // guildID : The ID of the guild
 // data    : Template metadata
-func (s *Session) GuildTemplateCreate(guildID string, data *GuildTemplateParams, options ...RequestOption) (st *GuildTemplate) {
-	body, err := s.RequestWithBucketID("POST", EndpointGuildTemplates(guildID), data, EndpointGuildTemplates(guildID), options...)
+//
+// Deprecated: use GuildTemplateCreateWithError to receive request and response errors.
+func (s *Session) GuildTemplateCreate(guildID string, data *GuildTemplateParams, options ...RequestOption) *GuildTemplate {
+	st, err := s.GuildTemplateCreateWithError(guildID, data, options...)
 	if err != nil {
-		return
+		return nil
+	}
+	return st
+}
+
+// GuildTemplateCreateWithError creates a template for the guild and returns request and response errors.
+// guildID : The ID of the guild
+// data    : Template metadata
+func (s *Session) GuildTemplateCreateWithError(guildID string, data *GuildTemplateParams, options ...RequestOption) (st *GuildTemplate, err error) {
+	endpoint := EndpointGuildTemplates(guildID)
+	body, err := s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
+	if err != nil {
+		return nil, err
 	}
 
-	err = unmarshal(body, &st)
-	return
+	if err = unmarshal(body, &st); err != nil {
+		return nil, err
+	}
+	if st == nil {
+		return nil, fmt.Errorf("%w: guild template create response is null", ErrJSONUnmarshal)
+	}
+	return st, nil
 }
 
 // GuildTemplateSync syncs the template to the guild's current state

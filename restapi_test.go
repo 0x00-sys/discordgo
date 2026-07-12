@@ -1490,6 +1490,140 @@ func TestGuildVanityURLAllowsNullCode(t *testing.T) {
 	}
 }
 
+func TestGuildTemplateCreateWithError(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPost)
+		}
+		wantPath := "/api/v" + APIVersion + "/guilds/guild/templates"
+		if r.URL.Path != wantPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+		}
+		if got := r.Header.Get("X-Test"); got != "template" {
+			t.Fatalf("X-Test = %q, want %q", got, "template")
+		}
+
+		var params GuildTemplateParams
+		if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if params.Name != "Template" || params.Description != "Description" {
+			t.Fatalf("params = %#v", params)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"code":"template","name":"Template","source_guild_id":"guild"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	template, err := session.GuildTemplateCreateWithError(
+		"guild",
+		&GuildTemplateParams{Name: "Template", Description: "Description"},
+		WithHeader("X-Test", "template"),
+	)
+	if err != nil {
+		t.Fatalf("GuildTemplateCreateWithError returned error: %v", err)
+	}
+	if template == nil || template.Code != "template" || template.Name != "Template" || template.SourceGuildID != "guild" {
+		t.Fatalf("template = %#v", template)
+	}
+}
+
+func TestGuildTemplateCreateWithErrorResponseErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		wantREST      bool
+		wantUnmarshal bool
+	}{
+		{name: "REST error", status: http.StatusForbidden, body: `{"code":50001,"message":"Missing Access"}`, wantREST: true},
+		{name: "malformed response", status: http.StatusOK, body: `{`, wantUnmarshal: true},
+		{name: "empty response", status: http.StatusOK, wantUnmarshal: true},
+		{name: "null response", status: http.StatusOK, body: `null`, wantUnmarshal: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     strconv.Itoa(tt.status) + " " + http.StatusText(tt.status),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			template, err := session.GuildTemplateCreateWithError("guild", &GuildTemplateParams{Name: "Template"})
+			if template != nil {
+				t.Fatalf("template = %#v, want nil", template)
+			}
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+				}
+			}
+			if tt.wantUnmarshal && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %T %v, want ErrJSONUnmarshal", err, err)
+			}
+		})
+	}
+}
+
+func TestGuildTemplateCreateLegacyWrapper(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantCode string
+	}{
+		{name: "success", body: `{"code":"template"}`, wantCode: "template"},
+		{name: "error remains nil result", body: `{`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			template := session.GuildTemplateCreate("guild", &GuildTemplateParams{Name: "Template"})
+			if tt.wantCode == "" {
+				if template != nil {
+					t.Fatalf("template = %#v, want nil", template)
+				}
+				return
+			}
+			if template == nil || template.Code != tt.wantCode {
+				t.Fatalf("template = %#v, want code %q", template, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestChannelInviteCreateWithTargetUsersFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
