@@ -1305,6 +1305,199 @@ type gatewayWrite struct {
 	Data json.RawMessage `json:"d"`
 }
 
+func TestGatewayWriteWaitsAfterSendRateLimit(t *testing.T) {
+	now := time.Unix(1, 0)
+	waits := make([]time.Duration, 0, 1)
+	writes := captureGatewayWrites(t, gatewaySendRateLimit+1, func(session *Session) error {
+		session.gatewaySendRateLimiter.now = func() time.Time { return now }
+		session.gatewaySendRateLimiter.wait = func(delay time.Duration, _ <-chan struct{}) bool {
+			waits = append(waits, delay)
+			now = now.Add(delay)
+			return true
+		}
+
+		for i := 0; i <= gatewaySendRateLimit; i++ {
+			if err := session.GatewayWriteStruct(struct {
+				Op int `json:"op"`
+			}{Op: 3}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if len(waits) != 1 || waits[0] != gatewaySendRateLimitWindow {
+		t.Fatalf("rate limit waits = %v, want [%v]", waits, gatewaySendRateLimitWindow)
+	}
+	for i, write := range writes {
+		if write.Op != 3 {
+			t.Fatalf("write %d op = %d, want 3", i, write.Op)
+		}
+	}
+}
+
+func TestGatewaySendRateLimiterConcurrentReset(t *testing.T) {
+	now := time.Unix(1, 0)
+	waitStarted := make(chan struct{}, 1)
+	limiter := gatewaySendRateLimiter{
+		now: func() time.Time { return now },
+		wait: func(_ time.Duration, cancel <-chan struct{}) bool {
+			waitStarted <- struct{}{}
+			<-cancel
+			return false
+		},
+	}
+	oldConnection := &websocket.Conn{}
+	limiter.reset(oldConnection)
+
+	results := make(chan bool, gatewaySendRateLimit+1)
+	for i := 0; i <= gatewaySendRateLimit; i++ {
+		go func() {
+			results <- limiter.acquire(oldConnection)
+		}()
+	}
+
+	select {
+	case <-waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("rate limited write did not wait")
+	}
+	for i := 0; i < gatewaySendRateLimit; i++ {
+		select {
+		case acquired := <-results:
+			if !acquired {
+				t.Fatalf("acquire %d was canceled before reset", i)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("acquire %d did not complete", i)
+		}
+	}
+
+	newConnection := &websocket.Conn{}
+	limiter.reset(newConnection)
+	select {
+	case acquired := <-results:
+		if acquired {
+			t.Fatal("waiting write acquired a slot after its connection was reset")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting write was not canceled by connection reset")
+	}
+	if !limiter.acquire(newConnection) {
+		t.Fatal("first write on replacement connection was rate limited")
+	}
+}
+
+func TestGatewayRateLimitWaitStopsOnClose(t *testing.T) {
+	server := newCloseFrameTestServer(t)
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	waitStarted := make(chan struct{})
+	session := &Session{
+		LogLevel:  -1,
+		wsConn:    conn,
+		listening: make(chan interface{}),
+		sequence:  new(int64),
+	}
+	session.gatewaySendRateLimiter.wait = func(_ time.Duration, cancel <-chan struct{}) bool {
+		close(waitStarted)
+		<-cancel
+		return false
+	}
+	for i := 0; i < gatewaySendRateLimit; i++ {
+		if !session.gatewaySendRateLimiter.acquire(conn) {
+			t.Fatalf("acquire %d was unexpectedly rate limited", i)
+		}
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- session.GatewayWriteStruct(struct {
+			Op int `json:"op"`
+		}{Op: 3})
+	}()
+
+	select {
+	case <-waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("rate limited write did not wait")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case err := <-writeDone:
+		if !errors.Is(err, ErrWSNotFound) {
+			t.Fatalf("GatewayWriteStruct() error = %v, want %v", err, ErrWSNotFound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rate limited write did not return after close")
+	}
+}
+
+func TestGatewayStartupAndHeartbeatBypassSendRateLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		op   int
+		call func(*Session) error
+	}{
+		{
+			name: "identify",
+			op:   2,
+			call: func(session *Session) error {
+				session.Lock()
+				err := session.writeGatewayStartupPacket(session.wsConn, identifyOp{Op: 2})
+				session.Unlock()
+				return err
+			},
+		},
+		{
+			name: "resume",
+			op:   6,
+			call: func(session *Session) error {
+				session.Lock()
+				err := session.writeGatewayStartupPacket(session.wsConn, resumePacket{Op: 6})
+				session.Unlock()
+				return err
+			},
+		},
+		{
+			name: "heartbeat",
+			op:   1,
+			call: func(session *Session) error {
+				_, err := session.onEvent(websocket.TextMessage, []byte(`{"op":1,"d":null}`))
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writes := captureGatewayWrites(t, 1, func(session *Session) error {
+				session.gatewaySendRateLimiter.wait = func(time.Duration, <-chan struct{}) bool {
+					t.Fatal("critical gateway write used the general send limit")
+					return false
+				}
+				for i := 0; i < gatewaySendRateLimit; i++ {
+					if !session.gatewaySendRateLimiter.acquire(session.wsConn) {
+						t.Fatalf("acquire %d was unexpectedly rate limited", i)
+					}
+				}
+				return tt.call(session)
+			})
+			if writes[0].Op != tt.op {
+				t.Fatalf("op = %d, want %d", writes[0].Op, tt.op)
+			}
+		})
+	}
+}
+
 type requestGuildMembersWrite struct {
 	Op   int `json:"op"`
 	Data struct {

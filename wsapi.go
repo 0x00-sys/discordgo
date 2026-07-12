@@ -20,6 +20,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,117 @@ var ErrWSNotFound = errors.New("no websocket connection exists")
 var ErrWSShardBounds = errors.New("ShardID must be less than ShardCount")
 
 const websocketCloseFrameTimeout = time.Second
+
+const (
+	// Discord allows 120 events per connection every minute. Keep five
+	// slots available for Heartbeat, Identify, and Resume payloads.
+	gatewaySendRateLimit       = 115
+	gatewaySendRateLimitWindow = time.Minute
+)
+
+type gatewaySendRateLimiter struct {
+	mu         sync.Mutex
+	connection *websocket.Conn
+	cancel     chan struct{}
+	sent       int
+	resetAt    time.Time
+	now        func() time.Time
+	wait       func(time.Duration, <-chan struct{}) bool
+}
+
+func (r *gatewaySendRateLimiter) reset(connection *websocket.Conn) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.cancelLocked()
+	r.connection = connection
+	r.cancel = make(chan struct{})
+	r.sent = 0
+	r.resetAt = r.timeNow().Add(gatewaySendRateLimitWindow)
+}
+
+func (r *gatewaySendRateLimiter) stop(connection *websocket.Conn) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.connection == connection {
+		r.cancelLocked()
+	}
+}
+
+func (r *gatewaySendRateLimiter) acquire(connection *websocket.Conn) bool {
+	for {
+		r.mu.Lock()
+		if r.connection == nil {
+			r.connection = connection
+			r.cancel = make(chan struct{})
+			r.resetAt = r.timeNow().Add(gatewaySendRateLimitWindow)
+		}
+		if r.connection != connection || isGatewaySendCanceled(r.cancel) {
+			r.mu.Unlock()
+			return false
+		}
+
+		now := r.timeNow()
+		if !now.Before(r.resetAt) {
+			r.sent = 0
+			r.resetAt = now.Add(gatewaySendRateLimitWindow)
+		}
+		if r.sent < gatewaySendRateLimit {
+			r.sent++
+			r.mu.Unlock()
+			return true
+		}
+
+		delay := r.resetAt.Sub(now)
+		cancel := r.cancel
+		wait := r.wait
+		r.mu.Unlock()
+
+		if wait == nil {
+			if !waitForGatewaySendLimit(delay, cancel) {
+				return false
+			}
+		} else if !wait(delay, cancel) {
+			return false
+		}
+	}
+}
+
+func (r *gatewaySendRateLimiter) timeNow() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func (r *gatewaySendRateLimiter) cancelLocked() {
+	if r.cancel == nil || isGatewaySendCanceled(r.cancel) {
+		return
+	}
+	close(r.cancel)
+}
+
+func isGatewaySendCanceled(cancel <-chan struct{}) bool {
+	select {
+	case <-cancel:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForGatewaySendLimit(delay time.Duration, cancel <-chan struct{}) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-cancel:
+		return false
+	}
+}
 
 func gatewayStartupReadTimeout(dialer *websocket.Dialer) time.Duration {
 	// A dialer without a handshake timeout must not disable the startup
@@ -119,6 +231,7 @@ func (s *Session) Open() error {
 		return err
 	}
 	wsConn := s.wsConn
+	s.gatewaySendRateLimiter.reset(wsConn)
 
 	wsConn.SetCloseHandler(func(code int, text string) error {
 		return nil
@@ -130,6 +243,7 @@ func (s *Session) Open() error {
 		// way :)
 		if err != nil {
 			if s.wsConn == wsConn {
+				s.gatewaySendRateLimiter.stop(wsConn)
 				if s.listening != nil {
 					close(s.listening)
 					s.listening = nil
@@ -886,12 +1000,25 @@ func (s *Session) gatewayWriteJSON(data interface{}) (err error) {
 	if wsConn == nil {
 		return ErrWSNotFound
 	}
+	if !s.gatewaySendRateLimiter.acquire(wsConn) {
+		return ErrWSNotFound
+	}
 
+	return s.writeGatewayJSON(wsConn, data)
+}
+
+func (s *Session) writeGatewayJSON(wsConn *websocket.Conn, data interface{}) (err error) {
 	s.wsMutex.Lock()
-	err = wsConn.WriteJSON(data)
-	s.wsMutex.Unlock()
+	defer s.wsMutex.Unlock()
 
-	return err
+	s.RLock()
+	current := s.wsConn == wsConn
+	s.RUnlock()
+	if !current {
+		return ErrWSNotFound
+	}
+
+	return wsConn.WriteJSON(data)
 }
 
 func (s *Session) requestGuildMembers(data requestGuildMembersData) (err error) {
@@ -958,7 +1085,13 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		s.log(LogInformational, "sending heartbeat in response to Op1")
 
 		sentAt := time.Now().UTC()
-		err = s.gatewayWriteJSON(heartbeatOp{1, atomic.LoadInt64(s.sequence)})
+		s.RLock()
+		wsConn := s.wsConn
+		s.RUnlock()
+		if wsConn == nil {
+			return e, ErrWSNotFound
+		}
+		err = s.writeGatewayJSON(wsConn, heartbeatOp{1, atomic.LoadInt64(s.sequence)})
 		if err != nil {
 			s.log(LogError, "error sending heartbeat in response to Op1")
 			return e, err
@@ -1552,6 +1685,7 @@ func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, 
 	// this should force stop any reconnecting voice channels too
 
 	if s.wsConn != nil {
+		s.gatewaySendRateLimiter.stop(s.wsConn)
 
 		s.log(LogInformational, "sending close frame")
 		// To cleanly close a connection, a client should send a close
