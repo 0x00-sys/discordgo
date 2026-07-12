@@ -81,6 +81,7 @@ var (
 	EndpointGuildMembers             = func(gID string) string { return EndpointGuilds + gID + "/members" }
 	EndpointGuildMembersSearch       = func(gID string) string { return EndpointGuildMembers(gID) + "/search" }
 	EndpointGuildMember              = func(gID, uID string) string { return EndpointGuilds + gID + "/members/" + uID }
+	EndpointGuildCurrentMember       = func(gID string) string { return EndpointGuildMember(gID, "@me") }
 	EndpointGuildMemberRole          = func(gID, uID, rID string) string { return EndpointGuilds + gID + "/members/" + uID + "/roles/" + rID }
 	EndpointGuildMessagesSearch      = func(gID string) string { return EndpointGuild(gID) + "/messages/search" }
 	EndpointGuildBans                = func(gID string) string { return EndpointGuilds + gID + "/bans" }

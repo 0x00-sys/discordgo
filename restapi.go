@@ -1566,6 +1566,25 @@ func (s *Session) GuildMemberEdit(guildID, userID string, data *GuildMemberParam
 	return
 }
 
+// GuildCurrentMemberEdit edits and returns the current member in a guild.
+// guildID : The ID of a Guild.
+// data    : Updated current member data.
+func (s *Session) GuildCurrentMemberEdit(guildID string, data *GuildCurrentMemberParams, options ...RequestOption) (st *Member, err error) {
+	body, err := s.RequestWithBucketID("PATCH", EndpointGuildCurrentMember(guildID), data, EndpointGuildMember(guildID, ""), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &st); err != nil {
+		return nil, err
+	}
+	if err = validateGuildMember(st); err != nil {
+		return nil, err
+	}
+	st.GuildID = guildID
+	return st, nil
+}
+
 // GuildMemberEditComplex edits the nickname and roles of a member.
 // NOTE: deprecated, use GuildMemberEdit instead.
 //
