@@ -798,6 +798,51 @@ func TestApplicationEventWebhookStatusValues(t *testing.T) {
 	}
 }
 
+func TestCurrentChannelFlagValuesAndJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		got      int
+		want     int
+		wantJSON string
+	}{
+		{
+			name:     "hide media download options",
+			got:      int(ChannelFlagHideMediaDownloadOptions),
+			want:     1 << 15,
+			wantJSON: `{"flags":32768}`,
+		},
+		{
+			name:     "suppress role subscription purchase notifications",
+			got:      int(SystemChannelFlagsSuppressRoleSubscriptionPurchaseNotifications),
+			want:     1 << 4,
+			wantJSON: `{"flags":16}`,
+		},
+		{
+			name:     "suppress role subscription purchase notification replies",
+			got:      int(SystemChannelFlagsSuppressRoleSubscriptionPurchaseNotificationReplies),
+			want:     1 << 5,
+			wantJSON: `{"flags":32}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("flag = %d, want %d", tt.got, tt.want)
+			}
+			encoded, err := json.Marshal(struct {
+				Flags int `json:"flags"`
+			}{Flags: tt.got})
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			if string(encoded) != tt.wantJSON {
+				t.Fatalf("JSON = %s, want %s", encoded, tt.wantJSON)
+			}
+		})
+	}
+}
+
 func TestRoleColorsMemberParamsAndSubscriptionConstants(t *testing.T) {
 	secondary := 0x112233
 	tertiary := 0x445566

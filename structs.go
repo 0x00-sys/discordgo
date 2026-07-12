@@ -488,6 +488,9 @@ const (
 	// ChannelFlagRequireTag indicates whether a tag is required to be specified when creating a thread.
 	// NOTE: forum channels only.
 	ChannelFlagRequireTag ChannelFlags = 1 << 4
+	// ChannelFlagHideMediaDownloadOptions hides embedded media download options.
+	// NOTE: media channels only.
+	ChannelFlagHideMediaDownloadOptions ChannelFlags = 1 << 15
 )
 
 // ForumSortOrderType represents sort order of a forum channel.
@@ -1756,10 +1759,12 @@ type SystemChannelFlag int
 
 // Block containing known SystemChannelFlag values
 const (
-	SystemChannelFlagsSuppressJoinNotifications          SystemChannelFlag = 1 << 0
-	SystemChannelFlagsSuppressPremium                    SystemChannelFlag = 1 << 1
-	SystemChannelFlagsSuppressGuildReminderNotifications SystemChannelFlag = 1 << 2
-	SystemChannelFlagsSuppressJoinNotificationReplies    SystemChannelFlag = 1 << 3
+	SystemChannelFlagsSuppressJoinNotifications                           SystemChannelFlag = 1 << 0
+	SystemChannelFlagsSuppressPremium                                     SystemChannelFlag = 1 << 1
+	SystemChannelFlagsSuppressGuildReminderNotifications                  SystemChannelFlag = 1 << 2
+	SystemChannelFlagsSuppressJoinNotificationReplies                     SystemChannelFlag = 1 << 3
+	SystemChannelFlagsSuppressRoleSubscriptionPurchaseNotifications       SystemChannelFlag = 1 << 4
+	SystemChannelFlagsSuppressRoleSubscriptionPurchaseNotificationReplies SystemChannelFlag = 1 << 5
 )
 
 // IconURL returns a URL to the guild's icon.
