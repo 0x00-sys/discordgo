@@ -273,6 +273,19 @@ var (
 		return EndpointApplication(aID) + "/activity-instances/" + iID
 	}
 
+	EndpointLobbies                        = EndpointAPI + "lobbies"
+	EndpointLobby                          = func(lID string) string { return EndpointLobbies + "/" + lID }
+	EndpointLobbyMembers                   = func(lID string) string { return EndpointLobby(lID) + "/members" }
+	EndpointLobbyMembersBulk               = func(lID string) string { return EndpointLobbyMembers(lID) + "/bulk" }
+	EndpointLobbyMember                    = func(lID, uID string) string { return EndpointLobbyMembers(lID) + "/" + uID }
+	EndpointLobbyChannelLinking            = func(lID string) string { return EndpointLobby(lID) + "/channel-linking" }
+	EndpointLobbyMessages                  = func(lID string) string { return EndpointLobby(lID) + "/messages" }
+	EndpointLobbyMessage                   = func(lID, mID string) string { return EndpointLobbyMessages(lID) + "/" + mID }
+	EndpointLobbyMessageModerationMetadata = func(lID, mID string) string {
+		return EndpointLobbyMessage(lID, mID) + "/moderation-metadata"
+	}
+	EndpointLobbyMemberInvites = func(lID, uID string) string { return EndpointLobbyMember(lID, uID) + "/invites" }
+
 	EndpointOAuth2                  = EndpointAPI + "oauth2/"
 	EndpointOAuth2Applications      = EndpointOAuth2 + "applications"
 	EndpointOAuth2Application       = func(aID string) string { return EndpointOAuth2Applications + "/" + aID }

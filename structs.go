@@ -3840,3 +3840,79 @@ const (
 func MakeIntent(intents Intent) Intent {
 	return intents
 }
+
+// Lobby represents a transient group of users owned by an application.
+// https://docs.discord.com/developers/resources/lobby#lobby-object
+type Lobby struct {
+	ID            string            `json:"id"`
+	ApplicationID string            `json:"application_id"`
+	Metadata      map[string]string `json:"metadata"`
+	Members       []*LobbyMember    `json:"members"`
+	LinkedChannel *Channel          `json:"linked_channel,omitempty"`
+}
+
+// LobbyMember represents a member of a lobby.
+// https://docs.discord.com/developers/resources/lobby#lobby-member-object
+type LobbyMember struct {
+	ID       string            `json:"id"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+	Flags    LobbyMemberFlags  `json:"flags,omitempty"`
+}
+
+// LobbyMemberFlags is a bitfield of lobby member flags.
+type LobbyMemberFlags int
+
+// Valid LobbyMemberFlags values.
+const (
+	LobbyMemberFlagCanLinkLobby LobbyMemberFlags = 1 << 0
+)
+
+// LobbyParams are the parameters for creating or modifying a lobby.
+// A nil field is omitted. Point Metadata at a nil map to send null, and point
+// Members at an empty slice to remove every member when modifying a lobby.
+type LobbyParams struct {
+	Metadata           *map[string]string   `json:"metadata,omitempty"`
+	Members            *[]LobbyMemberParams `json:"members,omitempty"`
+	IdleTimeoutSeconds *int                 `json:"idle_timeout_seconds,omitempty"`
+}
+
+// LobbyCreateOrJoinParams are the parameters for creating or joining a lobby
+// with a user Bearer token carrying the sdk.social_layer scope.
+type LobbyCreateOrJoinParams struct {
+	Secret             string             `json:"secret"`
+	IdleTimeoutSeconds *int               `json:"idle_timeout_seconds,omitempty"`
+	LobbyMetadata      *map[string]string `json:"lobby_metadata,omitempty"`
+	MemberMetadata     *map[string]string `json:"member_metadata,omitempty"`
+}
+
+// LobbyMemberParams are the parameters for adding or updating a lobby member.
+// ID is required when the value is used in LobbyParams.Members and omitted
+// when the user ID is supplied in the endpoint path.
+type LobbyMemberParams struct {
+	ID       string             `json:"id,omitempty"`
+	Metadata *map[string]string `json:"metadata,omitempty"`
+	Flags    *LobbyMemberFlags  `json:"flags,omitempty"`
+}
+
+// LobbyMemberUpdateParams are the parameters for bulk updating a lobby member.
+type LobbyMemberUpdateParams struct {
+	ID           string             `json:"id"`
+	Metadata     *map[string]string `json:"metadata,omitempty"`
+	Flags        *LobbyMemberFlags  `json:"flags,omitempty"`
+	RemoveMember bool               `json:"remove_member,omitempty"`
+}
+
+// LobbyMessage is the message object used by Lobby REST and webhook events.
+type LobbyMessage = ApplicationWebhookEventMessage
+
+// LobbyMessageSendParams are the parameters for sending a lobby message.
+type LobbyMessageSendParams struct {
+	Content  string             `json:"content"`
+	Metadata *map[string]string `json:"metadata,omitempty"`
+	Flags    *MessageFlags      `json:"flags,omitempty"`
+}
+
+// LobbyInvite is a single-use invite to a lobby's linked channel.
+type LobbyInvite struct {
+	Code string `json:"code"`
+}
