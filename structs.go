@@ -2327,6 +2327,8 @@ type AutoModerationRuleEventType int
 const (
 	// AutoModerationEventMessageSend is checked when a member sends or edits a message in the guild
 	AutoModerationEventMessageSend AutoModerationRuleEventType = 1
+	// AutoModerationEventMemberUpdate is checked when a member edits their profile.
+	AutoModerationEventMemberUpdate AutoModerationRuleEventType = 2
 )
 
 // AutoModerationRuleTriggerType represents the type of content which can trigger the rule.
@@ -2334,10 +2336,14 @@ type AutoModerationRuleTriggerType int
 
 // Auto moderation rule trigger types.
 const (
-	AutoModerationEventTriggerKeyword       AutoModerationRuleTriggerType = 1
+	AutoModerationEventTriggerKeyword AutoModerationRuleTriggerType = 1
+	// AutoModerationEventTriggerHarmfulLink is retained for compatibility.
+	// Deprecated: Discord no longer documents or supports this trigger type.
 	AutoModerationEventTriggerHarmfulLink   AutoModerationRuleTriggerType = 2
 	AutoModerationEventTriggerSpam          AutoModerationRuleTriggerType = 3
 	AutoModerationEventTriggerKeywordPreset AutoModerationRuleTriggerType = 4
+	AutoModerationEventTriggerMentionSpam   AutoModerationRuleTriggerType = 5
+	AutoModerationEventTriggerMemberProfile AutoModerationRuleTriggerType = 6
 )
 
 // AutoModerationKeywordPreset represents an internally pre-defined wordset.
@@ -2370,6 +2376,10 @@ type AutoModerationTriggerMetadata struct {
 	// Total number of unique role and user mentions allowed per message.
 	// NOTE: should be only used with mention spam trigger type.
 	MentionTotalLimit int `json:"mention_total_limit,omitempty"`
+
+	// Whether to automatically detect mention raids.
+	// NOTE: should be only used with mention spam trigger type.
+	MentionRaidProtectionEnabled *bool `json:"mention_raid_protection_enabled,omitempty"`
 }
 
 // AutoModerationActionType represents an action which will execute whenever a rule is triggered.
@@ -2377,9 +2387,10 @@ type AutoModerationActionType int
 
 // Auto moderation actions types.
 const (
-	AutoModerationRuleActionBlockMessage     AutoModerationActionType = 1
-	AutoModerationRuleActionSendAlertMessage AutoModerationActionType = 2
-	AutoModerationRuleActionTimeout          AutoModerationActionType = 3
+	AutoModerationRuleActionBlockMessage           AutoModerationActionType = 1
+	AutoModerationRuleActionSendAlertMessage       AutoModerationActionType = 2
+	AutoModerationRuleActionTimeout                AutoModerationActionType = 3
+	AutoModerationRuleActionBlockMemberInteraction AutoModerationActionType = 4
 )
 
 // AutoModerationActionMetadata represents additional metadata needed during execution for a specific action type.
