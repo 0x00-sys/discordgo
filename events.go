@@ -300,11 +300,15 @@ type GuildScheduledEventCreate struct {
 // GuildScheduledEventUpdate is the data for a GuildScheduledEventUpdate event.
 type GuildScheduledEventUpdate struct {
 	*GuildScheduledEvent
+	// BeforeUpdate will be nil if the scheduled event was not previously cached in the state cache.
+	BeforeUpdate *GuildScheduledEvent `json:"-"`
 }
 
 // GuildScheduledEventDelete is the data for a GuildScheduledEventDelete event.
 type GuildScheduledEventDelete struct {
 	*GuildScheduledEvent
+	// BeforeDelete will be nil if the scheduled event was not previously cached in the state cache.
+	BeforeDelete *GuildScheduledEvent `json:"-"`
 }
 
 // GuildScheduledEventUserAdd is the data for a GuildScheduledEventUserAdd event.
