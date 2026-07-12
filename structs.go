@@ -905,6 +905,40 @@ type StickerPack struct {
 	BannerAssetID  string     `json:"banner_asset_id"`
 }
 
+// GuildStickerCreateParams stores data needed to create a guild sticker.
+type GuildStickerCreateParams struct {
+	Name        string `json:"-"`
+	Description string `json:"-"`
+	Tags        string `json:"-"`
+	File        *File  `json:"-"`
+}
+
+// GuildStickerEditParams stores data needed to modify a guild sticker.
+type GuildStickerEditParams struct {
+	Name        string  `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Tags        string  `json:"tags,omitempty"`
+
+	// DescriptionNull sends description as null, clearing the sticker description.
+	DescriptionNull bool `json:"-"`
+}
+
+// MarshalJSON ensures the sticker description can be explicitly cleared.
+func (p GuildStickerEditParams) MarshalJSON() ([]byte, error) {
+	type guildStickerEditParams GuildStickerEditParams
+	if !p.DescriptionNull {
+		return json.Marshal(guildStickerEditParams(p))
+	}
+
+	return json.Marshal(struct {
+		guildStickerEditParams
+		Description interface{} `json:"description"`
+	}{
+		guildStickerEditParams: guildStickerEditParams(p),
+		Description:            nil,
+	})
+}
+
 // VerificationLevel type definition
 type VerificationLevel int
 

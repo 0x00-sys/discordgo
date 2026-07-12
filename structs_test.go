@@ -733,6 +733,37 @@ func TestSoundboardSoundStructures(t *testing.T) {
 	}
 }
 
+func TestGuildStickerEditParamsDescription(t *testing.T) {
+	description := "A wave"
+	tests := []struct {
+		name        string
+		params      GuildStickerEditParams
+		wantPresent bool
+		want        interface{}
+	}{
+		{name: "omitted", params: GuildStickerEditParams{}},
+		{name: "value", params: GuildStickerEditParams{Description: &description}, wantPresent: true, want: description},
+		{name: "null", params: GuildStickerEditParams{DescriptionNull: true}, wantPresent: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+
+			var payload map[string]interface{}
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			got, present := payload["description"]
+			if present != tt.wantPresent || got != tt.want {
+				t.Fatalf("description = %#v, present = %t", got, present)
+			}
+		})
+	}
+}
+
 func TestApplicationActivityInstance(t *testing.T) {
 	var instance ApplicationActivityInstance
 	if err := json.Unmarshal([]byte(`{"application_id":"app","instance_id":"instance","launch_id":"launch","location":{"id":"gc-guild-channel","kind":"gc","channel_id":"channel","guild_id":"guild"},"users":["user"]}`), &instance); err != nil {

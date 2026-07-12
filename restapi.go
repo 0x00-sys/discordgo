@@ -2145,6 +2145,83 @@ func (s *Session) StickerPack(packID string, options ...RequestOption) (pack *St
 	return
 }
 
+// GuildStickers returns all stickers for the given guild.
+func (s *Session) GuildStickers(guildID string, options ...RequestOption) (stickers []*Sticker, err error) {
+	endpoint := EndpointGuildStickers(guildID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &stickers)
+	return
+}
+
+// GuildSticker returns the specified guild sticker.
+func (s *Session) GuildSticker(guildID, stickerID string, options ...RequestOption) (sticker *Sticker, err error) {
+	endpoint := EndpointGuildSticker(guildID, stickerID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &sticker)
+	return
+}
+
+// GuildStickerCreate creates a guild sticker.
+func (s *Session) GuildStickerCreate(guildID string, data *GuildStickerCreateParams, options ...RequestOption) (sticker *Sticker, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("guild sticker data cannot be nil")
+	}
+	if data.File == nil {
+		return nil, fmt.Errorf("guild sticker file cannot be nil")
+	}
+
+	upload := *data.File
+	upload.FieldName = "file"
+	fields := map[string]string{
+		"name":        data.Name,
+		"description": data.Description,
+		"tags":        data.Tags,
+	}
+	contentType, requestBody, err := multipartBody(nil, fields, []*File{&upload}, false)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := EndpointGuildStickers(guildID)
+	body, err := s.RequestRaw("POST", endpoint, contentType, requestBody, endpoint, 0, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &sticker)
+	return
+}
+
+// GuildStickerEdit modifies the specified guild sticker.
+func (s *Session) GuildStickerEdit(guildID, stickerID string, data *GuildStickerEditParams, options ...RequestOption) (sticker *Sticker, err error) {
+	if data == nil {
+		return nil, fmt.Errorf("guild sticker data cannot be nil")
+	}
+
+	endpoint := EndpointGuildSticker(guildID, stickerID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, data, EndpointGuildStickers(guildID), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &sticker)
+	return
+}
+
+// GuildStickerDelete deletes the specified guild sticker.
+func (s *Session) GuildStickerDelete(guildID, stickerID string, options ...RequestOption) error {
+	_, err := s.RequestWithBucketID("DELETE", EndpointGuildSticker(guildID, stickerID), nil, EndpointGuildStickers(guildID), options...)
+	return err
+}
+
 // SoundboardSoundSend sends a soundboard sound to a voice channel.
 // channelID     : The ID of a voice Channel.
 // soundID       : The ID of the soundboard sound to play.
@@ -3113,7 +3190,7 @@ func (s *Session) InviteTargetUsersUpdate(inviteID string, file *File, options .
 	upload := *file
 	upload.FieldName = "target_users_file"
 
-	contentType, body, err := multipartBody(nil, []*File{&upload}, false)
+	contentType, body, err := multipartBody(nil, nil, []*File{&upload}, false)
 	if err != nil {
 		return
 	}

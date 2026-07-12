@@ -26,10 +26,10 @@ func SnowflakeTimestamp(ID string) (t time.Time, err error) {
 // data  : The object to encode for payload_json in the multipart request
 // files : Files to include in the request
 func MultipartBodyWithJSON(data interface{}, files []*File) (requestContentType string, requestBody []byte, err error) {
-	return multipartBody(data, files, true)
+	return multipartBody(data, nil, files, true)
 }
 
-func multipartBody(data interface{}, files []*File, includePayload bool) (requestContentType string, requestBody []byte, err error) {
+func multipartBody(data interface{}, fields map[string]string, files []*File, includePayload bool) (requestContentType string, requestBody []byte, err error) {
 	body := &bytes.Buffer{}
 	bodywriter := multipart.NewWriter(body)
 	var p io.Writer
@@ -51,6 +51,12 @@ func multipartBody(data interface{}, files []*File, includePayload bool) (reques
 		}
 
 		if _, err = p.Write(payload); err != nil {
+			return
+		}
+	}
+
+	for name, value := range fields {
+		if err = bodywriter.WriteField(name, value); err != nil {
 			return
 		}
 	}
