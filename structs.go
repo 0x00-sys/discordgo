@@ -168,6 +168,24 @@ const (
 	ApplicationIntegrationUserInstall ApplicationIntegrationType = 1
 )
 
+// ApplicationType identifies a special application type.
+type ApplicationType int
+
+const (
+	// ApplicationTypeGuildRoleSubscriptions is an application created for guild role subscriptions.
+	ApplicationTypeGuildRoleSubscriptions ApplicationType = 4
+)
+
+// ApplicationExplicitContentFilter controls explicit-content scanning for an application.
+type ApplicationExplicitContentFilter int
+
+const (
+	// ApplicationExplicitContentFilterInherit uses the guild's content-filter setting.
+	ApplicationExplicitContentFilterInherit ApplicationExplicitContentFilter = iota
+	// ApplicationExplicitContentFilterAlways always scans interactions.
+	ApplicationExplicitContentFilterAlways
+)
+
 // ApplicationInstallParams represents application's installation parameters
 // for default in-app oauth2 authorization link.
 type ApplicationInstallParams struct {
@@ -206,6 +224,7 @@ const (
 type Application struct {
 	ID                                string                                                           `json:"id,omitempty"`
 	Name                              string                                                           `json:"name"`
+	Type                              *ApplicationType                                                 `json:"type,omitempty"`
 	Icon                              string                                                           `json:"icon,omitempty"`
 	Description                       string                                                           `json:"description,omitempty"`
 	RPCOrigins                        []string                                                         `json:"rpc_origins,omitempty"`
@@ -228,6 +247,8 @@ type Application struct {
 	ApproximateGuildCount             int                                                              `json:"approximate_guild_count,omitempty"`
 	ApproximateUserInstallCount       int                                                              `json:"approximate_user_install_count,omitempty"`
 	ApproximateUserAuthorizationCount int                                                              `json:"approximate_user_authorization_count,omitempty"`
+	ExplicitContentFilter             ApplicationExplicitContentFilter                                 `json:"explicit_content_filter,omitempty"`
+	MaxParticipants                   *int                                                             `json:"max_participants,omitempty"`
 	RedirectURIs                      []string                                                         `json:"redirect_uris,omitempty"`
 	InteractionsEndpointURL           string                                                           `json:"interactions_endpoint_url,omitempty"`
 	RoleConnectionsVerificationURL    string                                                           `json:"role_connections_verification_url,omitempty"`
