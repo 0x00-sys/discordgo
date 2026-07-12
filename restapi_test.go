@@ -2979,6 +2979,140 @@ func TestChannelMessagesPinnedUsesPerChannelBucket(t *testing.T) {
 	}
 }
 
+func TestPollAnswerVotersOptions(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     *PollAnswerVotersOptions
+		wantAfter string
+		wantLimit string
+	}{
+		{name: "default page"},
+		{
+			name:      "paginated page",
+			query:     &PollAnswerVotersOptions{After: "user", Limit: 100},
+			wantAfter: "user",
+			wantLimit: "100",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+				}
+				wantPath := "/api/v" + APIVersion + "/channels/channel/polls/message/answers/7"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				if got := r.URL.Query().Get("after"); got != tt.wantAfter {
+					t.Fatalf("after = %q, want %q", got, tt.wantAfter)
+				}
+				if got := r.URL.Query().Get("limit"); got != tt.wantLimit {
+					t.Fatalf("limit = %q, want %q", got, tt.wantLimit)
+				}
+				if got := r.Header.Get("X-Test"); got != "poll" {
+					t.Fatalf("X-Test = %q, want %q", got, "poll")
+				}
+
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"users":[{"id":"voter","username":"Voter"}]}`)),
+					Request:    r,
+				}, nil
+			})
+
+			var voters []*User
+			if tt.query == nil {
+				voters, err = session.PollAnswerVoters("channel", "message", 7, WithHeader("X-Test", "poll"))
+			} else {
+				voters, err = session.PollAnswerVotersWithOptions("channel", "message", 7, tt.query, WithHeader("X-Test", "poll"))
+			}
+			if err != nil {
+				t.Fatalf("poll answer voters returned error: %v", err)
+			}
+			if len(voters) != 1 || voters[0].ID != "voter" {
+				t.Fatalf("voters = %#v", voters)
+			}
+		})
+	}
+}
+
+func TestPollAnswerVotersErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		body        string
+		wantJSONErr bool
+	}{
+		{name: "http error", status: http.StatusInternalServerError, body: `{"message":"failed"}`},
+		{name: "malformed response", status: http.StatusOK, body: `{`, wantJSONErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			voters, err := session.PollAnswerVotersWithOptions("channel", "message", 7, &PollAnswerVotersOptions{Limit: 25})
+			if err == nil {
+				t.Fatal("PollAnswerVotersWithOptions returned nil error")
+			}
+			if voters != nil {
+				t.Fatalf("voters = %#v, want nil", voters)
+			}
+			if tt.wantJSONErr && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+		})
+	}
+}
+
+func TestPollExpireRequestOptions(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPost)
+		}
+		if got := r.Header.Get("X-Test"); got != "expire" {
+			t.Fatalf("X-Test = %q, want %q", got, "expire")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"channel"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	message, err := session.PollExpire("channel", "message", WithHeader("X-Test", "expire"))
+	if err != nil {
+		t.Fatalf("PollExpire returned error: %v", err)
+	}
+	if message.ID != "message" {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
 func TestRedactedHeaderValues(t *testing.T) {
 	values := redactedHeaderValues("Authorization", []string{"Bot secret"})
 	if len(values) != 1 || values[0] != redactedValue {

@@ -2849,6 +2849,14 @@ type PollAnswerCount struct {
 	MeVoted bool `json:"me_voted"`
 }
 
+// PollAnswerVotersOptions contains pagination options for poll answer voters.
+type PollAnswerVotersOptions struct {
+	// Get users after this user ID.
+	After string
+	// Maximum number of users to return (1-100, default 25).
+	Limit int
+}
+
 // PollResults contains voting results on a poll.
 type PollResults struct {
 	Finalized    bool               `json:"is_finalized"`

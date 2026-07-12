@@ -4821,11 +4821,29 @@ func (s *Session) UserApplicationRoleConnectionUpdate(appID string, rconn *Appli
 // channelID : ID of the channel.
 // messageID : ID of the message.
 // answerID  : ID of the answer.
-func (s *Session) PollAnswerVoters(channelID, messageID string, answerID int) (voters []*User, err error) {
+func (s *Session) PollAnswerVoters(channelID, messageID string, answerID int, options ...RequestOption) (voters []*User, err error) {
+	return s.PollAnswerVotersWithOptions(channelID, messageID, answerID, nil, options...)
+}
+
+// PollAnswerVotersWithOptions returns a page of users who voted for a particular poll answer.
+func (s *Session) PollAnswerVotersWithOptions(channelID, messageID string, answerID int, query *PollAnswerVotersOptions, options ...RequestOption) (voters []*User, err error) {
 	endpoint := EndpointPollAnswerVoters(channelID, messageID, answerID)
+	uri := endpoint
+	if query != nil {
+		values := url.Values{}
+		if query.After != "" {
+			values.Set("after", query.After)
+		}
+		if query.Limit > 0 {
+			values.Set("limit", strconv.Itoa(query.Limit))
+		}
+		if encoded := values.Encode(); encoded != "" {
+			uri += "?" + encoded
+		}
+	}
 
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", endpoint, nil, endpoint)
+	body, err = s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
 	if err != nil {
 		return
 	}
@@ -4846,11 +4864,11 @@ func (s *Session) PollAnswerVoters(channelID, messageID string, answerID int) (v
 // PollExpire expires poll on the specified message.
 // channelID : ID of the channel.
 // messageID : ID of the message.
-func (s *Session) PollExpire(channelID, messageID string) (msg *Message, err error) {
+func (s *Session) PollExpire(channelID, messageID string, options ...RequestOption) (msg *Message, err error) {
 	endpoint := EndpointPollExpire(channelID, messageID)
 
 	var body []byte
-	body, err = s.RequestWithBucketID("POST", endpoint, nil, endpoint)
+	body, err = s.RequestWithBucketID("POST", endpoint, nil, endpoint, options...)
 	if err != nil {
 		return
 	}
