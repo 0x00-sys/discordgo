@@ -197,6 +197,48 @@ func copyGuild(guild *Guild) *Guild {
 	return &guildCopy
 }
 
+func copyGuildScheduledEvent(event *GuildScheduledEvent) *GuildScheduledEvent {
+	eventCopy := *event
+	if event.ScheduledEndTime != nil {
+		end := *event.ScheduledEndTime
+		eventCopy.ScheduledEndTime = &end
+	}
+	if event.Creator != nil {
+		creator := *event.Creator
+		if creator.AvatarDecorationData != nil {
+			decoration := *creator.AvatarDecorationData
+			creator.AvatarDecorationData = &decoration
+		}
+		if creator.Collectibles != nil {
+			collectibles := *creator.Collectibles
+			if collectibles.Nameplate != nil {
+				nameplate := *collectibles.Nameplate
+				collectibles.Nameplate = &nameplate
+			}
+			creator.Collectibles = &collectibles
+		}
+		eventCopy.Creator = &creator
+	}
+	if event.RecurrenceRule != nil {
+		rule := *event.RecurrenceRule
+		if rule.End != nil {
+			end := *rule.End
+			rule.End = &end
+		}
+		if rule.Count != nil {
+			count := *rule.Count
+			rule.Count = &count
+		}
+		rule.ByWeekday = append([]GuildScheduledEventRecurrenceRuleWeekday(nil), rule.ByWeekday...)
+		rule.ByNWeekday = append([]GuildScheduledEventRecurrenceRuleNWeekday(nil), rule.ByNWeekday...)
+		rule.ByMonth = append([]GuildScheduledEventRecurrenceRuleMonth(nil), rule.ByMonth...)
+		rule.ByMonthDay = append([]int(nil), rule.ByMonthDay...)
+		rule.ByYearDay = append([]int(nil), rule.ByYearDay...)
+		eventCopy.RecurrenceRule = &rule
+	}
+	return &eventCopy
+}
+
 func (s *State) replaceGuild(oldGuild, newGuild *Guild) {
 	s.guildMap[newGuild.ID] = newGuild
 	for i, guild := range s.Guilds {
@@ -770,6 +812,90 @@ func (s *State) Role(guildID, roleID string) (*Role, error) {
 	}
 
 	return nil, ErrStateNotFound
+}
+
+func (s *State) guildScheduledEventAdd(event *GuildScheduledEvent) (*GuildScheduledEvent, error) {
+	if event == nil || event.ID == "" || event.GuildID == "" {
+		return nil, ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[event.GuildID]
+	if !ok {
+		return nil, ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	for i, cached := range guild.GuildScheduledEvents {
+		if cached != nil && cached.ID == event.ID {
+			updated.GuildScheduledEvents[i] = copyGuildScheduledEvent(event)
+			s.replaceGuild(guild, updated)
+			return copyGuildScheduledEvent(cached), nil
+		}
+	}
+
+	updated.GuildScheduledEvents = append(updated.GuildScheduledEvents, copyGuildScheduledEvent(event))
+	s.replaceGuild(guild, updated)
+	return nil, nil
+}
+
+func (s *State) guildScheduledEventRemove(guildID, eventID string) (*GuildScheduledEvent, error) {
+	if guildID == "" || eventID == "" {
+		return nil, ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil, ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	for i, event := range guild.GuildScheduledEvents {
+		if event != nil && event.ID == eventID {
+			updated.GuildScheduledEvents = append(updated.GuildScheduledEvents[:i], updated.GuildScheduledEvents[i+1:]...)
+			s.replaceGuild(guild, updated)
+			return copyGuildScheduledEvent(event), nil
+		}
+	}
+
+	return nil, ErrStateNotFound
+}
+
+func (s *State) updateGuildScheduledEventUserCount(guildID, eventID string, delta int) error {
+	if guildID == "" || eventID == "" {
+		return ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil
+	}
+
+	for i, event := range guild.GuildScheduledEvents {
+		if event == nil || event.ID != eventID {
+			continue
+		}
+
+		updated := copyGuild(guild)
+		updatedEvent := copyGuildScheduledEvent(event)
+		updatedEvent.UserCount += delta
+		if updatedEvent.UserCount < 0 {
+			updatedEvent.UserCount = 0
+		}
+		updated.GuildScheduledEvents[i] = updatedEvent
+		s.replaceGuild(guild, updated)
+		return nil
+	}
+
+	return nil
 }
 
 func (s *State) replaceChannel(oldChannel, newChannel *Channel) {
@@ -1742,6 +1868,31 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			updated.Stickers = t.Stickers
 			s.replaceGuild(guild, updated)
 		}
+	case *GuildScheduledEventCreate:
+		if t == nil || t.GuildScheduledEvent == nil {
+			return ErrStateInvalidData
+		}
+		_, err = s.guildScheduledEventAdd(t.GuildScheduledEvent)
+	case *GuildScheduledEventUpdate:
+		if t == nil || t.GuildScheduledEvent == nil {
+			return ErrStateInvalidData
+		}
+		t.BeforeUpdate, err = s.guildScheduledEventAdd(t.GuildScheduledEvent)
+	case *GuildScheduledEventDelete:
+		if t == nil || t.GuildScheduledEvent == nil {
+			return ErrStateInvalidData
+		}
+		t.BeforeDelete, err = s.guildScheduledEventRemove(t.GuildID, t.ID)
+	case *GuildScheduledEventUserAdd:
+		if t == nil || t.UserID == "" {
+			return ErrStateInvalidData
+		}
+		err = s.updateGuildScheduledEventUserCount(t.GuildID, t.GuildScheduledEventID, 1)
+	case *GuildScheduledEventUserRemove:
+		if t == nil || t.UserID == "" {
+			return ErrStateInvalidData
+		}
+		err = s.updateGuildScheduledEventUserCount(t.GuildID, t.GuildScheduledEventID, -1)
 	case *ChannelCreate:
 		if s.TrackChannels {
 			if t == nil || t.Channel == nil {

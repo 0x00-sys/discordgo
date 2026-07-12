@@ -1606,6 +1606,299 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	}
 }
 
+func TestStateGuildScheduledEventLifecycle(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	created := &GuildScheduledEvent{
+		ID:        "event",
+		GuildID:   "guild",
+		Name:      "created",
+		Creator:   &User{ID: "user", Username: "creator"},
+		UserCount: 1,
+		RecurrenceRule: &GuildScheduledEventRecurrenceRule{
+			ByMonthDay: []int{12},
+		},
+	}
+	if err := state.OnInterface(session, &GuildScheduledEventCreate{GuildScheduledEvent: created}); err != nil {
+		t.Fatalf("OnInterface(create) returned error: %v", err)
+	}
+	created.Name = "mutated"
+	created.RecurrenceRule.ByMonthDay[0] = 31
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.GuildScheduledEvents) != 1 || guild.GuildScheduledEvents[0].Name != "created" {
+		t.Fatalf("cached events = %#v, want one created event", guild.GuildScheduledEvents)
+	}
+	if guild.GuildScheduledEvents[0].RecurrenceRule.ByMonthDay[0] != 12 {
+		t.Fatalf("cached recurrence day = %d, want 12", guild.GuildScheduledEvents[0].RecurrenceRule.ByMonthDay[0])
+	}
+
+	replacement := &GuildScheduledEvent{
+		ID:      "event",
+		GuildID: "guild",
+		Name:    "replacement",
+		Creator: &User{
+			ID:                   "user",
+			Username:             "old-creator",
+			AvatarDecorationData: &AvatarDecorationData{Asset: "old-decoration"},
+			Collectibles:         &Collectibles{Nameplate: &Nameplate{Asset: "old-nameplate"}},
+		},
+		RecurrenceRule: &GuildScheduledEventRecurrenceRule{
+			ByMonthDay: []int{15},
+		},
+	}
+	if err := state.OnInterface(session, &GuildScheduledEventCreate{GuildScheduledEvent: replacement}); err != nil {
+		t.Fatalf("OnInterface(replacement create) returned error: %v", err)
+	}
+
+	beforeUpdateGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(beforeUpdateGuild.GuildScheduledEvents) != 1 {
+		t.Fatalf("len(GuildScheduledEvents) = %d, want 1 after replacement", len(beforeUpdateGuild.GuildScheduledEvents))
+	}
+	old := beforeUpdateGuild.GuildScheduledEvents[0]
+	update := &GuildScheduledEventUpdate{GuildScheduledEvent: &GuildScheduledEvent{
+		ID:      "event",
+		GuildID: "guild",
+		Name:    "updated",
+	}}
+	if err := state.OnInterface(session, update); err != nil {
+		t.Fatalf("OnInterface(update) returned error: %v", err)
+	}
+	if update.BeforeUpdate == nil || update.BeforeUpdate.Name != "replacement" {
+		t.Fatalf("BeforeUpdate = %#v, want replacement", update.BeforeUpdate)
+	}
+	aliasesOld := update.BeforeUpdate == old ||
+		update.BeforeUpdate.Creator == old.Creator ||
+		update.BeforeUpdate.RecurrenceRule == old.RecurrenceRule
+	if aliasesOld {
+		t.Fatal("BeforeUpdate aliases the previous cached event")
+	}
+
+	old.Name = "mutated-old"
+	old.Creator.Username = "mutated-creator"
+	old.Creator.AvatarDecorationData.Asset = "mutated-decoration"
+	old.Creator.Collectibles.Nameplate.Asset = "mutated-nameplate"
+	old.RecurrenceRule.ByMonthDay[0] = 30
+	if update.BeforeUpdate.Name != "replacement" || update.BeforeUpdate.Creator.Username != "old-creator" {
+		t.Fatalf("BeforeUpdate was mutated through old snapshot: %#v", update.BeforeUpdate)
+	}
+	creator := update.BeforeUpdate.Creator
+	if creator.AvatarDecorationData.Asset != "old-decoration" ||
+		creator.Collectibles.Nameplate.Asset != "old-nameplate" {
+		t.Fatalf("BeforeUpdate creator data was mutated through old snapshot: %#v", update.BeforeUpdate.Creator)
+	}
+	if update.BeforeUpdate.RecurrenceRule.ByMonthDay[0] != 15 {
+		t.Fatalf("BeforeUpdate recurrence day = %d, want 15", update.BeforeUpdate.RecurrenceRule.ByMonthDay[0])
+	}
+
+	beforeDeleteGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	updated := beforeDeleteGuild.GuildScheduledEvents[0]
+	update.GuildScheduledEvent.Name = "mutated-update"
+	update.BeforeUpdate.Name = "mutated-before"
+	if updated.Name != "updated" {
+		t.Fatalf("cached updated event name = %q, want updated", updated.Name)
+	}
+
+	deleted := &GuildScheduledEventDelete{GuildScheduledEvent: &GuildScheduledEvent{ID: "event", GuildID: "guild"}}
+	if err := state.OnInterface(session, deleted); err != nil {
+		t.Fatalf("OnInterface(delete) returned error: %v", err)
+	}
+	if deleted.BeforeDelete == nil || deleted.BeforeDelete.Name != "updated" {
+		t.Fatalf("BeforeDelete = %#v, want updated", deleted.BeforeDelete)
+	}
+	if deleted.BeforeDelete == updated {
+		t.Fatal("BeforeDelete aliases the removed cached event")
+	}
+	updated.Name = "mutated-deleted"
+	if deleted.BeforeDelete.Name != "updated" {
+		t.Fatalf("BeforeDelete name = %q, want updated", deleted.BeforeDelete.Name)
+	}
+
+	guild, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.GuildScheduledEvents) != 0 {
+		t.Fatalf("len(GuildScheduledEvents) = %d, want 0 after delete", len(guild.GuildScheduledEvents))
+	}
+}
+
+func TestStateGuildScheduledEventUserCount(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		GuildScheduledEvents: []*GuildScheduledEvent{
+			{ID: "event", GuildID: "guild", UserCount: 1},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	unknown := []interface{}{
+		&GuildScheduledEventUserAdd{GuildScheduledEventID: "unknown", GuildID: "guild", UserID: "user"},
+		&GuildScheduledEventUserRemove{GuildScheduledEventID: "unknown", GuildID: "guild", UserID: "user"},
+		&GuildScheduledEventUserAdd{GuildScheduledEventID: "event", GuildID: "unknown", UserID: "user"},
+		&GuildScheduledEventUserRemove{GuildScheduledEventID: "event", GuildID: "unknown", UserID: "user"},
+	}
+	for _, event := range unknown {
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface(%T) returned error for unknown ID: %v", event, err)
+		}
+	}
+
+	events := []interface{}{
+		&GuildScheduledEventUserAdd{GuildScheduledEventID: "event", GuildID: "guild", UserID: "user"},
+		&GuildScheduledEventUserRemove{GuildScheduledEventID: "event", GuildID: "guild", UserID: "user"},
+		&GuildScheduledEventUserRemove{GuildScheduledEventID: "event", GuildID: "guild", UserID: "user"},
+		&GuildScheduledEventUserRemove{GuildScheduledEventID: "event", GuildID: "guild", UserID: "user"},
+	}
+	want := []int{2, 1, 0, 0}
+	for i, event := range events {
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface(%T) returned error: %v", event, err)
+		}
+		guild, err := state.Guild("guild")
+		if err != nil {
+			t.Fatalf("Guild returned error: %v", err)
+		}
+		if len(guild.GuildScheduledEvents) != 1 || guild.GuildScheduledEvents[0].UserCount != want[i] {
+			t.Fatalf("events after step %d = %#v, want count %d", i, guild.GuildScheduledEvents, want[i])
+		}
+	}
+
+	if snapshot.GuildScheduledEvents[0].UserCount != 1 {
+		t.Fatalf("old snapshot count = %d, want 1", snapshot.GuildScheduledEvents[0].UserCount)
+	}
+}
+
+func TestStateOnInterfaceRejectsMalformedGuildScheduledEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{name: "nil create", event: (*GuildScheduledEventCreate)(nil)},
+		{name: "create missing event", event: &GuildScheduledEventCreate{}},
+		{
+			name:  "create missing ID",
+			event: &GuildScheduledEventCreate{GuildScheduledEvent: &GuildScheduledEvent{GuildID: "guild"}},
+		},
+		{name: "nil update", event: (*GuildScheduledEventUpdate)(nil)},
+		{
+			name:  "update missing guild",
+			event: &GuildScheduledEventUpdate{GuildScheduledEvent: &GuildScheduledEvent{ID: "event"}},
+		},
+		{name: "nil delete", event: (*GuildScheduledEventDelete)(nil)},
+		{name: "delete missing event", event: &GuildScheduledEventDelete{}},
+		{name: "nil user add", event: (*GuildScheduledEventUserAdd)(nil)},
+		{name: "user add missing user", event: &GuildScheduledEventUserAdd{GuildScheduledEventID: "event", GuildID: "guild"}},
+		{name: "user add missing event", event: &GuildScheduledEventUserAdd{GuildID: "guild", UserID: "user"}},
+		{name: "nil user remove", event: (*GuildScheduledEventUserRemove)(nil)},
+		{
+			name:  "user remove missing guild",
+			event: &GuildScheduledEventUserRemove{GuildScheduledEventID: "event", UserID: "user"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
+func TestStateGuildScheduledEventCountDoesNotRaceGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		GuildScheduledEvents: []*GuildScheduledEvent{
+			{ID: "event", GuildID: "guild", UserCount: 1},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2000; i++ {
+			guild, err := state.Guild("guild")
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(guild.GuildScheduledEvents) != 1 {
+				errCh <- ErrStateNotFound
+				return
+			}
+			_ = guild.GuildScheduledEvents[0].UserCount
+			_ = snapshot.GuildScheduledEvents[0].UserCount
+		}
+		errCh <- nil
+	}()
+
+	session := &Session{StateEnabled: true}
+	for i := 0; i < 2000; i++ {
+		add := &GuildScheduledEventUserAdd{
+			GuildScheduledEventID: "event",
+			GuildID:               "guild",
+			UserID:                "user",
+		}
+		if err := state.OnInterface(session, add); err != nil {
+			t.Fatalf("OnInterface(add) returned error: %v", err)
+		}
+		remove := &GuildScheduledEventUserRemove{
+			GuildScheduledEventID: "event",
+			GuildID:               "guild",
+			UserID:                "user",
+		}
+		if err := state.OnInterface(session, remove); err != nil {
+			t.Fatalf("OnInterface(remove) returned error: %v", err)
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("concurrent Guild returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if snapshot.GuildScheduledEvents[0].UserCount != 1 || guild.GuildScheduledEvents[0].UserCount != 1 {
+		t.Fatalf(
+			"snapshot count = %d, current count = %d, want both 1",
+			snapshot.GuildScheduledEvents[0].UserCount,
+			guild.GuildScheduledEvents[0].UserCount,
+		)
+	}
+}
+
 func TestMemberAddReplacesCachedPointer(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
