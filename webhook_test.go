@@ -79,6 +79,59 @@ func TestWebhookCurrentFields(t *testing.T) {
 	}
 }
 
+func TestWebhookEditFlagsJSON(t *testing.T) {
+	tests := []struct {
+		name        string
+		edit        WebhookEdit
+		wantFlags   string
+		wantPresent bool
+	}{
+		{
+			name: "omitted",
+			edit: WebhookEdit{},
+		},
+		{
+			name:        "nonzero legacy field",
+			edit:        WebhookEdit{Flags: MessageFlagsSuppressEmbeds},
+			wantFlags:   "4",
+			wantPresent: true,
+		},
+		{
+			name:        "nonzero explicitly set",
+			edit:        WebhookEdit{Flags: MessageFlagsSuppressEmbeds, FlagsSet: true},
+			wantFlags:   "4",
+			wantPresent: true,
+		},
+		{
+			name:        "explicit zero",
+			edit:        WebhookEdit{FlagsSet: true},
+			wantFlags:   "0",
+			wantPresent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.edit)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("Unmarshal returned error: %v", err)
+			}
+			flags, present := payload["flags"]
+			if present != tt.wantPresent {
+				t.Fatalf("flags present = %t, want %t; body = %s", present, tt.wantPresent, body)
+			}
+			if present && string(flags) != tt.wantFlags {
+				t.Fatalf("flags = %s, want %s", flags, tt.wantFlags)
+			}
+		})
+	}
+}
+
 func TestApplicationWebhookEventTypes(t *testing.T) {
 	tests := []struct {
 		name      string

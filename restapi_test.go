@@ -2343,6 +2343,105 @@ func TestWebhookMessageOptionsQueries(t *testing.T) {
 	}
 }
 
+func TestWebhookMessageEditFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		edit        *WebhookEdit
+		wantFlags   string
+		wantPresent bool
+		status      int
+	}{
+		{
+			name:   "omitted",
+			edit:   &WebhookEdit{},
+			status: http.StatusOK,
+		},
+		{
+			name:        "nonzero",
+			edit:        &WebhookEdit{Flags: MessageFlagsSuppressEmbeds},
+			wantFlags:   "4",
+			wantPresent: true,
+			status:      http.StatusOK,
+		},
+		{
+			name:        "explicit zero",
+			edit:        &WebhookEdit{FlagsSet: true},
+			wantFlags:   "0",
+			wantPresent: true,
+			status:      http.StatusOK,
+		},
+		{
+			name:        "unsupported flag propagates REST error",
+			edit:        &WebhookEdit{Flags: MessageFlagsEphemeral, FlagsSet: true},
+			wantFlags:   "64",
+			wantPresent: true,
+			status:      http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPatch {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+				}
+				wantPath := "/api/v" + APIVersion + "/webhooks/webhook/token/messages/message"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				if authorization := r.Header.Get("Authorization"); authorization != "" {
+					t.Fatalf("Authorization = %q, want empty", authorization)
+				}
+
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("Decode returned error: %v", err)
+				}
+				flags, present := payload["flags"]
+				if present != tt.wantPresent {
+					t.Fatalf("flags present = %t, want %t", present, tt.wantPresent)
+				}
+				if present && string(flags) != tt.wantFlags {
+					t.Fatalf("flags = %s, want %s", flags, tt.wantFlags)
+				}
+
+				body := `{"id":"message","channel_id":"channel"}`
+				if tt.status == http.StatusBadRequest {
+					body = `{"code":50035,"message":"Invalid Form Body"}`
+				}
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    r,
+				}, nil
+			})
+
+			message, err := session.WebhookMessageEdit("webhook", "token", "message", tt.edit)
+			if tt.status == http.StatusBadRequest {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+				}
+				if message != nil {
+					t.Fatalf("message = %#v, want nil", message)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("WebhookMessageEdit returned error: %v", err)
+			}
+			if message == nil || message.ID != "message" {
+				t.Fatalf("message = %#v", message)
+			}
+		})
+	}
+}
+
 func TestInteractionResponseEditAddsPoll(t *testing.T) {
 	session, err := New("Bot secret")
 	if err != nil {

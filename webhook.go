@@ -241,6 +241,26 @@ type WebhookEdit struct {
 	Attachments     *[]*MessageAttachment   `json:"attachments,omitempty"`
 	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
 	Flags           MessageFlags            `json:"flags,omitempty"`
+	// FlagsSet sends Flags even when it is zero, allowing MessageFlagsSuppressEmbeds to be unset.
+	FlagsSet bool `json:"-"`
 	// Poll can only be added when editing a deferred interaction response.
 	Poll *Poll `json:"poll,omitempty"`
+}
+
+// MarshalJSON ensures webhook edit flags can be explicitly cleared.
+func (w WebhookEdit) MarshalJSON() ([]byte, error) {
+	type webhookEdit WebhookEdit
+
+	var flags *MessageFlags
+	if w.Flags != 0 || w.FlagsSet {
+		flags = &w.Flags
+	}
+
+	return json.Marshal(struct {
+		webhookEdit
+		Flags *MessageFlags `json:"flags,omitempty"`
+	}{
+		webhookEdit: webhookEdit(w),
+		Flags:       flags,
+	})
 }
