@@ -111,6 +111,22 @@ type Team struct {
 	Members     []*TeamMember `json:"members"`
 }
 
+// OAuth2CurrentApplication returns the current bot's application.
+func (s *Session) OAuth2CurrentApplication(options ...RequestOption) (application *Application, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointOAuth2CurrentApplication, nil, EndpointOAuth2CurrentApplication, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &application); err != nil {
+		return nil, err
+	}
+	if application == nil {
+		return nil, fmt.Errorf("%w: oauth2 current application response is null", ErrJSONUnmarshal)
+	}
+	return application, nil
+}
+
 // OAuth2Key is a public JSON Web Key used by Discord's OAuth2 service.
 type OAuth2Key struct {
 	KeyType   string `json:"kty"`
