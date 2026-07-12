@@ -5176,3 +5176,207 @@ func (s *Session) UserVoiceState(guildID string, userID string, options ...Reque
 	err = unmarshal(body, &state)
 	return
 }
+
+// ----------------------------------------------------------------------
+// Functions specific to lobbies
+// ----------------------------------------------------------------------
+
+// LobbyCreate creates a lobby owned by the current application using a Bot token.
+func (s *Session) LobbyCreate(params *LobbyParams, options ...RequestOption) (lobby *Lobby, err error) {
+	if params == nil {
+		params = &LobbyParams{}
+	}
+
+	body, err := s.RequestWithBucketID("POST", EndpointLobbies, params, EndpointLobbies, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &lobby)
+	return
+}
+
+// LobbyCreateOrJoin creates or joins a lobby using a Bearer token with the sdk.social_layer scope.
+func (s *Session) LobbyCreateOrJoin(params *LobbyCreateOrJoinParams, options ...RequestOption) (lobby *Lobby, err error) {
+	body, err := s.RequestWithBucketID("PUT", EndpointLobbies, params, EndpointLobbies, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &lobby)
+	return
+}
+
+// Lobby returns the lobby with the given ID.
+func (s *Session) Lobby(lobbyID string, options ...RequestOption) (lobby *Lobby, err error) {
+	endpoint := EndpointLobby(lobbyID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &lobby)
+	return
+}
+
+// LobbyEdit modifies a lobby using a Bot token.
+func (s *Session) LobbyEdit(lobbyID string, params *LobbyParams, options ...RequestOption) (lobby *Lobby, err error) {
+	if params == nil {
+		params = &LobbyParams{}
+	}
+
+	endpoint := EndpointLobby(lobbyID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, params, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &lobby)
+	return
+}
+
+// LobbyDelete deletes a lobby using a Bot token.
+func (s *Session) LobbyDelete(lobbyID string, options ...RequestOption) (err error) {
+	endpoint := EndpointLobby(lobbyID)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	return
+}
+
+// LobbyMemberAdd adds or updates a lobby member using a Bot token.
+func (s *Session) LobbyMemberAdd(lobbyID, userID string, params *LobbyMemberParams, options ...RequestOption) (member *LobbyMember, err error) {
+	data := LobbyMemberParams{}
+	if params != nil {
+		data = *params
+	}
+	data.ID = ""
+
+	endpoint := EndpointLobbyMember(lobbyID, userID)
+	body, err := s.RequestWithBucketID("PUT", endpoint, &data, EndpointLobbyMember(lobbyID, ""), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &member)
+	return
+}
+
+// LobbyMembersBulkUpdate adds, updates, or removes up to 25 lobby members using a Bot token.
+func (s *Session) LobbyMembersBulkUpdate(lobbyID string, members []LobbyMemberUpdateParams, options ...RequestOption) (updated []*LobbyMember, err error) {
+	endpoint := EndpointLobbyMembersBulk(lobbyID)
+	body, err := s.RequestWithBucketID("POST", endpoint, members, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &updated)
+	return
+}
+
+// LobbyMemberRemove removes a lobby member using a Bot token.
+func (s *Session) LobbyMemberRemove(lobbyID, userID string, options ...RequestOption) (err error) {
+	endpoint := EndpointLobbyMember(lobbyID, userID)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, EndpointLobbyMember(lobbyID, ""), options...)
+	return
+}
+
+// LobbyLeave removes the current user using a Bearer token.
+func (s *Session) LobbyLeave(lobbyID string, options ...RequestOption) (err error) {
+	endpoint := EndpointLobbyMember(lobbyID, "@me")
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, EndpointLobbyMember(lobbyID, ""), options...)
+	return
+}
+
+// LobbyChannelLink links a text channel using a Bearer token. The current user
+// must have LobbyMemberFlagCanLinkLobby.
+func (s *Session) LobbyChannelLink(lobbyID, channelID string, options ...RequestOption) (lobby *Lobby, err error) {
+	endpoint := EndpointLobbyChannelLinking(lobbyID)
+	params := struct {
+		ChannelID string `json:"channel_id"`
+	}{
+		ChannelID: channelID,
+	}
+
+	body, err := s.RequestWithBucketID("PATCH", endpoint, params, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &lobby)
+	return
+}
+
+// LobbyChannelUnlink unlinks the current text channel using a Bearer token.
+// The current user must have LobbyMemberFlagCanLinkLobby.
+func (s *Session) LobbyChannelUnlink(lobbyID string, options ...RequestOption) (lobby *Lobby, err error) {
+	endpoint := EndpointLobbyChannelLinking(lobbyID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, struct{}{}, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &lobby)
+	return
+}
+
+// LobbyMessageSend sends a lobby message using a Bearer token with the sdk.social_layer scope.
+func (s *Session) LobbyMessageSend(lobbyID string, params *LobbyMessageSendParams, options ...RequestOption) (message *LobbyMessage, err error) {
+	endpoint := EndpointLobbyMessages(lobbyID)
+	body, err := s.RequestWithBucketID("POST", endpoint, params, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &message)
+	return
+}
+
+// LobbyMessages returns the most recent lobby messages using a Bearer token
+// with the sdk.social_layer scope. Limit can be 1 to 200; zero uses Discord's default.
+func (s *Session) LobbyMessages(lobbyID string, limit int, options ...RequestOption) (messages []*LobbyMessage, err error) {
+	endpoint := EndpointLobbyMessages(lobbyID)
+	uri := endpoint
+	if limit > 0 {
+		query := url.Values{}
+		query.Set("limit", strconv.Itoa(limit))
+		uri += "?" + query.Encode()
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &messages)
+	return
+}
+
+// LobbyMessageModerationMetadataUpdate sets app-scoped moderation metadata
+// for a lobby message using a Bot token.
+func (s *Session) LobbyMessageModerationMetadataUpdate(lobbyID, messageID string, metadata map[string]string, options ...RequestOption) (err error) {
+	endpoint := EndpointLobbyMessageModerationMetadata(lobbyID, messageID)
+	bucketID := EndpointLobbyMessageModerationMetadata(lobbyID, "")
+	_, err = s.RequestWithBucketID("PUT", endpoint, metadata, bucketID, options...)
+	return
+}
+
+// LobbyChannelInviteCreate creates a linked-channel invite for the current user
+// using a Bearer token with the sdk.social_layer scope.
+func (s *Session) LobbyChannelInviteCreate(lobbyID string, options ...RequestOption) (invite *LobbyInvite, err error) {
+	return s.lobbyChannelInviteCreate(lobbyID, "@me", options...)
+}
+
+// LobbyChannelInviteCreateForUser creates a linked-channel invite for a user using a Bot token.
+func (s *Session) LobbyChannelInviteCreateForUser(lobbyID, userID string, options ...RequestOption) (invite *LobbyInvite, err error) {
+	return s.lobbyChannelInviteCreate(lobbyID, userID, options...)
+}
+
+func (s *Session) lobbyChannelInviteCreate(lobbyID, userID string, options ...RequestOption) (invite *LobbyInvite, err error) {
+	endpoint := EndpointLobbyMemberInvites(lobbyID, userID)
+	body, err := s.RequestWithBucketID("POST", endpoint, nil, EndpointLobbyMemberInvites(lobbyID, ""), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &invite)
+	return
+}
