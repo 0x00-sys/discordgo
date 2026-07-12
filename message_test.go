@@ -213,6 +213,9 @@ func TestMessageCreateUnknownComponentType(t *testing.T) {
 	if m.Message == nil {
 		t.Fatal("Message is nil")
 	}
+	if m.ChannelType != 0 {
+		t.Fatalf("ChannelType = %d, want zero when omitted", m.ChannelType)
+	}
 	if len(m.Components) != 1 {
 		t.Fatalf("len(Components) = %d, want 1", len(m.Components))
 	}
@@ -243,6 +246,7 @@ func TestMessageCreateLinksMemberUser(t *testing.T) {
 	err := json.Unmarshal([]byte(`{
 		"id":"message",
 		"channel_id":"channel",
+		"channel_type":11,
 		"guild_id":"guild",
 		"author":{"id":"user","username":"User"},
 		"member":{"roles":["role"],"nick":"Nick"}
@@ -252,6 +256,9 @@ func TestMessageCreateLinksMemberUser(t *testing.T) {
 	}
 	if m.Member == nil {
 		t.Fatal("Member is nil")
+	}
+	if m.ChannelType != ChannelTypeGuildPublicThread {
+		t.Fatalf("ChannelType = %d, want %d", m.ChannelType, ChannelTypeGuildPublicThread)
 	}
 	if m.Member.User != m.Author {
 		t.Fatal("Member.User was not linked to Author")
@@ -272,6 +279,7 @@ func TestMessageUpdateLinksMemberUser(t *testing.T) {
 	err := json.Unmarshal([]byte(`{
 		"id":"message",
 		"channel_id":"channel",
+		"channel_type":2,
 		"guild_id":"guild",
 		"author":{"id":"user","username":"User"},
 		"member":{"roles":["role"]}
@@ -281,6 +289,9 @@ func TestMessageUpdateLinksMemberUser(t *testing.T) {
 	}
 	if m.Member == nil {
 		t.Fatal("Member is nil")
+	}
+	if m.ChannelType != ChannelTypeGuildVoice {
+		t.Fatalf("ChannelType = %d, want %d", m.ChannelType, ChannelTypeGuildVoice)
 	}
 	if m.Member.User != m.Author {
 		t.Fatal("Member.User was not linked to Author")
