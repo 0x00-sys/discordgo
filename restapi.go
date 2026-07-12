@@ -5104,6 +5104,26 @@ func (s *Session) Entitlements(appID string, filterOptions *EntitlementFilterOpt
 	return
 }
 
+// Entitlement returns an entitlement for a given application.
+// appID         : The ID of the application.
+// entitlementID : The ID of the entitlement.
+func (s *Session) Entitlement(appID, entitlementID string, options ...RequestOption) (entitlement *Entitlement, err error) {
+	endpoint := EndpointEntitlement(appID, entitlementID)
+
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointEntitlement(appID, ""), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &entitlement); err != nil {
+		return nil, err
+	}
+	if entitlement == nil {
+		return nil, fmt.Errorf("%w: entitlement response is null", ErrJSONUnmarshal)
+	}
+	return entitlement, nil
+}
+
 // EntitlementConsume marks a given One-Time Purchase for the user as consumed.
 func (s *Session) EntitlementConsume(appID, entitlementID string, options ...RequestOption) (err error) {
 	_, err = s.RequestWithBucketID("POST", EndpointEntitlementConsume(appID, entitlementID), nil, EndpointEntitlementConsume(appID, ""), options...)
