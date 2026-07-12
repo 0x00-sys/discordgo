@@ -144,10 +144,30 @@ type ApplicationCommandOption struct {
 	MinValue *float64 `json:"min_value,omitempty"`
 	// Maximum value of number/integer option.
 	MaxValue float64 `json:"max_value,omitempty"`
+	// MaxValueSet sends MaxValue even when it is zero.
+	MaxValueSet bool `json:"-"`
 	// Minimum length of string option.
 	MinLength *int `json:"min_length,omitempty"`
 	// Maximum length of string option.
 	MaxLength int `json:"max_length,omitempty"`
+}
+
+// MarshalJSON ensures a zero maximum value can be sent explicitly.
+func (o ApplicationCommandOption) MarshalJSON() ([]byte, error) {
+	type applicationCommandOption ApplicationCommandOption
+
+	var maxValue *float64
+	if o.MaxValue != 0 || o.MaxValueSet {
+		maxValue = &o.MaxValue
+	}
+
+	return json.Marshal(struct {
+		applicationCommandOption
+		MaxValue *float64 `json:"max_value,omitempty"`
+	}{
+		applicationCommandOption: applicationCommandOption(o),
+		MaxValue:                 maxValue,
+	})
 }
 
 // ApplicationCommandOptionChoice represents a slash command option choice.

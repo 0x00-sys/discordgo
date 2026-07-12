@@ -146,6 +146,75 @@ func TestApplicationCommandResolvedMembersLinkUsers(t *testing.T) {
 	}
 }
 
+func TestApplicationCommandOptionMaxValueJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		option  *ApplicationCommandOption
+		present bool
+		value   float64
+	}{
+		{
+			name:   "omitted zero",
+			option: &ApplicationCommandOption{MaxValue: 0},
+		},
+		{
+			name:    "nonzero",
+			option:  &ApplicationCommandOption{MaxValue: -1},
+			present: true,
+			value:   -1,
+		},
+		{
+			name:    "explicit zero",
+			option:  &ApplicationCommandOption{MaxValueSet: true},
+			present: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.option)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+
+			var fields map[string]json.RawMessage
+			if err = json.Unmarshal(data, &fields); err != nil {
+				t.Fatalf("Unmarshal returned error: %v", err)
+			}
+			raw, present := fields["max_value"]
+			if present != test.present {
+				t.Fatalf("max_value presence = %v, want %v: %s", present, test.present, data)
+			}
+			if present {
+				var value float64
+				if err = json.Unmarshal(raw, &value); err != nil {
+					t.Fatalf("Unmarshal max_value returned error: %v", err)
+				}
+				if value != test.value {
+					t.Fatalf("max_value = %v, want %v", value, test.value)
+				}
+			}
+		})
+	}
+
+	command := ApplicationCommand{
+		Name: "limit",
+		Options: []*ApplicationCommandOption{{
+			Type:        ApplicationCommandOptionNumber,
+			Name:        "number",
+			Description: "number",
+			MaxValueSet: true,
+		}},
+	}
+	data, err := json.Marshal(command)
+	if err != nil {
+		t.Fatalf("Marshal nested command returned error: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"max_value":0`)) {
+		t.Fatalf("nested command omitted max_value: %s", data)
+	}
+}
+
 func TestComponentResolvedMembersLinkUsers(t *testing.T) {
 	data := []byte(`{
 		"users": {
