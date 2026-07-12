@@ -9,7 +9,44 @@
 
 package discordgo
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+// OAuth2Authorization stores information about the current OAuth2 authorization.
+type OAuth2Authorization struct {
+	Application *Application `json:"application"`
+	Scopes      []string     `json:"scopes"`
+	Expires     time.Time    `json:"expires"`
+	User        *User        `json:"user,omitempty"`
+}
+
+// OAuth2CurrentAuthorization returns information about the current OAuth2 authorization.
+// The session must use a bearer token.
+func (s *Session) OAuth2CurrentAuthorization(options ...RequestOption) (authorization *OAuth2Authorization, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointOAuth2CurrentAuthorization, nil, EndpointOAuth2CurrentAuthorization, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &authorization); err != nil {
+		return nil, err
+	}
+	if authorization == nil {
+		return nil, fmt.Errorf("%w: oauth2 authorization response is null", ErrJSONUnmarshal)
+	}
+	if authorization.Application == nil {
+		return nil, fmt.Errorf("%w: oauth2 authorization response is missing application", ErrJSONUnmarshal)
+	}
+	if authorization.Scopes == nil {
+		return nil, fmt.Errorf("%w: oauth2 authorization response is missing scopes", ErrJSONUnmarshal)
+	}
+	if authorization.Expires.IsZero() {
+		return nil, fmt.Errorf("%w: oauth2 authorization response is missing expiry", ErrJSONUnmarshal)
+	}
+	return authorization, nil
+}
 
 // ------------------------------------------------------------------------------------------------
 // Code specific to Discord OAuth2 Applications
