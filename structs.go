@@ -676,19 +676,29 @@ func (c *Channel) IsThread() bool {
 }
 
 // A ChannelEdit holds Channel Field data for a channel edit.
+// Icon and RTCRegion are omitted when nil; a non-nil pointer to nil sends null.
 type ChannelEdit struct {
 	Name                          string                 `json:"name,omitempty"`
+	Type                          *ChannelType           `json:"type,omitempty"`
 	Topic                         string                 `json:"topic,omitempty"`
+	Icon                          **string               `json:"icon,omitempty"`
 	NSFW                          *bool                  `json:"nsfw,omitempty"`
 	Position                      *int                   `json:"position,omitempty"`
 	Bitrate                       int                    `json:"bitrate,omitempty"`
 	UserLimit                     int                    `json:"user_limit,omitempty"`
+	RTCRegion                     **string               `json:"rtc_region,omitempty"`
+	VideoQualityMode              *VideoQualityMode      `json:"video_quality_mode,omitempty"`
 	PermissionOverwrites          []*PermissionOverwrite `json:"permission_overwrites,omitempty"`
 	ParentID                      string                 `json:"parent_id,omitempty"`
 	RateLimitPerUser              *int                   `json:"rate_limit_per_user,omitempty"`
+	DefaultAutoArchiveDuration    *int                   `json:"default_auto_archive_duration,omitempty"`
 	Flags                         *ChannelFlags          `json:"flags,omitempty"`
 	DefaultThreadRateLimitPerUser *int                   `json:"default_thread_rate_limit_per_user,omitempty"`
 
+	// TopicNull sends topic as null, clearing the channel topic.
+	TopicNull bool `json:"-"`
+	// UserLimitSet sends user_limit even when UserLimit is zero.
+	UserLimitSet bool `json:"-"`
 	// ParentIDNull sends parent_id as null, removing the channel from its parent category.
 	ParentIDNull bool `json:"-"`
 
@@ -714,34 +724,44 @@ type ChannelEdit struct {
 func (c ChannelEdit) MarshalJSON() ([]byte, error) {
 	type channelEdit ChannelEdit
 
+	var topic **string
+	if c.TopicNull {
+		var value *string
+		topic = &value
+	} else if c.Topic != "" {
+		value := &c.Topic
+		topic = &value
+	}
+
+	var userLimit *int
+	if c.UserLimit != 0 || c.UserLimitSet {
+		userLimit = &c.UserLimit
+	}
+
 	var permissionOverwrites *[]*PermissionOverwrite
 	if c.PermissionOverwrites != nil {
 		permissionOverwrites = &c.PermissionOverwrites
 	}
 
+	var parentID **string
 	if c.ParentIDNull {
-		return json.Marshal(struct {
-			channelEdit
-			PermissionOverwrites *[]*PermissionOverwrite `json:"permission_overwrites,omitempty"`
-			ParentID             interface{}             `json:"parent_id"`
-		}{
-			channelEdit:          channelEdit(c),
-			PermissionOverwrites: permissionOverwrites,
-			ParentID:             nil,
-		})
-	}
-
-	var parentID *string
-	if c.ParentID != "" {
-		parentID = &c.ParentID
+		var value *string
+		parentID = &value
+	} else if c.ParentID != "" {
+		value := &c.ParentID
+		parentID = &value
 	}
 
 	return json.Marshal(struct {
 		channelEdit
+		Topic                **string                `json:"topic,omitempty"`
+		UserLimit            *int                    `json:"user_limit,omitempty"`
 		PermissionOverwrites *[]*PermissionOverwrite `json:"permission_overwrites,omitempty"`
-		ParentID             *string                 `json:"parent_id,omitempty"`
+		ParentID             **string                `json:"parent_id,omitempty"`
 	}{
 		channelEdit:          channelEdit(c),
+		Topic:                topic,
+		UserLimit:            userLimit,
 		PermissionOverwrites: permissionOverwrites,
 		ParentID:             parentID,
 	})
