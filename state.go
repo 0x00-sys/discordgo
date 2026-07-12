@@ -1803,6 +1803,70 @@ func (s *State) messageRemoveByID(channelID, messageID string) error {
 	return ErrStateNotFound
 }
 
+func (s *State) messagePollVoteUpdate(channelID, messageID, userID string, answerID int, adding bool) error {
+	if channelID == "" || messageID == "" || userID == "" {
+		return ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	channel, ok := s.channelMap[channelID]
+	if !ok || channel == nil {
+		return nil
+	}
+
+	for messageIndex, message := range channel.Messages {
+		if message == nil || message.ID != messageID {
+			continue
+		}
+		if message.Poll == nil || message.Poll.Results == nil {
+			return nil
+		}
+
+		for answerIndex, answer := range message.Poll.Results.AnswerCounts {
+			if answer == nil || answer.ID != answerID {
+				continue
+			}
+
+			updatedAnswer := *answer
+			changed := false
+			if adding {
+				updatedAnswer.Count++
+				changed = true
+			} else if updatedAnswer.Count > 0 {
+				updatedAnswer.Count--
+				changed = true
+			}
+
+			if s.User != nil && userID == s.User.ID && updatedAnswer.MeVoted != adding {
+				updatedAnswer.MeVoted = adding
+				changed = true
+			}
+			if !changed {
+				return nil
+			}
+
+			updatedResults := *message.Poll.Results
+			updatedResults.AnswerCounts = append([]*PollAnswerCount(nil), message.Poll.Results.AnswerCounts...)
+			updatedResults.AnswerCounts[answerIndex] = &updatedAnswer
+			updatedPoll := *message.Poll
+			updatedPoll.Results = &updatedResults
+			updatedMessage := *message
+			updatedMessage.Poll = &updatedPoll
+			updatedChannel := copyChannel(channel)
+			updatedChannel.Messages[messageIndex] = &updatedMessage
+			s.channelMap[updatedChannel.ID] = updatedChannel
+			s.replaceChannel(channel, updatedChannel)
+			return nil
+		}
+
+		return nil
+	}
+
+	return nil
+}
+
 type messageReactionUpdateKind int
 
 const (
@@ -2690,6 +2754,20 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				return ErrStateInvalidData
 			}
 			err = s.messageReactionUpdate(t.MessageReaction, messageReactionRemoveEmoji)
+		}
+	case *MessagePollVoteAdd:
+		if s.MaxMessageCount != 0 {
+			if t == nil {
+				return ErrStateInvalidData
+			}
+			err = s.messagePollVoteUpdate(t.ChannelID, t.MessageID, t.UserID, t.AnswerID, true)
+		}
+	case *MessagePollVoteRemove:
+		if s.MaxMessageCount != 0 {
+			if t == nil {
+				return ErrStateInvalidData
+			}
+			err = s.messagePollVoteUpdate(t.ChannelID, t.MessageID, t.UserID, t.AnswerID, false)
 		}
 	case *VoiceStateUpdate:
 		if s.TrackVoice {
