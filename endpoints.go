@@ -312,6 +312,7 @@ var (
 	EndpointOAuth2Keys                 = EndpointOAuth2 + "keys"
 	EndpointOAuth2UserInfo             = EndpointOAuth2 + "userinfo"
 	EndpointOAuth2Applications         = EndpointOAuth2 + "applications"
+	EndpointOAuth2CurrentApplication   = EndpointOAuth2Applications + "/@me"
 	EndpointOAuth2Application          = func(aID string) string { return EndpointOAuth2Applications + "/" + aID }
 	EndpointOAuth2ApplicationsBot      = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/bot" }
 	EndpointOAuth2ApplicationAssets    = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/assets" }
