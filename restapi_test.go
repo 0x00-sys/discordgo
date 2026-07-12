@@ -2211,6 +2211,53 @@ func TestWebhookMessageOptionsQueries(t *testing.T) {
 	}
 }
 
+func TestInteractionResponseEditAddsPoll(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		wantPath := "/api/v" + APIVersion + "/webhooks/application/token/messages/@original"
+		if r.URL.Path != wantPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+		}
+		var payload WebhookEdit
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if payload.Poll == nil || payload.Poll.Question.Text != "Ready?" || len(payload.Poll.Answers) != 2 || payload.Poll.Duration != 1 {
+			t.Fatalf("Poll = %#v", payload.Poll)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"channel"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	message, err := session.InteractionResponseEdit(
+		&Interaction{AppID: "application", Token: "token"},
+		&WebhookEdit{Poll: &Poll{
+			Question: PollMedia{Text: "Ready?"},
+			Answers: []PollAnswer{
+				{Media: &PollMedia{Text: "Yes"}},
+				{Media: &PollMedia{Text: "No"}},
+			},
+			Duration: 1,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("InteractionResponseEdit returned error: %v", err)
+	}
+	if message == nil || message.ID != "message" {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
 func TestInteractionRespondWithResponseJSON(t *testing.T) {
 	session, err := New("Bot secret")
 	if err != nil {
