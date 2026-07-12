@@ -932,9 +932,7 @@ func (s *Session) UserChannelPermissions(userID, channelID string, fetchOptions 
 	}
 
 	apermissions = memberPermissions(guild, permissionsChannel, userID, member.Roles)
-	if thread {
-		apermissions = threadPermissions(apermissions)
-	}
+	apermissions = finalizeChannelPermissions(apermissions, member, permissionsChannel.Type, thread)
 	return
 }
 
@@ -1021,12 +1019,56 @@ func memberPermissions(guild *Guild, channel *Channel, userID string, roles []st
 	return apermissions
 }
 
-func threadPermissions(apermissions int64) int64 {
+const (
+	permissionAllChannelImplicit = PermissionAllChannel &^ (PermissionViewAuditLogs |
+		PermissionManageEvents |
+		PermissionCreateEvents)
+	permissionAllVoiceImplicit = PermissionVoicePrioritySpeaker |
+		PermissionVoiceStreamVideo |
+		PermissionVoiceConnect |
+		PermissionVoiceSpeak |
+		PermissionVoiceMuteMembers |
+		PermissionVoiceDeafenMembers |
+		PermissionVoiceMoveMembers |
+		PermissionVoiceUseVAD |
+		PermissionUseEmbeddedActivities |
+		PermissionUseSoundboard |
+		PermissionUseExternalSounds |
+		PermissionSetVoiceChannelStatus
+)
+
+func finalizeChannelPermissions(apermissions int64, member *Member, channelType ChannelType, thread bool) int64 {
 	if apermissions&PermissionAdministrator == PermissionAdministrator {
 		return apermissions
 	}
 
-	return apermissions &^ PermissionSendMessages
+	sendPermission := int64(PermissionSendMessages)
+	if thread {
+		apermissions &^= PermissionSendMessages
+		sendPermission = PermissionSendMessagesInThreads
+	}
+
+	if apermissions&sendPermission == 0 {
+		apermissions &^= PermissionSendTTSMessages |
+			PermissionMentionEveryone |
+			PermissionEmbedLinks |
+			PermissionAttachFiles
+	}
+	if apermissions&PermissionViewChannel == 0 {
+		apermissions &^= permissionAllChannelImplicit
+	}
+	isVoice := channelType == ChannelTypeGuildVoice || channelType == ChannelTypeGuildStageVoice
+	if isVoice && apermissions&PermissionVoiceConnect == 0 {
+		apermissions &^= permissionAllVoiceImplicit | PermissionManageChannels | PermissionManageRoles
+	}
+	isTimedOut := member != nil &&
+		member.CommunicationDisabledUntil != nil &&
+		member.CommunicationDisabledUntil.After(time.Now())
+	if isTimedOut {
+		apermissions &= PermissionViewChannel | PermissionReadMessageHistory
+	}
+
+	return apermissions
 }
 
 // ------------------------------------------------------------------------------------------------
