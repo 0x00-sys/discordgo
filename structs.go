@@ -2781,6 +2781,20 @@ const (
 	AuditLogActionVoiceChannelStatusDelete AuditLogAction = 193
 )
 
+// GuildCurrentMemberParams stores data needed to update the current member.
+// A nil field is omitted; a non-nil pointer to nil sends null.
+// https://discord.com/developers/docs/resources/guild#modify-current-member
+type GuildCurrentMemberParams struct {
+	// Value to set the current user's nickname to.
+	Nick **string `json:"nick,omitempty"`
+	// The current member's banner image encoded in base64.
+	Banner **string `json:"banner,omitempty"`
+	// The current member's avatar image encoded in base64.
+	Avatar **string `json:"avatar,omitempty"`
+	// The current member's guild bio.
+	Bio **string `json:"bio,omitempty"`
+}
+
 // GuildMemberParams stores data needed to update a member
 // https://discord.com/developers/docs/resources/guild#modify-guild-member
 type GuildMemberParams struct {
@@ -2802,10 +2816,13 @@ type GuildMemberParams struct {
 	// The member flags to set.
 	Flags *MemberFlags `json:"flags,omitempty"`
 	// The current member's avatar image encoded in base64.
+	// Deprecated: use GuildCurrentMemberParams.Avatar with GuildCurrentMemberEdit.
 	Avatar *string `json:"avatar,omitempty"`
 	// The current member's banner image encoded in base64.
+	// Deprecated: use GuildCurrentMemberParams.Banner with GuildCurrentMemberEdit.
 	Banner *string `json:"banner,omitempty"`
 	// The current member's guild bio.
+	// Deprecated: use GuildCurrentMemberParams.Bio with GuildCurrentMemberEdit.
 	Bio *string `json:"bio,omitempty"`
 }
 
