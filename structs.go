@@ -236,7 +236,7 @@ type Application struct {
 	CustomInstallURL                  string                                                           `json:"custom_install_url,omitempty"`
 }
 
-// ApplicationEditParams contains fields that can be updated on the current application.
+// ApplicationEditParams contains fields that can be updated on an application.
 type ApplicationEditParams struct {
 	CustomInstallURL               *string                                                          `json:"custom_install_url,omitempty"`
 	Description                    *string                                                          `json:"description,omitempty"`

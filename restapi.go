@@ -2521,6 +2521,40 @@ func (s *Session) CurrentApplicationEdit(params *ApplicationEditParams, options 
 	return
 }
 
+// ApplicationGet returns the application with the given ID.
+func (s *Session) ApplicationGet(appID string, options ...RequestOption) (application *Application, err error) {
+	endpoint := EndpointApplication(appID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &application); err != nil {
+		return nil, err
+	}
+	if application == nil {
+		return nil, fmt.Errorf("%w: application response is null", ErrJSONUnmarshal)
+	}
+	return application, nil
+}
+
+// ApplicationEdit updates and returns the application with the given ID.
+func (s *Session) ApplicationEdit(appID string, params *ApplicationEditParams, options ...RequestOption) (application *Application, err error) {
+	endpoint := EndpointApplication(appID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, params, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &application); err != nil {
+		return nil, err
+	}
+	if application == nil {
+		return nil, fmt.Errorf("%w: application response is null", ErrJSONUnmarshal)
+	}
+	return application, nil
+}
+
 // ApplicationAttachmentUpload uploads an attachment for the given application.
 func (s *Session) ApplicationAttachmentUpload(appID string, file *File, options ...RequestOption) (response *ActivitiesAttachmentResponse, err error) {
 	if file == nil {
