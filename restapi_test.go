@@ -283,6 +283,121 @@ func TestStickerRetrievalInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestGuildStickerEndpoints(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /guilds/guild/stickers":
+			_, _ = w.Write([]byte(`[{"id":"sticker","name":"Wave","type":2,"format_type":1}]`))
+		case http.MethodGet + " /guilds/guild/stickers/sticker":
+			_, _ = w.Write([]byte(`{"id":"sticker","name":"Wave","type":2,"format_type":1}`))
+		case http.MethodPost + " /guilds/guild/stickers":
+			if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "new sticker" {
+				t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "new sticker")
+			}
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm returned error: %v", err)
+			}
+			if r.FormValue("name") != "Wave" || r.FormValue("description") != "A wave" || r.FormValue("tags") != "wave, hello" {
+				t.Fatalf("form = %#v", r.MultipartForm.Value)
+			}
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				t.Fatalf("FormFile returned error: %v", err)
+			}
+			defer file.Close()
+			contents, err := ioutil.ReadAll(file)
+			if err != nil {
+				t.Fatalf("ReadAll returned error: %v", err)
+			}
+			if header.Filename != "wave.png" || header.Header.Get("Content-Type") != "image/png" || string(contents) != "png" {
+				t.Fatalf("file = %q/%q/%q", header.Filename, header.Header.Get("Content-Type"), contents)
+			}
+			_, _ = w.Write([]byte(`{"id":"created","name":"Wave","type":2,"format_type":1}`))
+		case http.MethodPatch + " /guilds/guild/stickers/sticker":
+			var payload map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if payload["name"] != "Waving" || payload["tags"] != "wave" {
+				t.Fatalf("payload = %#v", payload)
+			}
+			if description, ok := payload["description"]; !ok || description != nil {
+				t.Fatalf("description = %#v, present = %t", description, ok)
+			}
+			_, _ = w.Write([]byte(`{"id":"sticker","name":"Waving","type":2,"format_type":1}`))
+		case http.MethodDelete + " /guilds/guild/stickers/sticker":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() { EndpointGuilds = oldEndpointGuilds })
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	stickers, err := session.GuildStickers("guild")
+	if err != nil || len(stickers) != 1 || stickers[0].ID != "sticker" {
+		t.Fatalf("GuildStickers = %#v, %v", stickers, err)
+	}
+	sticker, err := session.GuildSticker("guild", "sticker")
+	if err != nil || sticker.ID != "sticker" {
+		t.Fatalf("GuildSticker = %#v, %v", sticker, err)
+	}
+	created, err := session.GuildStickerCreate("guild", &GuildStickerCreateParams{
+		Name:        "Wave",
+		Description: "A wave",
+		Tags:        "wave, hello",
+		File:        &File{Name: "wave.png", ContentType: "image/png", Reader: strings.NewReader("png")},
+	}, WithAuditLogReason("new sticker"))
+	if err != nil || created.ID != "created" {
+		t.Fatalf("GuildStickerCreate = %#v, %v", created, err)
+	}
+	edited, err := session.GuildStickerEdit("guild", "sticker", &GuildStickerEditParams{
+		Name:            "Waving",
+		Tags:            "wave",
+		DescriptionNull: true,
+	})
+	if err != nil || edited.Name != "Waving" {
+		t.Fatalf("GuildStickerEdit = %#v, %v", edited, err)
+	}
+	if err := session.GuildStickerDelete("guild", "sticker"); err != nil {
+		t.Fatalf("GuildStickerDelete returned error: %v", err)
+	}
+	if requests != 5 {
+		t.Fatalf("requests = %d, want 5", requests)
+	}
+}
+
+func TestGuildStickerInvalidInputs(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if _, err := session.GuildStickerCreate("guild", nil); err == nil {
+		t.Fatal("GuildStickerCreate returned nil error for nil data")
+	}
+	if _, err := session.GuildStickerCreate("guild", &GuildStickerCreateParams{}); err == nil {
+		t.Fatal("GuildStickerCreate returned nil error for nil file")
+	}
+	if _, err := session.GuildStickerCreate("guild", &GuildStickerCreateParams{File: &File{Name: "sticker.png"}}); err == nil {
+		t.Fatal("GuildStickerCreate returned nil error for nil file reader")
+	}
+	if _, err := session.GuildStickerEdit("guild", "sticker", nil); err == nil {
+		t.Fatal("GuildStickerEdit returned nil error for nil data")
+	}
+}
+
 func TestGuildBulkBanResponseValidation(t *testing.T) {
 	tests := []struct {
 		name    string

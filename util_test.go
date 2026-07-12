@@ -97,6 +97,7 @@ func TestMultipartBodyWithJSONUsesCustomFileFieldName(t *testing.T) {
 func TestMultipartBodyWithoutJSONOmitsPayload(t *testing.T) {
 	_, body, err := multipartBody(
 		nil,
+		nil,
 		[]*File{
 			{
 				Name:        "users.csv",
