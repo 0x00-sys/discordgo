@@ -9,6 +9,8 @@
 
 package discordgo
 
+import "fmt"
+
 // ------------------------------------------------------------------------------------------------
 // Code specific to Discord OAuth2 Applications
 // ------------------------------------------------------------------------------------------------
@@ -39,6 +41,45 @@ type Team struct {
 	Icon        string        `json:"icon"`
 	OwnerID     string        `json:"owner_user_id"`
 	Members     []*TeamMember `json:"members"`
+}
+
+// OAuth2Key is a public JSON Web Key used by Discord's OAuth2 service.
+type OAuth2Key struct {
+	KeyType   string `json:"kty"`
+	Use       string `json:"use"`
+	KeyID     string `json:"kid"`
+	Modulus   string `json:"n"`
+	Exponent  string `json:"e"`
+	Algorithm string `json:"alg"`
+}
+
+// OAuth2Keys stores Discord's OAuth2 JSON Web Key Set.
+type OAuth2Keys struct {
+	Keys []*OAuth2Key `json:"keys"`
+}
+
+// OAuth2PublicKeys returns the public keys used by Discord's OAuth2 service.
+func (s *Session) OAuth2PublicKeys(options ...RequestOption) (keys *OAuth2Keys, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointOAuth2Keys, nil, EndpointOAuth2Keys, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &keys); err != nil {
+		return nil, err
+	}
+	if keys == nil {
+		return nil, fmt.Errorf("%w: OAuth2 public keys response is null", ErrJSONUnmarshal)
+	}
+	if keys.Keys == nil {
+		return nil, fmt.Errorf("%w: OAuth2 public keys response is missing keys", ErrJSONUnmarshal)
+	}
+	for _, key := range keys.Keys {
+		if key == nil {
+			return nil, fmt.Errorf("%w: OAuth2 public keys response contains a null key", ErrJSONUnmarshal)
+		}
+	}
+	return keys, nil
 }
 
 // Application returns an Application structure of a specific Application

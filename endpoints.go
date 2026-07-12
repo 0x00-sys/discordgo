@@ -307,6 +307,7 @@ var (
 	EndpointLobbyMemberInvites = func(lID, uID string) string { return EndpointLobbyMember(lID, uID) + "/invites" }
 
 	EndpointOAuth2                  = EndpointAPI + "oauth2/"
+	EndpointOAuth2Keys              = EndpointOAuth2 + "keys"
 	EndpointOAuth2Applications      = EndpointOAuth2 + "applications"
 	EndpointOAuth2Application       = func(aID string) string { return EndpointOAuth2Applications + "/" + aID }
 	EndpointOAuth2ApplicationsBot   = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/bot" }
