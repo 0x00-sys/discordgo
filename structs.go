@@ -1515,6 +1515,193 @@ type GuildPreview struct {
 	Description string `json:"description"`
 }
 
+// GuildJoinRequestApplicationStatus is the status of a guild join request.
+type GuildJoinRequestApplicationStatus string
+
+// Guild join request application statuses.
+const (
+	GuildJoinRequestApplicationStatusStarted   GuildJoinRequestApplicationStatus = "STARTED"
+	GuildJoinRequestApplicationStatusSubmitted GuildJoinRequestApplicationStatus = "SUBMITTED"
+	GuildJoinRequestApplicationStatusRejected  GuildJoinRequestApplicationStatus = "REJECTED"
+	GuildJoinRequestApplicationStatusApproved  GuildJoinRequestApplicationStatus = "APPROVED"
+)
+
+// GuildMemberVerificationFormFieldType is the type of a guild member verification form field.
+type GuildMemberVerificationFormFieldType string
+
+// Guild member verification form field types.
+const (
+	GuildMemberVerificationFormFieldTypeTerms          GuildMemberVerificationFormFieldType = "TERMS"
+	GuildMemberVerificationFormFieldTypeTextInput      GuildMemberVerificationFormFieldType = "TEXT_INPUT"
+	GuildMemberVerificationFormFieldTypeParagraph      GuildMemberVerificationFormFieldType = "PARAGRAPH"
+	GuildMemberVerificationFormFieldTypeMultipleChoice GuildMemberVerificationFormFieldType = "MULTIPLE_CHOICE"
+)
+
+// GuildJoinRequestFormFieldResponse is an applicant's response to a guild join request form field.
+type GuildJoinRequestFormFieldResponse interface {
+	Type() GuildMemberVerificationFormFieldType
+}
+
+// GuildJoinRequestMultipleChoiceFormFieldResponse is a multiple-choice form response.
+type GuildJoinRequestMultipleChoiceFormFieldResponse struct {
+	FieldType   GuildMemberVerificationFormFieldType `json:"field_type"`
+	Label       string                               `json:"label"`
+	Description string                               `json:"description"`
+	Required    bool                                 `json:"required"`
+	Choices     []string                             `json:"choices"`
+	Response    *int                                 `json:"response"`
+}
+
+// Type returns the form field type.
+func (r GuildJoinRequestMultipleChoiceFormFieldResponse) Type() GuildMemberVerificationFormFieldType {
+	return r.FieldType
+}
+
+// GuildJoinRequestParagraphFormFieldResponse is a long-form text response.
+type GuildJoinRequestParagraphFormFieldResponse struct {
+	FieldType   GuildMemberVerificationFormFieldType `json:"field_type"`
+	Label       string                               `json:"label"`
+	Description string                               `json:"description"`
+	Required    bool                                 `json:"required"`
+	Placeholder string                               `json:"placeholder"`
+	Response    *string                              `json:"response"`
+}
+
+// Type returns the form field type.
+func (r GuildJoinRequestParagraphFormFieldResponse) Type() GuildMemberVerificationFormFieldType {
+	return r.FieldType
+}
+
+// GuildJoinRequestTermsFormFieldResponse is a terms acknowledgement response.
+type GuildJoinRequestTermsFormFieldResponse struct {
+	FieldType   GuildMemberVerificationFormFieldType `json:"field_type"`
+	Label       string                               `json:"label"`
+	Description string                               `json:"description"`
+	Required    bool                                 `json:"required"`
+	Values      []string                             `json:"values"`
+	Response    *bool                                `json:"response"`
+}
+
+// Type returns the form field type.
+func (r GuildJoinRequestTermsFormFieldResponse) Type() GuildMemberVerificationFormFieldType {
+	return r.FieldType
+}
+
+// GuildJoinRequestTextInputFormFieldResponse is a short text response.
+type GuildJoinRequestTextInputFormFieldResponse struct {
+	FieldType   GuildMemberVerificationFormFieldType `json:"field_type"`
+	Label       string                               `json:"label"`
+	Description string                               `json:"description"`
+	Required    bool                                 `json:"required"`
+	Placeholder string                               `json:"placeholder"`
+	Response    *string                              `json:"response"`
+}
+
+// Type returns the form field type.
+func (r GuildJoinRequestTextInputFormFieldResponse) Type() GuildMemberVerificationFormFieldType {
+	return r.FieldType
+}
+
+type unmarshalableGuildJoinRequestFormFieldResponse struct {
+	GuildJoinRequestFormFieldResponse
+}
+
+type unknownGuildJoinRequestFormFieldResponse struct {
+	FieldType GuildMemberVerificationFormFieldType
+	RawData   json.RawMessage
+}
+
+func (r unknownGuildJoinRequestFormFieldResponse) Type() GuildMemberVerificationFormFieldType {
+	return r.FieldType
+}
+
+// UnmarshalJSON unmarshals a guild join request form response according to its field type.
+func (r *unmarshalableGuildJoinRequestFormFieldResponse) UnmarshalJSON(data []byte) error {
+	var field struct {
+		FieldType GuildMemberVerificationFormFieldType `json:"field_type"`
+	}
+	if err := json.Unmarshal(data, &field); err != nil {
+		return err
+	}
+
+	switch field.FieldType {
+	case GuildMemberVerificationFormFieldTypeMultipleChoice:
+		r.GuildJoinRequestFormFieldResponse = &GuildJoinRequestMultipleChoiceFormFieldResponse{}
+	case GuildMemberVerificationFormFieldTypeParagraph:
+		r.GuildJoinRequestFormFieldResponse = &GuildJoinRequestParagraphFormFieldResponse{}
+	case GuildMemberVerificationFormFieldTypeTerms:
+		r.GuildJoinRequestFormFieldResponse = &GuildJoinRequestTermsFormFieldResponse{}
+	case GuildMemberVerificationFormFieldTypeTextInput:
+		r.GuildJoinRequestFormFieldResponse = &GuildJoinRequestTextInputFormFieldResponse{}
+	default:
+		r.GuildJoinRequestFormFieldResponse = unknownGuildJoinRequestFormFieldResponse{
+			FieldType: field.FieldType,
+			RawData:   append(json.RawMessage(nil), data...),
+		}
+		return nil
+	}
+
+	return json.Unmarshal(data, r.GuildJoinRequestFormFieldResponse)
+}
+
+// GuildJoinRequest is an application to join a guild.
+type GuildJoinRequest struct {
+	ID                string                              `json:"id"`
+	CreatedAt         time.Time                           `json:"created_at"`
+	ReviewedAt        *time.Time                          `json:"reviewed_at"`
+	ApplicationStatus *GuildJoinRequestApplicationStatus  `json:"application_status"`
+	RejectionReason   *string                             `json:"rejection_reason"`
+	GuildID           string                              `json:"guild_id"`
+	UserID            string                              `json:"user_id"`
+	User              *User                               `json:"user"`
+	FormResponses     []GuildJoinRequestFormFieldResponse `json:"form_responses"`
+	ActionedByUser    *User                               `json:"actioned_by_user"`
+}
+
+// UnmarshalJSON unmarshals the typed form responses in a guild join request.
+func (r *GuildJoinRequest) UnmarshalJSON(data []byte) error {
+	type guildJoinRequest GuildJoinRequest
+	var decoded struct {
+		guildJoinRequest
+		FormResponses []unmarshalableGuildJoinRequestFormFieldResponse `json:"form_responses"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*r = GuildJoinRequest(decoded.guildJoinRequest)
+	if decoded.FormResponses == nil {
+		return nil
+	}
+
+	r.FormResponses = make([]GuildJoinRequestFormFieldResponse, len(decoded.FormResponses))
+	for i, response := range decoded.FormResponses {
+		r.FormResponses[i] = response.GuildJoinRequestFormFieldResponse
+	}
+	return nil
+}
+
+// GuildJoinRequestsResult is a page of guild join requests.
+type GuildJoinRequestsResult struct {
+	Total             int                 `json:"total"`
+	GuildJoinRequests []*GuildJoinRequest `json:"guild_join_requests"`
+}
+
+// GuildJoinRequestsOptions contains filters and pagination for guild join requests.
+type GuildJoinRequestsOptions struct {
+	Status GuildJoinRequestApplicationStatus
+	Limit  int
+	Before string
+	After  string
+}
+
+// GuildJoinRequestActionParams stores data needed to approve or reject a guild join request.
+// RejectionReason is omitted when nil; a non-nil pointer to nil sends JSON null.
+type GuildJoinRequestActionParams struct {
+	Action          GuildJoinRequestApplicationStatus `json:"action"`
+	RejectionReason **string                          `json:"rejection_reason,omitempty"`
+}
+
 // IconURL returns a URL to the guild's icon.
 //
 //	size:    The size of the desired icon image as a power of two

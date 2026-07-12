@@ -1215,6 +1215,75 @@ func (s *Session) GuildLeave(guildID string, options ...RequestOption) (err erro
 	return
 }
 
+// GuildJoinRequests returns a page of join requests for a guild.
+func (s *Session) GuildJoinRequests(guildID string, options ...RequestOption) (*GuildJoinRequestsResult, error) {
+	return s.GuildJoinRequestsWithOptions(guildID, nil, options...)
+}
+
+// GuildJoinRequestsWithOptions returns a filtered page of join requests for a guild.
+func (s *Session) GuildJoinRequestsWithOptions(guildID string, query *GuildJoinRequestsOptions, options ...RequestOption) (*GuildJoinRequestsResult, error) {
+	endpoint := EndpointGuildJoinRequests(guildID)
+	uri := endpoint
+	if query != nil {
+		values := url.Values{}
+		if query.Status != "" {
+			values.Set("status", string(query.Status))
+		}
+		if query.Limit > 0 {
+			values.Set("limit", strconv.Itoa(query.Limit))
+		}
+		if query.Before != "" {
+			values.Set("before", query.Before)
+		}
+		if query.After != "" {
+			values.Set("after", query.After)
+		}
+		if encoded := values.Encode(); encoded != "" {
+			uri += "?" + encoded
+		}
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *GuildJoinRequestsResult
+	if err = unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, fmt.Errorf("%w: guild join requests response is null", ErrJSONUnmarshal)
+	}
+	if result.GuildJoinRequests == nil {
+		return nil, fmt.Errorf("%w: guild join requests response is missing requests", ErrJSONUnmarshal)
+	}
+	for _, request := range result.GuildJoinRequests {
+		if request == nil {
+			return nil, fmt.Errorf("%w: guild join requests response contains a null request", ErrJSONUnmarshal)
+		}
+	}
+	return result, nil
+}
+
+// GuildJoinRequestAction approves or rejects a guild join request.
+func (s *Session) GuildJoinRequestAction(guildID, requestID string, data *GuildJoinRequestActionParams, options ...RequestOption) (*GuildJoinRequest, error) {
+	endpoint := EndpointGuildJoinRequest(guildID, requestID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, data, EndpointGuildJoinRequests(guildID), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var request *GuildJoinRequest
+	if err = unmarshal(body, &request); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		return nil, fmt.Errorf("%w: guild join request response is null", ErrJSONUnmarshal)
+	}
+	return request, nil
+}
+
 // GuildBans returns an array of GuildBan structures for bans in the given guild.
 // guildID   : The ID of a Guild
 // limit     : Max number of bans to return (max 1000)
