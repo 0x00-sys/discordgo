@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sync"
 	"time"
@@ -2828,6 +2829,54 @@ type AutoModerationAction struct {
 type GuildEmbed struct {
 	Enabled   *bool  `json:"enabled,omitempty"`
 	ChannelID string `json:"channel_id,omitempty"`
+}
+
+// GuildWidgetStyle is the style of a guild widget image.
+type GuildWidgetStyle string
+
+// Guild widget image styles.
+const (
+	GuildWidgetStyleShield  GuildWidgetStyle = "shield"
+	GuildWidgetStyleBanner1 GuildWidgetStyle = "banner1"
+	GuildWidgetStyleBanner2 GuildWidgetStyle = "banner2"
+	GuildWidgetStyleBanner3 GuildWidgetStyle = "banner3"
+	GuildWidgetStyleBanner4 GuildWidgetStyle = "banner4"
+)
+
+// GuildWidget stores the public widget data for a guild.
+type GuildWidget struct {
+	ID            string               `json:"id"`
+	Name          string               `json:"name"`
+	InstantInvite *string              `json:"instant_invite"`
+	Channels      []*Channel           `json:"channels"`
+	Members       []*GuildWidgetMember `json:"members"`
+	PresenceCount int                  `json:"presence_count"`
+}
+
+// ImageURL returns the URL of the guild widget image.
+func (g *GuildWidget) ImageURL(style GuildWidgetStyle) string {
+	endpoint := EndpointGuildWidgetImage(g.ID)
+	if style == "" {
+		return endpoint
+	}
+
+	query := url.Values{}
+	query.Set("style", string(style))
+	return endpoint + "?" + query.Encode()
+}
+
+// GuildWidgetMember stores a partial user and presence data from a guild widget.
+type GuildWidgetMember struct {
+	User
+	Status    Status    `json:"status"`
+	AvatarURL string    `json:"avatar_url"`
+	Activity  *Activity `json:"activity"`
+	Deaf      *bool     `json:"deaf"`
+	Mute      *bool     `json:"mute"`
+	SelfDeaf  *bool     `json:"self_deaf"`
+	SelfMute  *bool     `json:"self_mute"`
+	Suppress  *bool     `json:"suppress"`
+	ChannelID string    `json:"channel_id"`
 }
 
 // A GuildAuditLog stores data for a guild audit log.

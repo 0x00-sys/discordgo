@@ -98,6 +98,8 @@ var (
 	EndpointGuildInvites             = func(gID string) string { return EndpointGuilds + gID + "/invites" }
 	EndpointGuildVanityURL           = func(gID string) string { return EndpointGuilds + gID + "/vanity-url" }
 	EndpointGuildWidget              = func(gID string) string { return EndpointGuilds + gID + "/widget" }
+	EndpointGuildWidgetJSON          = func(gID string) string { return EndpointGuildWidget(gID) + ".json" }
+	EndpointGuildWidgetImage         = func(gID string) string { return EndpointGuildWidget(gID) + ".png" }
 	EndpointGuildEmbed               = EndpointGuildWidget
 	EndpointGuildPrune               = func(gID string) string { return EndpointGuilds + gID + "/prune" }
 	EndpointGuildIcon                = func(gID, hash string) string { return EndpointCDNIcons + gID + "/" + hash + ".png" }
