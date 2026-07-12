@@ -235,14 +235,15 @@ type ApplicationEditParams struct {
 	EventWebhooksTypes             *[]string                                                        `json:"event_webhooks_types,omitempty"`
 }
 
-// MarshalJSON ensures nullable application images can be explicitly cleared.
+// MarshalJSON ensures nullable application fields can be explicitly cleared.
 func (p ApplicationEditParams) MarshalJSON() ([]byte, error) {
 	type applicationEditParams ApplicationEditParams
 
 	v := struct {
 		applicationEditParams
-		Icon       json.RawMessage `json:"icon,omitempty"`
-		CoverImage json.RawMessage `json:"cover_image,omitempty"`
+		Icon             json.RawMessage `json:"icon,omitempty"`
+		CoverImage       json.RawMessage `json:"cover_image,omitempty"`
+		EventWebhooksURL json.RawMessage `json:"event_webhooks_url,omitempty"`
 	}{applicationEditParams: applicationEditParams(p)}
 
 	var err error
@@ -257,6 +258,13 @@ func (p ApplicationEditParams) MarshalJSON() ([]byte, error) {
 		if *p.CoverImage == "" {
 			v.CoverImage = json.RawMessage("null")
 		} else if v.CoverImage, err = json.Marshal(p.CoverImage); err != nil {
+			return nil, err
+		}
+	}
+	if p.EventWebhooksURL != nil {
+		if *p.EventWebhooksURL == "" {
+			v.EventWebhooksURL = json.RawMessage("null")
+		} else if v.EventWebhooksURL, err = json.Marshal(p.EventWebhooksURL); err != nil {
 			return nil, err
 		}
 	}
