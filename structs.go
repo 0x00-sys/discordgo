@@ -1468,6 +1468,10 @@ type GuildScheduledEvent struct {
 	Image string `json:"image"`
 	// The definition for how often this event should recur
 	RecurrenceRule *GuildScheduledEventRecurrenceRule `json:"recurrence_rule"`
+	// Exceptions to occurrences of this recurring event.
+	Exceptions []*GuildScheduledEventException `json:"guild_scheduled_event_exceptions"`
+	// The current user's response to this event, if any.
+	UserRSVP *GuildScheduledEventUser `json:"user_rsvp"`
 }
 
 // GuildScheduledEventParams are the parameters allowed for creating or updating a scheduled event
@@ -1570,6 +1574,38 @@ type GuildScheduledEventRecurrenceRuleParams struct {
 	ByMonthDay []int `json:"by_month_day,omitempty"`
 }
 
+// GuildScheduledEventException is an exception to one occurrence of a recurring event.
+type GuildScheduledEventException struct {
+	EventID            string     `json:"event_id"`
+	EventExceptionID   string     `json:"event_exception_id"`
+	ScheduledStartTime *time.Time `json:"scheduled_start_time"`
+	ScheduledEndTime   *time.Time `json:"scheduled_end_time"`
+	IsCanceled         bool       `json:"is_canceled"`
+}
+
+// GuildScheduledEventExceptionCreateParams stores data needed to create an exception.
+// Nullable fields are omitted when nil; a non-nil pointer to nil sends JSON null.
+type GuildScheduledEventExceptionCreateParams struct {
+	OriginalScheduledStartTime time.Time   `json:"original_scheduled_start_time"`
+	ScheduledStartTime         **time.Time `json:"scheduled_start_time,omitempty"`
+	ScheduledEndTime           **time.Time `json:"scheduled_end_time,omitempty"`
+	IsCanceled                 **bool      `json:"is_canceled,omitempty"`
+}
+
+// GuildScheduledEventExceptionEditParams stores data needed to edit an exception.
+// Nullable fields are omitted when nil; a non-nil pointer to nil sends JSON null.
+type GuildScheduledEventExceptionEditParams struct {
+	ScheduledStartTime **time.Time `json:"scheduled_start_time,omitempty"`
+	ScheduledEndTime   **time.Time `json:"scheduled_end_time,omitempty"`
+	IsCanceled         **bool      `json:"is_canceled,omitempty"`
+}
+
+// GuildScheduledEventUserCounts contains subscriber counts for an event and its exceptions.
+type GuildScheduledEventUserCounts struct {
+	GuildScheduledEventCount           int            `json:"guild_scheduled_event_count"`
+	GuildScheduledEventExceptionCounts map[string]int `json:"guild_scheduled_event_exception_counts"`
+}
+
 // GuildScheduledEventRecurrenceRuleFrequency describes how often a scheduled event recurs.
 type GuildScheduledEventRecurrenceRuleFrequency int
 
@@ -1666,10 +1702,22 @@ const (
 // GuildScheduledEventUser is a user subscribed to a scheduled event.
 // https://discord.com/developers/docs/resources/guild-scheduled-event#guild-scheduled-event-user-object
 type GuildScheduledEventUser struct {
-	GuildScheduledEventID string  `json:"guild_scheduled_event_id"`
-	User                  *User   `json:"user"`
-	Member                *Member `json:"member"`
+	GuildScheduledEventID          string                          `json:"guild_scheduled_event_id"`
+	GuildScheduledEventExceptionID *string                         `json:"guild_scheduled_event_exception_id"`
+	UserID                         string                          `json:"user_id"`
+	User                           *User                           `json:"user"`
+	Member                         *Member                         `json:"member"`
+	Response                       GuildScheduledEventUserResponse `json:"response"`
 }
+
+// GuildScheduledEventUserResponse is a user's response to a scheduled event occurrence.
+type GuildScheduledEventUserResponse int
+
+// Guild scheduled event user responses.
+const (
+	GuildScheduledEventUserResponseUninterested GuildScheduledEventUserResponse = iota
+	GuildScheduledEventUserResponseInterested
+)
 
 // GuildOnboardingMode defines the criteria used to satisfy constraints that are required for enabling onboarding.
 // https://discord.com/developers/docs/resources/guild#guild-onboarding-object-onboarding-mode

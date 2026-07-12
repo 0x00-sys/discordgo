@@ -4714,6 +4714,55 @@ func (s *Session) GuildScheduledEventDelete(guildID, eventID string, options ...
 	return
 }
 
+// GuildScheduledEventExceptionCreate creates an exception to a recurring event.
+func (s *Session) GuildScheduledEventExceptionCreate(guildID, eventID string, params *GuildScheduledEventExceptionCreateParams, options ...RequestOption) (exception *GuildScheduledEventException, err error) {
+	if params == nil {
+		return nil, fmt.Errorf("guild scheduled event exception data cannot be nil")
+	}
+
+	endpoint := EndpointGuildScheduledEventExceptions(guildID, eventID)
+	body, err := s.RequestWithBucketID("POST", endpoint, params, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &exception); err != nil {
+		return nil, err
+	}
+	if exception == nil {
+		return nil, fmt.Errorf("%w: guild scheduled event exception response is null", ErrJSONUnmarshal)
+	}
+	return exception, nil
+}
+
+// GuildScheduledEventExceptionEdit edits an exception to a recurring event.
+func (s *Session) GuildScheduledEventExceptionEdit(guildID, eventID, exceptionID string, params *GuildScheduledEventExceptionEditParams, options ...RequestOption) (exception *GuildScheduledEventException, err error) {
+	if params == nil {
+		return nil, fmt.Errorf("guild scheduled event exception data cannot be nil")
+	}
+
+	endpoint := EndpointGuildScheduledEventException(guildID, eventID, exceptionID)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, params, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &exception); err != nil {
+		return nil, err
+	}
+	if exception == nil {
+		return nil, fmt.Errorf("%w: guild scheduled event exception response is null", ErrJSONUnmarshal)
+	}
+	return exception, nil
+}
+
+// GuildScheduledEventExceptionDelete deletes an exception to a recurring event.
+func (s *Session) GuildScheduledEventExceptionDelete(guildID, eventID, exceptionID string, options ...RequestOption) (err error) {
+	endpoint := EndpointGuildScheduledEventException(guildID, eventID, exceptionID)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	return
+}
+
 // GuildScheduledEventUsers returns an array of GuildScheduledEventUser for a particular event in a guild
 // guildID    : The ID of a Guild
 // eventID    : The ID of the event
@@ -4749,6 +4798,71 @@ func (s *Session) GuildScheduledEventUsers(guildID, eventID string, limit int, w
 
 	err = unmarshal(body, &st)
 	return
+}
+
+// GuildScheduledEventExceptionUsers returns users subscribed to an event exception.
+func (s *Session) GuildScheduledEventExceptionUsers(guildID, eventID, exceptionID string, limit int, withMember bool, beforeID, afterID string, options ...RequestOption) (users []*GuildScheduledEventUser, err error) {
+	endpoint := EndpointGuildScheduledEventExceptionUsers(guildID, eventID, exceptionID)
+	queryParams := url.Values{}
+	if withMember {
+		queryParams.Set("with_member", "true")
+	}
+	if limit > 0 {
+		queryParams.Set("limit", strconv.Itoa(limit))
+	}
+	if beforeID != "" {
+		queryParams.Set("before", beforeID)
+	}
+	if afterID != "" {
+		queryParams.Set("after", afterID)
+	}
+
+	uri := endpoint
+	if len(queryParams) > 0 {
+		uri += "?" + queryParams.Encode()
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &users)
+	return
+}
+
+// GuildScheduledEventUserCounts returns subscriber counts for an event and up to 10 exceptions.
+func (s *Session) GuildScheduledEventUserCounts(guildID, eventID string, exceptionIDs []string, options ...RequestOption) (counts *GuildScheduledEventUserCounts, err error) {
+	if len(exceptionIDs) > 10 {
+		return nil, fmt.Errorf("guild scheduled event user counts accepts at most 10 exception ids")
+	}
+
+	endpoint := EndpointGuildScheduledEventUserCounts(guildID, eventID)
+	queryParams := url.Values{}
+	for _, exceptionID := range exceptionIDs {
+		queryParams.Add("guild_scheduled_event_exception_ids", exceptionID)
+	}
+
+	uri := endpoint
+	if len(queryParams) > 0 {
+		uri += "?" + queryParams.Encode()
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &counts); err != nil {
+		return nil, err
+	}
+	if counts == nil {
+		return nil, fmt.Errorf("%w: guild scheduled event user counts response is null", ErrJSONUnmarshal)
+	}
+	if counts.GuildScheduledEventExceptionCounts == nil {
+		return nil, fmt.Errorf("%w: guild scheduled event user counts response is missing exception counts", ErrJSONUnmarshal)
+	}
+	return counts, nil
 }
 
 // GuildWelcomeScreen returns the welcome screen of a guild.
