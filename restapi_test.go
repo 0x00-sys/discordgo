@@ -2108,6 +2108,109 @@ func TestWebhookExecuteLegacyQueries(t *testing.T) {
 	}
 }
 
+func TestWebhookMessageOptionsQueries(t *testing.T) {
+	content := "updated"
+	tests := []struct {
+		name      string
+		method    string
+		wantQuery string
+		call      func(*Session) error
+	}{
+		{
+			name:      "get in thread",
+			method:    http.MethodGet,
+			wantQuery: "thread_id=thread",
+			call: func(s *Session) error {
+				_, err := s.WebhookMessageWithOptions("webhook", "token", "message", WebhookMessageOptions{ThreadID: "thread"})
+				return err
+			},
+		},
+		{
+			name:      "edit in thread with components",
+			method:    http.MethodPatch,
+			wantQuery: "thread_id=thread&with_components=true",
+			call: func(s *Session) error {
+				_, err := s.WebhookMessageEditWithOptions(
+					"webhook",
+					"token",
+					"message",
+					WebhookMessageEditOptions{ThreadID: "thread", WithComponents: true},
+					&WebhookEdit{Content: &content},
+				)
+				return err
+			},
+		},
+		{
+			name:      "delete in thread",
+			method:    http.MethodDelete,
+			wantQuery: "thread_id=thread",
+			call: func(s *Session) error {
+				return s.WebhookMessageDeleteWithOptions("webhook", "token", "message", WebhookMessageOptions{ThreadID: "thread"})
+			},
+		},
+		{
+			name:   "legacy get omits query",
+			method: http.MethodGet,
+			call: func(s *Session) error {
+				_, err := s.WebhookMessage("webhook", "token", "message")
+				return err
+			},
+		},
+		{
+			name:   "legacy edit omits query",
+			method: http.MethodPatch,
+			call: func(s *Session) error {
+				_, err := s.WebhookMessageEdit("webhook", "token", "message", &WebhookEdit{Content: &content})
+				return err
+			},
+		},
+		{
+			name:   "legacy delete omits query",
+			method: http.MethodDelete,
+			call: func(s *Session) error {
+				return s.WebhookMessageDelete("webhook", "token", "message")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != tt.method {
+					t.Fatalf("method = %q, want %q", r.Method, tt.method)
+				}
+				wantPath := "/api/v" + APIVersion + "/webhooks/webhook/token/messages/message"
+				if r.URL.Path != wantPath || r.URL.RawQuery != tt.wantQuery {
+					t.Fatalf("URL = %s, want %s?%s", r.URL.String(), wantPath, tt.wantQuery)
+				}
+				if authorization := r.Header.Get("Authorization"); authorization != "" {
+					t.Fatalf("Authorization = %q, want empty", authorization)
+				}
+				status := http.StatusOK
+				body := `{"id":"message","channel_id":"thread"}`
+				if tt.method == http.MethodDelete {
+					status = http.StatusNoContent
+					body = ""
+				}
+				return &http.Response{
+					StatusCode: status,
+					Status:     http.StatusText(status),
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    r,
+				}, nil
+			})
+
+			if err := tt.call(session); err != nil {
+				t.Fatalf("webhook message call returned error: %v", err)
+			}
+		})
+	}
+}
+
 func TestInteractionRespondWithResponseJSON(t *testing.T) {
 	session, err := New("Bot secret")
 	if err != nil {
