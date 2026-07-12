@@ -284,6 +284,7 @@ var (
 	EndpointApplications                      = EndpointAPI + "applications"
 	EndpointCurrentApplication                = EndpointApplications + "/@me"
 	EndpointApplication                       = func(aID string) string { return EndpointApplications + "/" + aID }
+	EndpointApplicationAttachment             = func(aID string) string { return EndpointApplication(aID) + "/attachment" }
 	EndpointApplicationRoleConnectionMetadata = func(aID string) string { return EndpointApplication(aID) + "/role-connections/metadata" }
 
 	EndpointApplicationEmojis           = func(aID string) string { return EndpointApplication(aID) + "/emojis" }

@@ -2521,6 +2521,38 @@ func (s *Session) CurrentApplicationEdit(params *ApplicationEditParams, options 
 	return
 }
 
+// ApplicationAttachmentUpload uploads an attachment for the given application.
+func (s *Session) ApplicationAttachmentUpload(appID string, file *File, options ...RequestOption) (response *ActivitiesAttachmentResponse, err error) {
+	if file == nil {
+		return nil, fmt.Errorf("application attachment file cannot be nil")
+	}
+
+	upload := *file
+	upload.FieldName = "file"
+	contentType, requestBody, err := multipartBody(nil, nil, []*File{&upload}, false)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := EndpointApplicationAttachment(appID)
+	body, err := s.RequestRaw("POST", endpoint, contentType, requestBody, endpoint, 0, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	if response == nil {
+		return nil, fmt.Errorf("%w: application attachment response is null", ErrJSONUnmarshal)
+	}
+	if response.Attachment == nil {
+		return nil, fmt.Errorf("%w: application attachment response is missing attachment", ErrJSONUnmarshal)
+	}
+
+	return response, nil
+}
+
 // ApplicationEmojis returns all emojis for the given application
 // appID : ID of the application
 func (s *Session) ApplicationEmojis(appID string, options ...RequestOption) (emojis []*Emoji, err error) {
