@@ -48,6 +48,37 @@ func (s *Session) OAuth2CurrentAuthorization(options ...RequestOption) (authoriz
 	return authorization, nil
 }
 
+// OAuth2UserInfo stores the OpenID Connect claims for the current user.
+type OAuth2UserInfo struct {
+	Subject           string  `json:"sub"`
+	PreferredUsername string  `json:"preferred_username"`
+	Nickname          *string `json:"nickname"`
+	Picture           string  `json:"picture"`
+	Locale            string  `json:"locale"`
+	Email             *string `json:"email"`
+	EmailVerified     bool    `json:"email_verified"`
+}
+
+// OAuth2CurrentUserInfo returns OpenID Connect claims for the current authorization.
+// The session must use a bearer token with the openid scope.
+func (s *Session) OAuth2CurrentUserInfo(options ...RequestOption) (info *OAuth2UserInfo, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointOAuth2UserInfo, nil, EndpointOAuth2UserInfo, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = unmarshal(body, &info); err != nil {
+		return nil, err
+	}
+	if info == nil {
+		return nil, fmt.Errorf("%w: oauth2 userinfo response is null", ErrJSONUnmarshal)
+	}
+	if info.Subject == "" {
+		return nil, fmt.Errorf("%w: oauth2 userinfo response is missing subject", ErrJSONUnmarshal)
+	}
+	return info, nil
+}
+
 // ------------------------------------------------------------------------------------------------
 // Code specific to Discord OAuth2 Applications
 // ------------------------------------------------------------------------------------------------
