@@ -218,6 +218,20 @@ type WebhookExecuteOptions struct {
 	WithComponents bool
 }
 
+// WebhookMessageOptions stores query parameters for getting or deleting a webhook message.
+type WebhookMessageOptions struct {
+	// ID of the thread containing the message.
+	ThreadID string
+}
+
+// WebhookMessageEditOptions stores query parameters for editing a webhook message.
+type WebhookMessageEditOptions struct {
+	// ID of the thread containing the message.
+	ThreadID string
+	// Respect the components field. Non-application-owned webhooks may only send non-interactive components.
+	WithComponents bool
+}
+
 // WebhookEdit stores data for editing of a webhook message.
 type WebhookEdit struct {
 	Content         *string                 `json:"content,omitempty"`

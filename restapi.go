@@ -3583,7 +3583,12 @@ func (s *Session) WebhookExecuteComplex(webhookID, token string, executeOptions 
 // token     : The auth token for the webhook
 // messageID : The ID of message to get
 func (s *Session) WebhookMessage(webhookID, token, messageID string, options ...RequestOption) (message *Message, err error) {
-	uri := EndpointWebhookMessage(webhookID, token, messageID)
+	return s.WebhookMessageWithOptions(webhookID, token, messageID, WebhookMessageOptions{}, options...)
+}
+
+// WebhookMessageWithOptions gets a webhook message with query-string options.
+func (s *Session) WebhookMessageWithOptions(webhookID, token, messageID string, messageOptions WebhookMessageOptions, options ...RequestOption) (message *Message, err error) {
+	uri := webhookMessageURI(webhookID, token, messageID, messageOptions.ThreadID, false)
 
 	options = withoutAuthorizationOptions(options)
 	body, err := s.requestWithBucketIDNoGlobal("GET", uri, nil, webhookMessageBucketID(webhookID), options...)
@@ -3616,12 +3621,17 @@ func (s *Session) interactionWebhookMessage(appID, token, messageID string, opti
 // token     : The auth token for the webhook
 // messageID : The ID of message to edit
 func (s *Session) WebhookMessageEdit(webhookID, token, messageID string, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
+	return s.WebhookMessageEditWithOptions(webhookID, token, messageID, WebhookMessageEditOptions{}, data, options...)
+}
+
+// WebhookMessageEditWithOptions edits a webhook message with query-string options.
+func (s *Session) WebhookMessageEditWithOptions(webhookID, token, messageID string, editOptions WebhookMessageEditOptions, data *WebhookEdit, options ...RequestOption) (st *Message, err error) {
 	if data == nil {
 		return nil, fmt.Errorf("webhook edit data cannot be nil")
 	}
 	s.applyAllowedMentionsToWebhookEdit(data)
 
-	uri := EndpointWebhookMessage(webhookID, token, messageID)
+	uri := webhookMessageURI(webhookID, token, messageID, editOptions.ThreadID, editOptions.WithComponents)
 	bucketID := webhookMessageBucketID(webhookID)
 	options = withoutAuthorizationOptions(options)
 
@@ -3684,13 +3694,33 @@ func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, 
 // WebhookMessageDelete deletes a webhook message.
 // webhookID : The ID of a webhook
 // token     : The auth token for the webhook
-// messageID : The ID of a message to edit
+// messageID : The ID of a message to delete
 func (s *Session) WebhookMessageDelete(webhookID, token, messageID string, options ...RequestOption) (err error) {
-	uri := EndpointWebhookMessage(webhookID, token, messageID)
+	return s.WebhookMessageDeleteWithOptions(webhookID, token, messageID, WebhookMessageOptions{}, options...)
+}
+
+// WebhookMessageDeleteWithOptions deletes a webhook message with query-string options.
+func (s *Session) WebhookMessageDeleteWithOptions(webhookID, token, messageID string, messageOptions WebhookMessageOptions, options ...RequestOption) (err error) {
+	uri := webhookMessageURI(webhookID, token, messageID, messageOptions.ThreadID, false)
 
 	options = withoutAuthorizationOptions(options)
 	_, err = s.requestWithBucketIDNoGlobal("DELETE", uri, nil, webhookMessageBucketID(webhookID), options...)
 	return
+}
+
+func webhookMessageURI(webhookID, token, messageID, threadID string, withComponents bool) string {
+	uri := EndpointWebhookMessage(webhookID, token, messageID)
+	values := url.Values{}
+	if threadID != "" {
+		values.Set("thread_id", threadID)
+	}
+	if withComponents {
+		values.Set("with_components", "true")
+	}
+	if query := values.Encode(); query != "" {
+		uri += "?" + query
+	}
+	return uri
 }
 
 func (s *Session) interactionWebhookMessageDelete(appID, token, messageID string, options ...RequestOption) (err error) {
