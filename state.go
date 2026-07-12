@@ -2230,9 +2230,7 @@ func (s *State) UserChannelPermissions(userID, channelID string) (apermissions i
 	}
 
 	apermissions = memberPermissions(guild, channel, userID, member.Roles)
-	if thread {
-		apermissions = threadPermissions(apermissions)
-	}
+	apermissions = finalizeChannelPermissions(apermissions, member, channel.Type, thread)
 	return
 }
 
@@ -2256,9 +2254,7 @@ func (s *State) MessagePermissions(message *Message) (apermissions int64, err er
 	}
 
 	apermissions = memberPermissions(guild, channel, message.Author.ID, message.Member.Roles)
-	if thread {
-		apermissions = threadPermissions(apermissions)
-	}
+	apermissions = finalizeChannelPermissions(apermissions, message.Member, channel.Type, thread)
 	return
 }
 
