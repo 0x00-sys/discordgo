@@ -93,6 +93,80 @@ func TestUserUpdate(t *testing.T) {
 }
 */
 
+func TestUserUpdateComplexNullableImages(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		if r.URL.Path != "/users/@me" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/users/@me")
+		}
+
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		switch requests {
+		case 1:
+			if got := string(payload["username"]); got != `"new-name"` {
+				t.Fatalf("username = %s, want new-name", got)
+			}
+			if _, ok := payload["avatar"]; ok {
+				t.Fatalf("legacy empty avatar was sent: %s", payload["avatar"])
+			}
+			if _, ok := payload["banner"]; ok {
+				t.Fatalf("legacy empty banner was sent: %s", payload["banner"])
+			}
+		case 2:
+			if got := string(payload["avatar"]); got != "null" {
+				t.Fatalf("avatar = %s, want null", got)
+			}
+			if got := string(payload["banner"]); got != "null" {
+				t.Fatalf("banner = %s, want null", got)
+			}
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+
+		_, _ = w.Write([]byte(`{"id":"user","username":"new-name"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointUsers := EndpointUsers
+	EndpointUsers = server.URL + "/users/"
+	t.Cleanup(func() {
+		EndpointUsers = oldEndpointUsers
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	user, err := session.UserUpdate("new-name", "", "")
+	if err != nil {
+		t.Fatalf("UserUpdate returned error: %v", err)
+	}
+	if user == nil || user.ID != "user" || user.Username != "new-name" {
+		t.Fatalf("user = %#v", user)
+	}
+
+	empty := ""
+	user, err = session.UserUpdateComplex(&UserUpdateParams{Avatar: &empty, Banner: &empty})
+	if err != nil {
+		t.Fatalf("UserUpdateComplex returned error: %v", err)
+	}
+	if user == nil || user.ID != "user" {
+		t.Fatalf("user = %#v", user)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
 //func (s *Session) UserChannelCreate(recipientID string) (st *Channel, err error) {
 
 func TestUserChannelCreate(t *testing.T) {

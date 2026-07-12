@@ -221,3 +221,41 @@ func TestNameplatePaletteValues(t *testing.T) {
 		}
 	}
 }
+
+func TestUserUpdateParamsMarshalNullableImages(t *testing.T) {
+	username := "new-name"
+	avatar := "data:image/png;base64,avatar"
+	banner := "data:image/png;base64,banner"
+	empty := ""
+
+	tests := []struct {
+		name   string
+		params UserUpdateParams
+		want   string
+	}{
+		{
+			name: "omits unset fields",
+			want: `{}`,
+		},
+		{
+			name:   "sets all fields",
+			params: UserUpdateParams{Username: &username, Avatar: &avatar, Banner: &banner},
+			want:   `{"username":"new-name","avatar":"data:image/png;base64,avatar","banner":"data:image/png;base64,banner"}`,
+		},
+		{
+			name:   "clears nullable images",
+			params: UserUpdateParams{Avatar: &empty, Banner: &empty},
+			want:   `{"avatar":null,"banner":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}

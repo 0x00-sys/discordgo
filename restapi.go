@@ -766,19 +766,24 @@ func (s *Session) UserAvatarDecode(u *User, options ...RequestOption) (img image
 	return
 }
 
-// UserUpdate updates current user settings.
+// UserUpdate updates non-empty current user settings.
+// Use UserUpdateComplex to explicitly clear the avatar or banner.
 func (s *Session) UserUpdate(username, avatar, banner string, options ...RequestOption) (st *User, err error) {
+	data := &UserUpdateParams{}
+	if username != "" {
+		data.Username = &username
+	}
+	if avatar != "" {
+		data.Avatar = &avatar
+	}
+	if banner != "" {
+		data.Banner = &banner
+	}
+	return s.UserUpdateComplex(data, options...)
+}
 
-	// NOTE: Avatar must be either the hash/id of existing Avatar or
-	// data:image/png;base64,BASE64_STRING_OF_NEW_AVATAR_PNG
-	// to set a new avatar.
-	// If left blank, avatar will be set to null/blank
-
-	data := struct {
-		Username string `json:"username,omitempty"`
-		Avatar   string `json:"avatar,omitempty"`
-		Banner   string `json:"banner,omitempty"`
-	}{username, avatar, banner}
+// UserUpdateComplex updates current user settings, including nullable avatar and banner fields.
+func (s *Session) UserUpdateComplex(data *UserUpdateParams, options ...RequestOption) (st *User, err error) {
 
 	body, err := s.RequestWithBucketID("PATCH", EndpointUser("@me"), data, EndpointUsers, options...)
 	if err != nil {

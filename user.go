@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"strconv"
 )
 
@@ -175,6 +176,43 @@ type User struct {
 
 	// The user's primary guild.
 	PrimaryGuild UserPrimaryGuild `json:"primary_guild"`
+}
+
+// UserUpdateParams contains fields that can be updated on the current user.
+type UserUpdateParams struct {
+	Username *string `json:"username,omitempty"`
+	// Avatar and Banner are omitted when nil. An empty string explicitly clears the image.
+	Avatar *string `json:"avatar,omitempty"`
+	Banner *string `json:"banner,omitempty"`
+}
+
+// MarshalJSON ensures nullable current-user images can be explicitly cleared.
+func (p UserUpdateParams) MarshalJSON() ([]byte, error) {
+	type userUpdateParams UserUpdateParams
+
+	v := struct {
+		userUpdateParams
+		Avatar json.RawMessage `json:"avatar,omitempty"`
+		Banner json.RawMessage `json:"banner,omitempty"`
+	}{userUpdateParams: userUpdateParams(p)}
+
+	var err error
+	if p.Avatar != nil {
+		if *p.Avatar == "" {
+			v.Avatar = json.RawMessage("null")
+		} else if v.Avatar, err = json.Marshal(p.Avatar); err != nil {
+			return nil, err
+		}
+	}
+	if p.Banner != nil {
+		if *p.Banner == "" {
+			v.Banner = json.RawMessage("null")
+		} else if v.Banner, err = json.Marshal(p.Banner); err != nil {
+			return nil, err
+		}
+	}
+
+	return json.Marshal(v)
 }
 
 // String returns a unique identifier of the form username#discriminator
