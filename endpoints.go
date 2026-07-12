@@ -164,7 +164,9 @@ var (
 	EndpointGroupIcon = func(cID, hash string) string { return EndpointCDNChannelIcons + cID + "/" + hash + ".png" }
 
 	EndpointSticker                 = func(sID string) string { return EndpointStickers + sID }
-	EndpointNitroStickersPacks      = EndpointAPI + "/sticker-packs"
+	EndpointStickerPacks            = EndpointAPI + "sticker-packs"
+	EndpointStickerPack             = func(pID string) string { return EndpointStickerPacks + "/" + pID }
+	EndpointNitroStickersPacks      = EndpointStickerPacks
 	EndpointSoundboardDefaultSounds = EndpointAPI + "soundboard-default-sounds"
 
 	EndpointChannelWebhooks = func(cID string) string { return EndpointChannel(cID) + "/webhooks" }
