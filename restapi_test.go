@@ -4480,6 +4480,72 @@ func TestPollExpireRequestOptions(t *testing.T) {
 	}
 }
 
+func TestEntitlement(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantID     string
+		wantREST   bool
+		wantDecode bool
+	}{
+		{name: "success", status: http.StatusOK, body: `{"id":"entitlement","sku_id":"sku","application_id":"application","type":1,"deleted":false}`, wantID: "entitlement"},
+		{name: "HTTP error", status: http.StatusNotFound, body: `{"code":10029,"message":"Unknown entitlement"}`, wantREST: true},
+		{name: "invalid JSON", status: http.StatusOK, body: `{`, wantDecode: true},
+		{name: "null response", status: http.StatusOK, body: `null`, wantDecode: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+				}
+				wantPath := "/api/v" + APIVersion + "/applications/application/entitlements/entitlement"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				if got := r.Header.Get("X-Test"); got != "entitlement" {
+					t.Fatalf("X-Test = %q, want %q", got, "entitlement")
+				}
+
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			entitlement, err := session.Entitlement("application", "entitlement", WithHeader("X-Test", "entitlement"))
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+				}
+			} else if tt.wantDecode {
+				if !errors.Is(err, ErrJSONUnmarshal) {
+					t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Entitlement returned error: %v", err)
+			}
+
+			if tt.wantID == "" {
+				if entitlement != nil {
+					t.Fatalf("entitlement = %#v, want nil", entitlement)
+				}
+			} else if entitlement == nil || entitlement.ID != tt.wantID || entitlement.ApplicationID != "application" {
+				t.Fatalf("entitlement = %#v", entitlement)
+			}
+		})
+	}
+}
+
 func TestRedactedHeaderValues(t *testing.T) {
 	values := redactedHeaderValues("Authorization", []string{"Bot secret"})
 	if len(values) != 1 || values[0] != redactedValue {
