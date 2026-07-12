@@ -776,6 +776,40 @@ func TestThreadRoutesUseStableBuckets(t *testing.T) {
 	}
 }
 
+func TestUserApplicationEntitlementsUsesStableBucket(t *testing.T) {
+	session, err := New("Bearer test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`[]`)),
+			Request:    r,
+		}, nil
+	})
+
+	trueValue := true
+	falseValue := false
+	for _, options := range []*UserApplicationEntitlementFilterOptions{
+		{SKUIDs: []string{"sku-one"}, ExcludeConsumed: &trueValue},
+		{SKUIDs: []string{"sku-two"}, ExcludeConsumed: &falseValue},
+	} {
+		if _, err := session.UserApplicationEntitlements("application", options); err != nil {
+			t.Fatalf("UserApplicationEntitlements returned error: %v", err)
+		}
+	}
+
+	want := EndpointUserApplicationEntitlements("application")
+	if _, ok := session.Ratelimiter.buckets[want]; !ok {
+		t.Fatalf("bucket %q was not created", want)
+	}
+	for _, value := range []string{"sku-one", "sku-two", "exclude_consumed", "?"} {
+		assertRateLimitBucketsDoNotContain(t, session, value)
+	}
+}
+
 func assertRateLimitBucketsDoNotContain(t *testing.T, session *Session, value string) {
 	t.Helper()
 

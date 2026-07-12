@@ -3608,6 +3608,22 @@ const (
 	EntitlementTypeUserGift                = 6
 	EntitlementTypePremiumPurchase         = 7
 	EntitlementTypeApplicationSubscription = 8
+	EntitlementTypeQuestReward             = 10
+)
+
+// EntitlementFulfillmentStatus is the fulfillment status of an entitlement.
+type EntitlementFulfillmentStatus int
+
+// Valid EntitlementFulfillmentStatus values.
+const (
+	EntitlementFulfillmentStatusUnknown             EntitlementFulfillmentStatus = 0
+	EntitlementFulfillmentStatusNotNeeded           EntitlementFulfillmentStatus = 1
+	EntitlementFulfillmentStatusNeeded              EntitlementFulfillmentStatus = 2
+	EntitlementFulfillmentStatusFulfilled           EntitlementFulfillmentStatus = 3
+	EntitlementFulfillmentStatusFailed              EntitlementFulfillmentStatus = 4
+	EntitlementFulfillmentStatusUnfulfillmentNeeded EntitlementFulfillmentStatus = 5
+	EntitlementFulfillmentStatusUnfulfilled         EntitlementFulfillmentStatus = 6
+	EntitlementFulfillmentStatusUnfulfillmentFailed EntitlementFulfillmentStatus = 7
 )
 
 // Entitlement represents that a user or guild has access to a premium offering
@@ -3651,6 +3667,18 @@ type Entitlement struct {
 	// The SubscriptionID of the entitlement.
 	// Not present when using test entitlements.
 	SubscriptionID string `json:"subscription_id,omitempty"`
+
+	// The date at which the entitlement was fulfilled.
+	FulfilledAt *time.Time `json:"fulfilled_at,omitempty"`
+
+	// The fulfillment status of the entitlement.
+	FulfillmentStatus *EntitlementFulfillmentStatus `json:"fulfillment_status,omitempty"`
+
+	// The ID of the user that gifted the entitlement.
+	GifterUserID string `json:"gifter_user_id,omitempty"`
+
+	// The ID of the parent entitlement.
+	ParentID string `json:"parent_id,omitempty"`
 }
 
 // EntitlementOwnerType is the type of entitlement (see EntitlementOwnerType* consts)
@@ -3696,6 +3724,15 @@ type EntitlementFilterOptions struct {
 
 	// Optional whether or not ended entitlements should be omitted.
 	ExcludeEnded bool
+}
+
+// UserApplicationEntitlementFilterOptions are the options for filtering the current user's application entitlements.
+type UserApplicationEntitlementFilterOptions struct {
+	// Optional array of SKU IDs to check for.
+	SKUIDs []string
+
+	// Optional whether consumed entitlements should be omitted.
+	ExcludeConsumed *bool
 }
 
 // MessagePin contains information about a pinned message, and the message itself

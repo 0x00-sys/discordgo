@@ -213,6 +213,199 @@ func TestUserApplicationRoleConnectionDelete(t *testing.T) {
 	}
 }
 
+func TestUserApplicationEntitlementsBuildsQueryAndDecodesResponse(t *testing.T) {
+	trueValue := true
+	falseValue := false
+	tests := []struct {
+		name      string
+		options   *UserApplicationEntitlementFilterOptions
+		wantQuery string
+	}{
+		{
+			name: "all filters",
+			options: &UserApplicationEntitlementFilterOptions{
+				SKUIDs:          []string{"sku-one", "sku-two"},
+				ExcludeConsumed: &trueValue,
+			},
+			wantQuery: "exclude_consumed=true&sku_ids=sku-one&sku_ids=sku-two",
+		},
+		{
+			name:      "explicit false",
+			options:   &UserApplicationEntitlementFilterOptions{ExcludeConsumed: &falseValue},
+			wantQuery: "exclude_consumed=false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bearer test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+				}
+				wantPath := "/api/v" + APIVersion + "/users/@me/applications/application/entitlements"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				if r.URL.RawQuery != tt.wantQuery {
+					t.Fatalf("RawQuery = %q, want %q", r.URL.RawQuery, tt.wantQuery)
+				}
+				if tt.name == "all filters" {
+					wantSKUIDs := []string{"sku-one", "sku-two"}
+					gotSKUIDs := r.URL.Query()["sku_ids"]
+					if len(gotSKUIDs) != len(wantSKUIDs) || gotSKUIDs[0] != wantSKUIDs[0] || gotSKUIDs[1] != wantSKUIDs[1] {
+						t.Fatalf("sku_ids = %#v, want repeated values %#v", gotSKUIDs, wantSKUIDs)
+					}
+				}
+				if got := r.Header.Get("X-Test"); got != "entitlements" {
+					t.Fatalf("X-Test = %q, want %q", got, "entitlements")
+				}
+
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(`[{
+						"id":"entitlement",
+						"sku_id":"sku-one",
+						"application_id":"application",
+						"user_id":"user",
+						"guild_id":null,
+						"deleted":false,
+						"starts_at":"2026-07-13T12:00:00Z",
+						"ends_at":null,
+						"type":10,
+						"fulfilled_at":"2026-07-13T12:01:00Z",
+						"fulfillment_status":3,
+						"consumed":false,
+						"gifter_user_id":"gifter",
+						"parent_id":"parent"
+					}]`)),
+					Request: r,
+				}, nil
+			})
+
+			entitlements, err := session.UserApplicationEntitlements(
+				"application",
+				tt.options,
+				WithHeader("X-Test", "entitlements"),
+			)
+			if err != nil {
+				t.Fatalf("UserApplicationEntitlements returned error: %v", err)
+			}
+			if len(entitlements) != 1 {
+				t.Fatalf("len(entitlements) = %d, want 1", len(entitlements))
+			}
+			entitlement := entitlements[0]
+			if entitlement.ID != "entitlement" || entitlement.SKUID != "sku-one" || entitlement.ApplicationID != "application" || entitlement.UserID != "user" {
+				t.Fatalf("entitlement identity = %#v", entitlement)
+			}
+			if entitlement.Type != EntitlementTypeQuestReward || entitlement.Deleted || entitlement.GuildID != "" || entitlement.EndsAt != nil {
+				t.Fatalf("entitlement state = %#v", entitlement)
+			}
+			if entitlement.StartsAt == nil || !entitlement.StartsAt.Equal(time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)) {
+				t.Fatalf("starts_at = %v", entitlement.StartsAt)
+			}
+			if entitlement.FulfilledAt == nil || !entitlement.FulfilledAt.Equal(time.Date(2026, 7, 13, 12, 1, 0, 0, time.UTC)) {
+				t.Fatalf("fulfilled_at = %v", entitlement.FulfilledAt)
+			}
+			if entitlement.FulfillmentStatus == nil || *entitlement.FulfillmentStatus != EntitlementFulfillmentStatusFulfilled {
+				t.Fatalf("fulfillment_status = %v", entitlement.FulfillmentStatus)
+			}
+			if entitlement.Consumed == nil || *entitlement.Consumed || entitlement.GifterUserID != "gifter" || entitlement.ParentID != "parent" {
+				t.Fatalf("entitlement purchase fields = %#v", entitlement)
+			}
+		})
+	}
+}
+
+func TestUserApplicationEntitlementsDefaultsOmitQuery(t *testing.T) {
+	tests := []struct {
+		name    string
+		options *UserApplicationEntitlementFilterOptions
+	}{
+		{name: "nil options"},
+		{name: "zero options", options: &UserApplicationEntitlementFilterOptions{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bearer test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.RawQuery != "" {
+					t.Fatalf("RawQuery = %q, want empty", r.URL.RawQuery)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`[]`)),
+					Request:    r,
+				}, nil
+			})
+
+			entitlements, err := session.UserApplicationEntitlements("application", tt.options)
+			if err != nil {
+				t.Fatalf("UserApplicationEntitlements returned error: %v", err)
+			}
+			if entitlements == nil || len(entitlements) != 0 {
+				t.Fatalf("entitlements = %#v, want non-nil empty slice", entitlements)
+			}
+		})
+	}
+}
+
+func TestUserApplicationEntitlementsResponseErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		wantREST      bool
+		wantUnmarshal bool
+	}{
+		{name: "REST error", status: http.StatusForbidden, body: `{"code":50001,"message":"Missing Access"}`, wantREST: true},
+		{name: "malformed response", status: http.StatusOK, body: `{`, wantUnmarshal: true},
+		{name: "null response", status: http.StatusOK, body: `null`, wantUnmarshal: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bearer test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     strconv.Itoa(tt.status) + " " + http.StatusText(tt.status),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			entitlements, err := session.UserApplicationEntitlements("application", nil)
+			if entitlements != nil {
+				t.Fatalf("entitlements = %#v, want nil", entitlements)
+			}
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+				}
+			}
+			if tt.wantUnmarshal && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %T %v, want ErrJSONUnmarshal", err, err)
+			}
+		})
+	}
+}
+
 //func (s *Session) UserChannelCreate(recipientID string) (st *Channel, err error) {
 
 func TestUserChannelCreate(t *testing.T) {
