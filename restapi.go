@@ -5096,6 +5096,14 @@ func (s *Session) UserApplicationRoleConnectionUpdate(appID string, rconn *Appli
 	return
 }
 
+// UserApplicationRoleConnectionDelete deletes the current user's role connection to the specified application.
+// appID : ID of the application
+func (s *Session) UserApplicationRoleConnectionDelete(appID string, options ...RequestOption) (err error) {
+	endpoint := EndpointUserApplicationRoleConnection(appID)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	return
+}
+
 // ----------------------------------------------------------------------
 // Functions specific to polls
 // ----------------------------------------------------------------------
