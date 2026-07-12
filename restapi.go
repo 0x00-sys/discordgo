@@ -5317,6 +5317,39 @@ func (s *Session) UserApplicationRoleConnectionDelete(appID string, options ...R
 	return
 }
 
+// UserApplicationEntitlements returns the current user's entitlements for the specified application.
+// appID         : ID of the application.
+// filterOptions : Optional filter options; otherwise set it to nil.
+func (s *Session) UserApplicationEntitlements(appID string, filterOptions *UserApplicationEntitlementFilterOptions, options ...RequestOption) (entitlements []*Entitlement, err error) {
+	endpoint := EndpointUserApplicationEntitlements(appID)
+	uri := endpoint
+
+	if filterOptions != nil {
+		queryParams := url.Values{}
+		for _, skuID := range filterOptions.SKUIDs {
+			queryParams.Add("sku_ids", skuID)
+		}
+		if filterOptions.ExcludeConsumed != nil {
+			queryParams.Set("exclude_consumed", strconv.FormatBool(*filterOptions.ExcludeConsumed))
+		}
+		if len(queryParams) > 0 {
+			uri += "?" + queryParams.Encode()
+		}
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+	if err = unmarshal(body, &entitlements); err != nil {
+		return nil, err
+	}
+	if entitlements == nil {
+		return nil, fmt.Errorf("%w: current user application entitlements response is null", ErrJSONUnmarshal)
+	}
+	return entitlements, nil
+}
+
 // ----------------------------------------------------------------------
 // Functions specific to polls
 // ----------------------------------------------------------------------

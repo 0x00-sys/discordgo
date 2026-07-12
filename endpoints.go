@@ -68,6 +68,7 @@ var (
 	EndpointUserGuildMember               = func(uID, gID string) string { return EndpointUserGuild(uID, gID) + "/member" }
 	EndpointUserChannels                  = func(uID string) string { return EndpointUsers + uID + "/channels" }
 	EndpointUserApplicationRoleConnection = func(aID string) string { return EndpointUsers + "@me/applications/" + aID + "/role-connection" }
+	EndpointUserApplicationEntitlements   = func(aID string) string { return EndpointUsers + "@me/applications/" + aID + "/entitlements" }
 	EndpointUserConnections               = func(uID string) string { return EndpointUsers + uID + "/connections" }
 
 	EndpointGuild                    = func(gID string) string { return EndpointGuilds + gID }
