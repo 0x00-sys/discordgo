@@ -2079,6 +2079,23 @@ type VoiceState struct {
 	RequestToSpeakTimestamp *time.Time `json:"request_to_speak_timestamp"`
 }
 
+// CurrentUserVoiceStateEditParams stores data needed to update the current
+// user's voice state. A nil field is omitted. A non-nil
+// RequestToSpeakTimestamp pointer to nil sends JSON null.
+// https://discord.com/developers/docs/resources/voice#modify-current-user-voice-state
+type CurrentUserVoiceStateEditParams struct {
+	ChannelID               *string     `json:"channel_id,omitempty"`
+	Suppress                *bool       `json:"suppress,omitempty"`
+	RequestToSpeakTimestamp **time.Time `json:"request_to_speak_timestamp,omitempty"`
+}
+
+// UserVoiceStateEditParams stores data needed to update another user's voice state.
+// https://discord.com/developers/docs/resources/voice#modify-user-voice-state
+type UserVoiceStateEditParams struct {
+	ChannelID *string `json:"channel_id,omitempty"`
+	Suppress  *bool   `json:"suppress,omitempty"`
+}
+
 // A Presence stores the online, offline, or idle and game status of Guild members.
 type Presence struct {
 	User         *User        `json:"user"`

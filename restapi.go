@@ -5200,7 +5200,7 @@ func (s *Session) Subscription(skuID, subscriptionID, userID string, options ...
 	return
 }
 
-// UserVoiceState returns the voice state of the current user (the bot) in a guild.
+// UserVoiceState returns a user's voice state in a guild.
 // guildID : The ID of the guild.
 // userID  : The ID of the user.
 // Note: Using @me will return the bot's voice state for the given guild.
@@ -5213,6 +5213,25 @@ func (s *Session) UserVoiceState(guildID string, userID string, options ...Reque
 	}
 
 	err = unmarshal(body, &state)
+	return
+}
+
+// CurrentUserVoiceStateEdit updates the current user's voice state in a guild.
+// guildID : The ID of the guild.
+// data    : Updated current user voice state data.
+func (s *Session) CurrentUserVoiceStateEdit(guildID string, data *CurrentUserVoiceStateEditParams, options ...RequestOption) (err error) {
+	endpoint := EndpointGuildMemberVoiceState(guildID, "@me")
+	_, err = s.RequestWithBucketID("PATCH", endpoint, data, endpoint, options...)
+	return
+}
+
+// UserVoiceStateEdit updates another user's voice state in a guild.
+// guildID : The ID of the guild.
+// userID  : The ID of the user.
+// data    : Updated user voice state data.
+func (s *Session) UserVoiceStateEdit(guildID, userID string, data *UserVoiceStateEditParams, options ...RequestOption) (err error) {
+	endpoint := EndpointGuildMemberVoiceState(guildID, userID)
+	_, err = s.RequestWithBucketID("PATCH", endpoint, data, endpoint, options...)
 	return
 }
 
