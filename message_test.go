@@ -246,6 +246,42 @@ func TestMessageReactionsCurrentFields(t *testing.T) {
 	}
 }
 
+func TestMessageInteractionMetadataCommandTargets(t *testing.T) {
+	tests := []struct {
+		name                string
+		data                string
+		wantTargetUserID    string
+		wantTargetMessageID string
+	}{
+		{
+			name:                "application command targets",
+			data:                `{"id":"interaction","type":2,"user":{"id":"invoker"},"authorizing_integration_owners":{"0":"guild"},"target_user":{"id":"target"},"target_message_id":"message"}`,
+			wantTargetUserID:    "target",
+			wantTargetMessageID: "message",
+		},
+		{
+			name: "targets omitted",
+			data: `{"id":"interaction","type":3,"user":{"id":"invoker"},"authorizing_integration_owners":{"0":"guild"},"interacted_message_id":"source"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var metadata MessageInteractionMetadata
+			if err := json.Unmarshal([]byte(tt.data), &metadata); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			gotTargetUserID := ""
+			if metadata.TargetUser != nil {
+				gotTargetUserID = metadata.TargetUser.ID
+			}
+			if gotTargetUserID != tt.wantTargetUserID || metadata.TargetMessageID != tt.wantTargetMessageID {
+				t.Fatalf("targets = %q/%q, want %q/%q", gotTargetUserID, metadata.TargetMessageID, tt.wantTargetUserID, tt.wantTargetMessageID)
+			}
+		})
+	}
+}
+
 func TestMessageCreateUnknownComponentType(t *testing.T) {
 	var m MessageCreate
 	err := json.Unmarshal([]byte(`{
