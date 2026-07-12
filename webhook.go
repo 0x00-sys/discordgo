@@ -241,4 +241,6 @@ type WebhookEdit struct {
 	Attachments     *[]*MessageAttachment   `json:"attachments,omitempty"`
 	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
 	Flags           MessageFlags            `json:"flags,omitempty"`
+	// Poll can only be added when editing a deferred interaction response.
+	Poll *Poll `json:"poll,omitempty"`
 }
