@@ -3474,7 +3474,7 @@ func (s *Session) WebhookDeleteWithToken(webhookID, token string, options ...Req
 	return
 }
 
-func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID string, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
+func (s *Session) webhookExecute(webhookID, token string, executeOptions WebhookExecuteOptions, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
 	if data == nil {
 		return nil, fmt.Errorf("webhook data cannot be nil")
 	}
@@ -3484,12 +3484,14 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 	options = withoutAuthorizationOptions(options)
 
 	v := url.Values{}
-	if wait {
+	if executeOptions.Wait {
 		v.Set("wait", "true")
 	}
-
-	if threadID != "" {
-		v.Set("thread_id", threadID)
+	if executeOptions.ThreadID != "" {
+		v.Set("thread_id", executeOptions.ThreadID)
+	}
+	if executeOptions.WithComponents {
+		v.Set("with_components", "true")
 	}
 	if len(v) != 0 {
 		uri += "?" + v.Encode()
@@ -3507,7 +3509,7 @@ func (s *Session) webhookExecute(webhookID, token string, wait bool, threadID st
 	} else {
 		response, err = s.requestWithBucketIDNoGlobal("POST", uri, data, bucketID, options...)
 	}
-	if !wait || err != nil {
+	if !executeOptions.Wait || err != nil {
 		return
 	}
 
@@ -3555,7 +3557,7 @@ func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data
 // token    : The auth token for the webhook
 // wait     : Waits for server confirmation of message send and ensures that the return struct is populated (it is nil otherwise)
 func (s *Session) WebhookExecute(webhookID, token string, wait bool, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
-	return s.webhookExecute(webhookID, token, wait, "", data, options...)
+	return s.webhookExecute(webhookID, token, WebhookExecuteOptions{Wait: wait}, data, options...)
 }
 
 // WebhookThreadExecute executes a webhook in a thread.
@@ -3564,7 +3566,16 @@ func (s *Session) WebhookExecute(webhookID, token string, wait bool, data *Webho
 // wait     : Waits for server confirmation of message send and ensures that the return struct is populated (it is nil otherwise)
 // threadID :	Sends a message to the specified thread within a webhook's channel. The thread will automatically be unarchived.
 func (s *Session) WebhookThreadExecute(webhookID, token string, wait bool, threadID string, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
-	return s.webhookExecute(webhookID, token, wait, threadID, data, options...)
+	return s.webhookExecute(webhookID, token, WebhookExecuteOptions{Wait: wait, ThreadID: threadID}, data, options...)
+}
+
+// WebhookExecuteComplex executes a webhook with query-string options.
+// webhookID     : The ID of a webhook.
+// token         : The auth token for the webhook.
+// executeOptions: Query parameters for the request.
+// data          : Data of the message to send.
+func (s *Session) WebhookExecuteComplex(webhookID, token string, executeOptions WebhookExecuteOptions, data *WebhookParams, options ...RequestOption) (st *Message, err error) {
+	return s.webhookExecute(webhookID, token, executeOptions, data, options...)
 }
 
 // WebhookMessage gets a webhook message.
