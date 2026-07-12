@@ -1,5 +1,158 @@
 package discordgo
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
+// ApplicationWebhookType is the type of an application webhook event payload.
+type ApplicationWebhookType int
+
+// Valid ApplicationWebhookType values.
+const (
+	ApplicationWebhookTypePing  ApplicationWebhookType = 0
+	ApplicationWebhookTypeEvent ApplicationWebhookType = 1
+)
+
+// ApplicationWebhookEventType is the type of event in an application webhook payload.
+type ApplicationWebhookEventType string
+
+// Valid ApplicationWebhookEventType values.
+const (
+	ApplicationWebhookEventTypeApplicationAuthorized   ApplicationWebhookEventType = "APPLICATION_AUTHORIZED"
+	ApplicationWebhookEventTypeApplicationDeauthorized ApplicationWebhookEventType = "APPLICATION_DEAUTHORIZED"
+	ApplicationWebhookEventTypeEntitlementCreate       ApplicationWebhookEventType = "ENTITLEMENT_CREATE"
+	ApplicationWebhookEventTypeEntitlementUpdate       ApplicationWebhookEventType = "ENTITLEMENT_UPDATE"
+	ApplicationWebhookEventTypeEntitlementDelete       ApplicationWebhookEventType = "ENTITLEMENT_DELETE"
+	ApplicationWebhookEventTypeQuestUserEnrollment     ApplicationWebhookEventType = "QUEST_USER_ENROLLMENT"
+	ApplicationWebhookEventTypeLobbyMessageCreate      ApplicationWebhookEventType = "LOBBY_MESSAGE_CREATE"
+	ApplicationWebhookEventTypeLobbyMessageUpdate      ApplicationWebhookEventType = "LOBBY_MESSAGE_UPDATE"
+	ApplicationWebhookEventTypeLobbyMessageDelete      ApplicationWebhookEventType = "LOBBY_MESSAGE_DELETE"
+	ApplicationWebhookEventTypeGameDirectMessageCreate ApplicationWebhookEventType = "GAME_DIRECT_MESSAGE_CREATE"
+	ApplicationWebhookEventTypeGameDirectMessageUpdate ApplicationWebhookEventType = "GAME_DIRECT_MESSAGE_UPDATE"
+	ApplicationWebhookEventTypeGameDirectMessageDelete ApplicationWebhookEventType = "GAME_DIRECT_MESSAGE_DELETE"
+)
+
+// ApplicationWebhookEvent is an outgoing webhook event sent by Discord to an application.
+type ApplicationWebhookEvent struct {
+	Version       int                          `json:"version"`
+	ApplicationID string                       `json:"application_id"`
+	Type          ApplicationWebhookType       `json:"type"`
+	Event         *ApplicationWebhookEventBody `json:"event,omitempty"`
+}
+
+// ApplicationWebhookEventBody contains the type, timestamp, and data for an application webhook event.
+type ApplicationWebhookEventBody struct {
+	Type      ApplicationWebhookEventType `json:"type"`
+	Timestamp string                      `json:"timestamp"`
+	RawData   json.RawMessage             `json:"data,omitempty"`
+	// Struct contains the typed event data for known event types.
+	Struct interface{} `json:"-"`
+}
+
+// UnmarshalJSON unmarshals known application webhook event data into Struct while preserving RawData.
+func (e *ApplicationWebhookEventBody) UnmarshalJSON(data []byte) error {
+	var v struct {
+		Type      ApplicationWebhookEventType `json:"type"`
+		Timestamp string                      `json:"timestamp"`
+		RawData   json.RawMessage             `json:"data"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	e.Type = v.Type
+	e.Timestamp = v.Timestamp
+	e.RawData = v.RawData
+	e.Struct = nil
+
+	if len(v.RawData) == 0 || bytes.Equal(bytes.TrimSpace(v.RawData), []byte("null")) {
+		return nil
+	}
+
+	switch e.Type {
+	case ApplicationWebhookEventTypeApplicationAuthorized:
+		e.Struct = &ApplicationWebhookEventApplicationAuthorizedData{}
+	case ApplicationWebhookEventTypeApplicationDeauthorized:
+		e.Struct = &ApplicationWebhookEventApplicationDeauthorizedData{}
+	case ApplicationWebhookEventTypeEntitlementCreate,
+		ApplicationWebhookEventTypeEntitlementUpdate,
+		ApplicationWebhookEventTypeEntitlementDelete:
+		e.Struct = &Entitlement{}
+	case ApplicationWebhookEventTypeLobbyMessageCreate,
+		ApplicationWebhookEventTypeLobbyMessageUpdate,
+		ApplicationWebhookEventTypeGameDirectMessageCreate,
+		ApplicationWebhookEventTypeGameDirectMessageUpdate,
+		ApplicationWebhookEventTypeGameDirectMessageDelete:
+		e.Struct = &ApplicationWebhookEventMessage{}
+	case ApplicationWebhookEventTypeLobbyMessageDelete:
+		e.Struct = &ApplicationWebhookEventLobbyMessageDeleteData{}
+	default:
+		return nil
+	}
+
+	return json.Unmarshal(v.RawData, e.Struct)
+}
+
+// ApplicationWebhookEventApplicationAuthorizedData is sent when a user authorizes an application.
+type ApplicationWebhookEventApplicationAuthorizedData struct {
+	IntegrationType *ApplicationIntegrationType `json:"integration_type,omitempty"`
+	User            *User                       `json:"user"`
+	Scopes          []string                    `json:"scopes"`
+	Guild           *Guild                      `json:"guild,omitempty"`
+}
+
+// ApplicationWebhookEventApplicationDeauthorizedData is sent when a user deauthorizes an application.
+type ApplicationWebhookEventApplicationDeauthorizedData struct {
+	User *User `json:"user"`
+}
+
+// ApplicationWebhookEventMessage contains the standard and Social SDK fields used by message webhook events.
+type ApplicationWebhookEventMessage struct {
+	*Message
+	LobbyID            string            `json:"lobby_id,omitempty"`
+	Channel            *Channel          `json:"channel,omitempty"`
+	RecipientID        string            `json:"recipient_id,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+	ModerationMetadata map[string]string `json:"moderation_metadata,omitempty"`
+	Application        *Application      `json:"application,omitempty"`
+}
+
+// UnmarshalJSON is a helper function to unmarshal an ApplicationWebhookEventMessage.
+func (m *ApplicationWebhookEventMessage) UnmarshalJSON(data []byte) error {
+	var message *Message
+	if err := json.Unmarshal(data, &message); err != nil {
+		return err
+	}
+
+	var v struct {
+		LobbyID            string            `json:"lobby_id"`
+		Channel            *Channel          `json:"channel"`
+		RecipientID        string            `json:"recipient_id"`
+		Metadata           map[string]string `json:"metadata"`
+		ModerationMetadata map[string]string `json:"moderation_metadata"`
+		Application        *Application      `json:"application"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+
+	m.Message = message
+	m.LobbyID = v.LobbyID
+	m.Channel = v.Channel
+	m.RecipientID = v.RecipientID
+	m.Metadata = v.Metadata
+	m.ModerationMetadata = v.ModerationMetadata
+	m.Application = v.Application
+	return nil
+}
+
+// ApplicationWebhookEventLobbyMessageDeleteData identifies a deleted lobby message.
+type ApplicationWebhookEventLobbyMessageDeleteData struct {
+	ID      string `json:"id"`
+	LobbyID string `json:"lobby_id"`
+}
+
 // Webhook stores the data for a webhook.
 type Webhook struct {
 	ID        string      `json:"id"`
