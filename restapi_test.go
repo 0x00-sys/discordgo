@@ -1746,6 +1746,253 @@ func TestInteractionTokenEndpointsOmitAuthorization(t *testing.T) {
 	}
 }
 
+func TestInteractionRespondWithResponseJSON(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	atomic.StoreInt64(session.Ratelimiter.global, time.Now().Add(time.Hour).UnixNano())
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		wantPath := "/api/v" + APIVersion + "/interactions/interaction/token/callback"
+		if r.Method != http.MethodPost || r.URL.Path != wantPath {
+			t.Fatalf("request = %s %s, want POST %s", r.Method, r.URL.Path, wantPath)
+		}
+		if r.URL.RawQuery != "with_response=true" {
+			t.Fatalf("query = %q, want with_response=true", r.URL.RawQuery)
+		}
+		if authorization := r.Header.Get("Authorization"); authorization != "" {
+			t.Fatalf("Authorization = %q, want empty", authorization)
+		}
+
+		var payload InteractionResponse
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if payload.Type != InteractionResponseLaunchActivity {
+			t.Fatalf("response type = %d, want %d", payload.Type, InteractionResponseLaunchActivity)
+		}
+
+		body := `{"interaction":{"id":"interaction","type":2,"activity_instance_id":"activity"},"resource":{"type":12,"activity_instance":{"id":"activity"}}}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	callback, err := session.InteractionRespondWithResponse(
+		&Interaction{ID: "interaction", Token: "token"},
+		&InteractionResponse{Type: InteractionResponseLaunchActivity},
+		WithContext(ctx),
+	)
+	if err != nil {
+		t.Fatalf("InteractionRespondWithResponse returned error: %v", err)
+	}
+	if callback == nil || callback.Interaction == nil {
+		t.Fatalf("callback = %#v", callback)
+	}
+	if callback.Interaction.ID != "interaction" || callback.Interaction.Type != InteractionApplicationCommand || callback.Interaction.ActivityInstanceID != "activity" {
+		t.Fatalf("callback interaction = %#v", callback.Interaction)
+	}
+	if callback.Resource == nil || callback.Resource.Type != InteractionResponseLaunchActivity || callback.Resource.ActivityInstance == nil || callback.Resource.ActivityInstance.ID != "activity" {
+		t.Fatalf("callback resource = %#v", callback.Resource)
+	}
+	if len(session.Ratelimiter.buckets) != 0 {
+		t.Fatalf("bucket count = %d, want 0", len(session.Ratelimiter.buckets))
+	}
+}
+
+func TestInteractionRespondWithResponseMultipart(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.AllowedMentions = &MessageAllowedMentions{Parse: []AllowedMentionType{}}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.RawQuery != "with_response=true" {
+			t.Fatalf("query = %q, want with_response=true", r.URL.RawQuery)
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Fatalf("Content-Type = %q, want multipart/form-data", r.Header.Get("Content-Type"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm returned error: %v", err)
+		}
+
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(r.MultipartForm.Value["payload_json"][0]), &payload); err != nil {
+			t.Fatalf("json.Unmarshal payload returned error: %v", err)
+		}
+		data, ok := payload["data"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("data = %#v, want object", payload["data"])
+		}
+		assertAllowedMentionsParse(t, data, []string{})
+
+		file, header, err := r.FormFile("files[0]")
+		if err != nil {
+			t.Fatalf("FormFile returned error: %v", err)
+		}
+		defer file.Close()
+		contents, err := ioutil.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if header.Filename != "note.txt" || string(contents) != "attachment" {
+			t.Fatalf("file = %q/%q", header.Filename, contents)
+		}
+
+		body := `{"interaction":{"id":"interaction","type":2,"response_message_id":"message","response_message_loading":false,"response_message_ephemeral":true},"resource":{"type":4,"message":{"id":"message","channel_id":"channel","content":"uploaded","components":[{"type":10,"id":1,"content":"done"}]}}}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+
+	callback, err := session.InteractionRespondWithResponse(
+		&Interaction{ID: "interaction", Token: "token"},
+		&InteractionResponse{
+			Type: InteractionResponseChannelMessageWithSource,
+			Data: &InteractionResponseData{
+				Content: "uploaded",
+				Files: []*File{{
+					Name:        "note.txt",
+					ContentType: "text/plain",
+					Reader:      strings.NewReader("attachment"),
+				}},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("InteractionRespondWithResponse returned error: %v", err)
+	}
+	if callback == nil || callback.Interaction == nil || callback.Resource == nil || callback.Resource.Message == nil {
+		t.Fatalf("callback = %#v", callback)
+	}
+	if callback.Interaction.ResponseMessageID != "message" || callback.Interaction.ResponseMessageLoading == nil || *callback.Interaction.ResponseMessageLoading {
+		t.Fatalf("callback interaction = %#v", callback.Interaction)
+	}
+	if callback.Interaction.ResponseMessageEphemeral == nil || !*callback.Interaction.ResponseMessageEphemeral {
+		t.Fatalf("ResponseMessageEphemeral = %#v", callback.Interaction.ResponseMessageEphemeral)
+	}
+	if callback.Resource.Message.ID != "message" || callback.Resource.Message.Content != "uploaded" || len(callback.Resource.Message.Components) != 1 {
+		t.Fatalf("callback message = %#v", callback.Resource.Message)
+	}
+}
+
+func TestInteractionRespondWithResponseErrors(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		call func() (*InteractionCallbackResponse, error)
+		want string
+	}{
+		{
+			name: "nil interaction",
+			call: func() (*InteractionCallbackResponse, error) {
+				return session.InteractionRespondWithResponse(nil, &InteractionResponse{Type: InteractionResponsePong})
+			},
+			want: "interaction cannot be nil",
+		},
+		{
+			name: "nil response",
+			call: func() (*InteractionCallbackResponse, error) {
+				return session.InteractionRespondWithResponse(&Interaction{ID: "interaction", Token: "token"}, nil)
+			},
+			want: "interaction response cannot be nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callback, err := tt.call()
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if callback != nil {
+				t.Fatalf("callback = %#v, want nil", callback)
+			}
+		})
+	}
+
+	t.Run("malformed response", func(t *testing.T) {
+		session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{`)),
+				Request:    r,
+			}, nil
+		})
+		callback, err := session.InteractionRespondWithResponse(
+			&Interaction{ID: "interaction", Token: "token"},
+			&InteractionResponse{Type: InteractionResponsePong},
+		)
+		if !errors.Is(err, ErrJSONUnmarshal) {
+			t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+		}
+		if callback != nil {
+			t.Fatalf("callback = %#v, want nil", callback)
+		}
+	})
+
+	t.Run("http error", func(t *testing.T) {
+		session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Body:       io.NopCloser(strings.NewReader(`{"code":50035,"message":"Invalid Form Body"}`)),
+				Request:    r,
+			}, nil
+		})
+		callback, err := session.InteractionRespondWithResponse(
+			&Interaction{ID: "interaction", Token: "token"},
+			&InteractionResponse{Type: InteractionResponsePong},
+		)
+		var restErr *RESTError
+		if !errors.As(err, &restErr) || restErr.Response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("error = %T %v, want 400 RESTError", err, err)
+		}
+		if callback != nil {
+			t.Fatalf("callback = %#v, want nil", callback)
+		}
+	})
+}
+
+func TestInteractionRespondPreservesNoResponseQuery(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.RawQuery != "" {
+			t.Fatalf("query = %q, want empty", r.URL.RawQuery)
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Status:     "204 No Content",
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})
+
+	if err := session.InteractionRespond(
+		&Interaction{ID: "interaction", Token: "token"},
+		&InteractionResponse{Type: InteractionResponsePong},
+	); err != nil {
+		t.Fatalf("InteractionRespond returned error: %v", err)
+	}
+}
+
 func TestSessionAllowedMentionsAppliedToRESTPayloads(t *testing.T) {
 	content := "@everyone hello"
 
