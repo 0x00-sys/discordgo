@@ -67,6 +67,8 @@ type VoiceConnection struct {
 
 	aead         cipher.AEAD
 	nonceCounter uint32
+	sequence     int64
+	sequenceSet  bool
 
 	op4 voiceOP4
 	op2 voiceOP2
@@ -77,6 +79,11 @@ type VoiceConnection struct {
 // VoiceSpeakingUpdateHandler type provides a function definition for the
 // VoiceSpeakingUpdate event
 type VoiceSpeakingUpdateHandler func(vc *VoiceConnection, vs *VoiceSpeakingUpdate)
+
+const (
+	voiceGatewayVersion         = 8
+	voiceMaxDaveProtocolVersion = 0
+)
 
 // VoiceSpeakingFlags describes the type of audio being transmitted.
 type VoiceSpeakingFlags int
@@ -441,7 +448,9 @@ func (v *VoiceConnection) open() (err error) {
 	}
 
 	// Connect to VoiceConnection Websocket
-	vg := "wss://" + strings.TrimSuffix(v.endpoint, ":80")
+	v.sequence = 0
+	v.sequenceSet = false
+	vg := "wss://" + strings.TrimSuffix(v.endpoint, ":80") + "?v=" + strconv.Itoa(voiceGatewayVersion)
 	v.log(LogInformational, "connecting to voice endpoint %s", vg)
 	v.wsConn, _, err = v.session.Dialer.Dial(vg, nil)
 	if err != nil {
@@ -451,16 +460,17 @@ func (v *VoiceConnection) open() (err error) {
 	}
 
 	type voiceHandshakeData struct {
-		ServerID  string `json:"server_id"`
-		UserID    string `json:"user_id"`
-		SessionID string `json:"session_id"`
-		Token     string `json:"token"`
+		ServerID               string `json:"server_id"`
+		UserID                 string `json:"user_id"`
+		SessionID              string `json:"session_id"`
+		Token                  string `json:"token"`
+		MaxDaveProtocolVersion int    `json:"max_dave_protocol_version"`
 	}
 	type voiceHandshakeOp struct {
 		Op   int                `json:"op"` // Always 0
 		Data voiceHandshakeData `json:"d"`
 	}
-	data := voiceHandshakeOp{0, voiceHandshakeData{v.GuildID, v.UserID, v.sessionID, v.token}}
+	data := voiceHandshakeOp{0, voiceHandshakeData{v.GuildID, v.UserID, v.sessionID, v.token, voiceMaxDaveProtocolVersion}}
 
 	v.wsMutex.Lock()
 	err = v.wsConn.WriteJSON(data)
@@ -555,6 +565,8 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 			return
 		}
 
+		v.updateSequence(message)
+
 		// Pass received message to voice event handler
 		select {
 		case <-close:
@@ -563,6 +575,20 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 			go v.onEvent(message)
 		}
 	}
+}
+
+func (v *VoiceConnection) updateSequence(message []byte) {
+	var payload struct {
+		Sequence *int64 `json:"seq"`
+	}
+	if err := json.Unmarshal(message, &payload); err != nil || payload.Sequence == nil {
+		return
+	}
+
+	v.Lock()
+	v.sequence = *payload.Sequence
+	v.sequenceSet = true
+	v.Unlock()
 }
 
 // wsEvent handles any voice websocket events. This is only called by the
@@ -738,8 +764,13 @@ func isVoiceSecretKey(key string) bool {
 }
 
 type voiceHeartbeatOp struct {
-	Op   int `json:"op"` // Always 3
-	Data int `json:"d"`
+	Op   int                `json:"op"` // Always 3
+	Data voiceHeartbeatData `json:"d"`
+}
+
+type voiceHeartbeatData struct {
+	Timestamp   int64  `json:"t"`
+	SequenceAck *int64 `json:"seq_ack,omitempty"`
 }
 
 // NOTE :: When a guild voice server changes how do we shut this down
@@ -759,8 +790,18 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 	defer ticker.Stop()
 	for {
 		v.log(LogDebug, "sending heartbeat packet")
+		var sequenceAck *int64
+		v.RLock()
+		if v.sequenceSet {
+			sequence := v.sequence
+			sequenceAck = &sequence
+		}
+		v.RUnlock()
 		v.wsMutex.Lock()
-		err = wsConn.WriteJSON(voiceHeartbeatOp{3, int(time.Now().Unix())})
+		err = wsConn.WriteJSON(voiceHeartbeatOp{3, voiceHeartbeatData{
+			Timestamp:   time.Now().UnixNano() / int64(time.Millisecond),
+			SequenceAck: sequenceAck,
+		}})
 		v.wsMutex.Unlock()
 		if err != nil {
 			v.log(LogError, "error sending heartbeat to voice endpoint %s, %s", v.endpoint, err)

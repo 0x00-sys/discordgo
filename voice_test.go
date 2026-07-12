@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -637,6 +638,78 @@ func TestVoiceHeartbeatIgnoresInvalidInterval(t *testing.T) {
 	}
 }
 
+func TestVoiceOpenUsesGatewayV8Identify(t *testing.T) {
+	request := make(chan struct {
+		version string
+		body    []byte
+	}, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, body, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		request <- struct {
+			version string
+			body    []byte
+		}{version: r.URL.Query().Get("v"), body: body}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	session := &Session{Dialer: &websocket.Dialer{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	vc := &VoiceConnection{
+		LogLevel:  -1,
+		GuildID:   "guild",
+		UserID:    "user",
+		sessionID: "session",
+		token:     "token",
+		endpoint:  strings.TrimPrefix(server.URL, "https://"),
+		session:   session,
+	}
+	if err := vc.open(); err != nil {
+		t.Fatalf("open returned error: %v", err)
+	}
+	defer vc.Close()
+
+	select {
+	case got := <-request:
+		if got.version != "8" {
+			t.Fatalf("voice gateway version = %q, want 8", got.version)
+		}
+		var identify struct {
+			Op   int `json:"op"`
+			Data struct {
+				ServerID               string `json:"server_id"`
+				UserID                 string `json:"user_id"`
+				SessionID              string `json:"session_id"`
+				Token                  string `json:"token"`
+				MaxDaveProtocolVersion *int   `json:"max_dave_protocol_version"`
+			} `json:"d"`
+		}
+		if err := json.Unmarshal(got.body, &identify); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		if identify.Op != 0 || identify.Data.ServerID != "guild" || identify.Data.UserID != "user" || identify.Data.SessionID != "session" || identify.Data.Token != "token" {
+			t.Fatalf("identify = %#v", identify)
+		}
+		if identify.Data.MaxDaveProtocolVersion == nil || *identify.Data.MaxDaveProtocolVersion != 0 {
+			t.Fatalf("MaxDaveProtocolVersion = %v, want explicit 0", identify.Data.MaxDaveProtocolVersion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for voice identify")
+	}
+}
+
 func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 	messages := make(chan []byte, 1)
 	upgrader := websocket.Upgrader{}
@@ -669,16 +742,58 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 		close:    closeChan,
 		wsConn:   conn,
 	}
+	vc.updateSequence([]byte(`{"seq":10}`))
 
 	vc.onEvent([]byte(`{"op":8,"d":{"heartbeat_interval":1}}`))
 
 	select {
 	case message := <-messages:
-		if !strings.Contains(string(message), `"op":3`) {
-			t.Fatalf("heartbeat message = %s, want op 3", message)
+		var heartbeat voiceHeartbeatOp
+		if err := json.Unmarshal(message, &heartbeat); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		if heartbeat.Op != 3 || heartbeat.Data.Timestamp <= 0 || heartbeat.Data.SequenceAck == nil || *heartbeat.Data.SequenceAck != 10 {
+			t.Fatalf("heartbeat = %#v, want op 3 with seq_ack 10", heartbeat)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("voice Hello did not start heartbeat")
+	}
+}
+
+func TestVoiceHeartbeatOmitsUnsetSequence(t *testing.T) {
+	payload, err := json.Marshal(voiceHeartbeatOp{Op: 3, Data: voiceHeartbeatData{Timestamp: 1}})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(payload), "seq_ack") {
+		t.Fatalf("heartbeat = %s, want seq_ack omitted", payload)
+	}
+}
+
+func TestVoiceUpdateSequence(t *testing.T) {
+	vc := &VoiceConnection{}
+	vc.updateSequence([]byte(`{"op":5,"seq":65535,"d":{}}`))
+	vc.RLock()
+	sequence, set := vc.sequence, vc.sequenceSet
+	vc.RUnlock()
+	if !set || sequence != 65535 {
+		t.Fatalf("sequence = %d/%t, want 65535/true", sequence, set)
+	}
+
+	vc.updateSequence([]byte(`{"op":5,"d":{}}`))
+	vc.RLock()
+	sequence = vc.sequence
+	vc.RUnlock()
+	if sequence != 65535 {
+		t.Fatalf("sequence changed without seq: %d", sequence)
+	}
+
+	vc.updateSequence([]byte(`{"op":5,"seq":0,"d":{}}`))
+	vc.RLock()
+	sequence = vc.sequence
+	vc.RUnlock()
+	if sequence != 0 {
+		t.Fatalf("wrapped sequence = %d, want 0", sequence)
 	}
 }
 
