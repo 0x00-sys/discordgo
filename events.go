@@ -372,14 +372,23 @@ type MessageUpdate struct {
 	*Message
 	// BeforeUpdate will be nil if the Message was not previously cached in the state cache.
 	BeforeUpdate *Message `json:"-"`
+	fields       map[string]json.RawMessage
 }
 
 // UnmarshalJSON is a helper function to unmarshal MessageUpdate object.
 func (m *MessageUpdate) UnmarshalJSON(b []byte) error {
-	if err := json.Unmarshal(b, &m.Message); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
 		return err
 	}
 
+	var message *Message
+	if err := json.Unmarshal(b, &message); err != nil {
+		return err
+	}
+
+	m.Message = message
+	m.fields = fields
 	linkMessageMemberUser(m.Message)
 	return nil
 }
