@@ -1435,7 +1435,7 @@ func TestCurrentApplicationEndpoints(t *testing.T) {
 
 		switch r.Method {
 		case http.MethodGet:
-			_, _ = w.Write([]byte(`{"id":"app","name":"Application","event_webhooks_status":3,"team":{"id":"team","members":[{"role":"admin","permissions":["*"]}]}}`))
+			_, _ = w.Write([]byte(`{"id":"app","name":"Application","event_webhooks_status":3,"event_webhooks_types":["APPLICATION_DEAUTHORIZED"],"team":{"id":"team","members":[{"role":"admin","permissions":["*"]}]}}`))
 		case http.MethodPatch:
 			var payload map[string]json.RawMessage
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -1447,7 +1447,7 @@ func TestCurrentApplicationEndpoints(t *testing.T) {
 				"cover_image":               `null`,
 				"tags":                      `[]`,
 				"event_webhooks_status":     `2`,
-				"event_webhooks_types":      `[]`,
+				"event_webhooks_types":      `["APPLICATION_AUTHORIZED"]`,
 				"interactions_endpoint_url": `""`,
 			} {
 				if got := string(payload[key]); got != want {
@@ -1457,7 +1457,7 @@ func TestCurrentApplicationEndpoints(t *testing.T) {
 			if _, ok := payload["custom_install_url"]; ok {
 				t.Fatal("custom_install_url was included when unset")
 			}
-			_, _ = w.Write([]byte(`{"id":"app","name":"Application","description":"updated","event_webhooks_status":2}`))
+			_, _ = w.Write([]byte(`{"id":"app","name":"Application","description":"updated","event_webhooks_status":2,"event_webhooks_types":["APPLICATION_AUTHORIZED"]}`))
 		default:
 			t.Fatalf("method = %q, want GET or PATCH", r.Method)
 		}
@@ -1480,8 +1480,11 @@ func TestCurrentApplicationEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentApplication returned error: %v", err)
 	}
-	if application.EventWebhooksStatus != ApplicationEventWebhookStatusDisabledByDiscord {
+	if application.EventWebhooksStatus != ApplicationWebhookEventStatusDisabledByDiscord {
 		t.Fatalf("EventWebhooksStatus = %d", application.EventWebhooksStatus)
+	}
+	if len(application.EventWebhooksTypes) != 1 || application.EventWebhooksTypes[0] != ApplicationWebhookEventTypeApplicationDeauthorized {
+		t.Fatalf("EventWebhooksTypes = %#v", application.EventWebhooksTypes)
 	}
 	if application.Team == nil || len(application.Team.Members) != 1 {
 		t.Fatalf("Team = %#v", application.Team)
@@ -1494,8 +1497,8 @@ func TestCurrentApplicationEndpoints(t *testing.T) {
 	description := "updated"
 	empty := ""
 	tags := []string{}
-	eventTypes := []string{}
-	status := ApplicationEventWebhookStatusEnabled
+	eventTypes := []ApplicationWebhookEventType{ApplicationWebhookEventTypeApplicationAuthorized}
+	status := ApplicationWebhookEventStatusEnabled
 	application, err = session.CurrentApplicationEdit(&ApplicationEditParams{
 		Description:             &description,
 		Icon:                    &empty,
@@ -1508,7 +1511,7 @@ func TestCurrentApplicationEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentApplicationEdit returned error: %v", err)
 	}
-	if application.Description != description || application.EventWebhooksStatus != status {
+	if application.Description != description || application.EventWebhooksStatus != status || len(application.EventWebhooksTypes) != 1 || application.EventWebhooksTypes[0] != ApplicationWebhookEventTypeApplicationAuthorized {
 		t.Fatalf("application = %#v", application)
 	}
 	if requests != 2 {

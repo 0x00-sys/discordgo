@@ -779,15 +779,15 @@ func TestApplicationEditParamsNullableFields(t *testing.T) {
 	}
 }
 
-func TestApplicationEventWebhookStatusValues(t *testing.T) {
+func TestApplicationWebhookEventStatusValues(t *testing.T) {
 	tests := []struct {
 		name string
-		got  ApplicationEventWebhookStatus
-		want ApplicationEventWebhookStatus
+		got  ApplicationWebhookEventStatus
+		want ApplicationWebhookEventStatus
 	}{
-		{name: "disabled", got: ApplicationEventWebhookStatusDisabled, want: 1},
-		{name: "enabled", got: ApplicationEventWebhookStatusEnabled, want: 2},
-		{name: "disabled by Discord", got: ApplicationEventWebhookStatusDisabledByDiscord, want: 3},
+		{name: "disabled", got: ApplicationWebhookEventStatusDisabled, want: 1},
+		{name: "enabled", got: ApplicationWebhookEventStatusEnabled, want: 2},
+		{name: "disabled by Discord", got: ApplicationWebhookEventStatusDisabledByDiscord, want: 3},
 	}
 
 	for _, tt := range tests {
@@ -796,6 +796,17 @@ func TestApplicationEventWebhookStatusValues(t *testing.T) {
 				t.Fatalf("status = %d, want %d", tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplicationEventWebhookStatusCompatibility(t *testing.T) {
+	var status ApplicationEventWebhookStatus = ApplicationEventWebhookStatusEnabled
+	if status != ApplicationWebhookEventStatusEnabled {
+		t.Fatalf("legacy status = %d, want %d", status, ApplicationWebhookEventStatusEnabled)
+	}
+	if ApplicationEventWebhookStatusDisabled != ApplicationWebhookEventStatusDisabled ||
+		ApplicationEventWebhookStatusDisabledByDiscord != ApplicationWebhookEventStatusDisabledByDiscord {
+		t.Fatal("legacy application webhook status constants changed")
 	}
 }
 
