@@ -498,6 +498,15 @@ const (
 	ChannelTypeGuildMedia         ChannelType = 16
 )
 
+// VideoQualityMode represents the camera video quality mode of a voice channel.
+type VideoQualityMode int
+
+// Valid VideoQualityMode values.
+const (
+	VideoQualityModeAuto VideoQualityMode = 1
+	VideoQualityModeFull VideoQualityMode = 2
+)
+
 // ChannelFlags represent flags of a channel/thread.
 type ChannelFlags int
 
@@ -592,6 +601,15 @@ type Channel struct {
 	// The user limit of the voice channel.
 	UserLimit int `json:"user_limit"`
 
+	// Whether a group DM channel is managed by an application.
+	Managed bool `json:"managed"`
+
+	// Voice region ID for a voice or stage channel. nil selects the automatic region.
+	RTCRegion *string `json:"rtc_region"`
+
+	// The camera video quality mode of a voice or stage channel.
+	VideoQualityMode VideoQualityMode `json:"video_quality_mode"`
+
 	// The ID of the parent channel, if the channel is under a category. For threads - id of the channel thread was created in.
 	ParentID string `json:"parent_id"`
 
@@ -628,6 +646,15 @@ type Channel struct {
 	// The initial RateLimitPerUser to set on newly created threads in a channel.
 	// This field is copied to the thread at creation time and does not live update.
 	DefaultThreadRateLimitPerUser int `json:"default_thread_rate_limit_per_user"`
+
+	// Default duration for newly created threads to automatically archive, in minutes.
+	DefaultAutoArchiveDuration int `json:"default_auto_archive_duration"`
+
+	// Computed permissions for the invoking user when this channel is resolved in an interaction.
+	Permissions int64 `json:"permissions,omitempty,string"`
+
+	// Number of messages ever sent in a thread, including deleted messages.
+	TotalMessageSent int `json:"total_message_sent"`
 
 	// The default sort order type used to order posts in forum channels.
 	// Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin.
@@ -768,6 +795,8 @@ type ThreadMetadata struct {
 	Locked bool `json:"locked"`
 	// Whether non-moderators can add other non-moderators to a thread; only available on private threads
 	Invitable bool `json:"invitable"`
+	// Timestamp when the thread was created, if it was created after 2022-01-09.
+	CreateTimestamp *time.Time `json:"create_timestamp"`
 }
 
 // ThreadMember is used to indicate whether a user has joined a thread or not.

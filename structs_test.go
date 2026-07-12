@@ -811,6 +811,81 @@ func TestApplicationEventWebhookStatusCompatibility(t *testing.T) {
 	}
 }
 
+func TestCurrentChannelObjectFields(t *testing.T) {
+	if VideoQualityModeAuto != 1 || VideoQualityModeFull != 2 {
+		t.Fatalf("video quality modes = %d/%d, want 1/2", VideoQualityModeAuto, VideoQualityModeFull)
+	}
+
+	const payload = `{
+		"id":"channel",
+		"type":2,
+		"managed":true,
+		"rtc_region":"us-central",
+		"video_quality_mode":2,
+		"default_auto_archive_duration":1440,
+		"permissions":"4503599627370496",
+		"total_message_sent":73,
+		"thread_metadata":{
+			"archived":false,
+			"auto_archive_duration":1440,
+			"archive_timestamp":"2026-07-12T12:00:00Z",
+			"locked":false,
+			"invitable":true,
+			"create_timestamp":"2026-07-11T10:30:00.123Z"
+		}
+	}`
+
+	var channel Channel
+	if err := json.Unmarshal([]byte(payload), &channel); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if !channel.Managed {
+		t.Fatal("Managed = false, want true")
+	}
+	if channel.RTCRegion == nil || *channel.RTCRegion != "us-central" {
+		t.Fatalf("RTCRegion = %v, want us-central", channel.RTCRegion)
+	}
+	if channel.VideoQualityMode != VideoQualityModeFull {
+		t.Fatalf("VideoQualityMode = %d, want %d", channel.VideoQualityMode, VideoQualityModeFull)
+	}
+	if channel.DefaultAutoArchiveDuration != 1440 {
+		t.Fatalf("DefaultAutoArchiveDuration = %d, want 1440", channel.DefaultAutoArchiveDuration)
+	}
+	if channel.Permissions != 1<<52 {
+		t.Fatalf("Permissions = %d, want %d", channel.Permissions, int64(1<<52))
+	}
+	if channel.TotalMessageSent != 73 {
+		t.Fatalf("TotalMessageSent = %d, want 73", channel.TotalMessageSent)
+	}
+	if channel.ThreadMetadata == nil || channel.ThreadMetadata.CreateTimestamp == nil {
+		t.Fatalf("ThreadMetadata = %#v, want create timestamp", channel.ThreadMetadata)
+	}
+	wantCreated := time.Date(2026, 7, 11, 10, 30, 0, 123000000, time.UTC)
+	if !channel.ThreadMetadata.CreateTimestamp.Equal(wantCreated) {
+		t.Fatalf("CreateTimestamp = %v, want %v", channel.ThreadMetadata.CreateTimestamp, wantCreated)
+	}
+
+	encoded, err := json.Marshal(channel)
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	var roundTrip map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatalf("json.Unmarshal round trip returned error: %v", err)
+	}
+	if got := string(roundTrip["permissions"]); got != `"4503599627370496"` {
+		t.Fatalf("permissions JSON = %s, want string-encoded permissions", got)
+	}
+
+	var nullable Channel
+	if err := json.Unmarshal([]byte(`{"rtc_region":null,"thread_metadata":{"create_timestamp":null}}`), &nullable); err != nil {
+		t.Fatalf("json.Unmarshal nullable fields returned error: %v", err)
+	}
+	if nullable.RTCRegion != nil || nullable.ThreadMetadata == nil || nullable.ThreadMetadata.CreateTimestamp != nil {
+		t.Fatalf("nullable channel = %#v", nullable)
+	}
+}
+
 func TestCurrentChannelFlagValuesAndJSON(t *testing.T) {
 	tests := []struct {
 		name     string
