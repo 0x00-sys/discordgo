@@ -188,12 +188,59 @@ func TestCurrentMessageTypeAndFlagConstants(t *testing.T) {
 		{"MessageFlagsHasSnapshot", MessageFlagsHasSnapshot, MessageFlags(1 << 14)},
 		{"MessageAttachmentFlagsIsSpoiler", MessageAttachmentFlagsIsSpoiler, MessageAttachmentFlags(1 << 3)},
 		{"MessageAttachmentFlagsIsAnimated", MessageAttachmentFlagsIsAnimated, MessageAttachmentFlags(1 << 5)},
+		{"ReactionTypeNormal", ReactionTypeNormal, ReactionType(0)},
+		{"ReactionTypeBurst", ReactionTypeBurst, ReactionType(1)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.got != tt.want {
 				t.Fatalf("%s = %v, want %v", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMessageReactionsCurrentFields(t *testing.T) {
+	tests := []struct {
+		name             string
+		data             string
+		wantCountDetails MessageReactionCountDetails
+		wantMeBurst      bool
+		wantBurstColors  []string
+	}{
+		{
+			name:             "burst reaction",
+			data:             `{"count":3,"count_details":{"burst":2,"normal":1},"me":true,"me_burst":true,"emoji":{"name":"sparkle"},"burst_colors":["#ff00ff","#00ffff"]}`,
+			wantCountDetails: MessageReactionCountDetails{Burst: 2, Normal: 1},
+			wantMeBurst:      true,
+			wantBurstColors:  []string{"#ff00ff", "#00ffff"},
+		},
+		{
+			name: "omitted burst fields",
+			data: `{"count":1,"me":false,"emoji":{"name":"wave"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reaction MessageReactions
+			if err := json.Unmarshal([]byte(tt.data), &reaction); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if reaction.CountDetails != tt.wantCountDetails {
+				t.Fatalf("CountDetails = %#v, want %#v", reaction.CountDetails, tt.wantCountDetails)
+			}
+			if reaction.MeBurst != tt.wantMeBurst {
+				t.Fatalf("MeBurst = %t, want %t", reaction.MeBurst, tt.wantMeBurst)
+			}
+			if len(reaction.BurstColors) != len(tt.wantBurstColors) {
+				t.Fatalf("BurstColors = %#v, want %#v", reaction.BurstColors, tt.wantBurstColors)
+			}
+			for i, color := range tt.wantBurstColors {
+				if reaction.BurstColors[i] != color {
+					t.Fatalf("BurstColors[%d] = %q, want %q", i, reaction.BurstColors[i], color)
+				}
 			}
 		})
 	}

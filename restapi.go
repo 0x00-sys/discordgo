@@ -3773,11 +3773,17 @@ func (s *Session) MessageReactionsRemoveEmoji(channelID, messageID, emojiID stri
 // beforeID  : If provided all reactions returned will be before given ID.
 // afterID   : If provided all reactions returned will be after given ID.
 func (s *Session) MessageReactions(channelID, messageID, emojiID string, limit int, beforeID, afterID string, options ...RequestOption) (st []*User, err error) {
+	return s.MessageReactionsByType(channelID, messageID, emojiID, ReactionTypeNormal, limit, beforeID, afterID, options...)
+}
+
+// MessageReactionsByType gets all the users who used a specific reaction type for an emoji.
+func (s *Session) MessageReactionsByType(channelID, messageID, emojiID string, reactionType ReactionType, limit int, beforeID, afterID string, options ...RequestOption) (st []*User, err error) {
 	// emoji such as  #⃣ need to have # escaped
 	emojiID = strings.Replace(emojiID, "#", "%23", -1)
 	uri := EndpointMessageReactions(channelID, messageID, emojiID)
 
 	v := url.Values{}
+	v.Set("type", strconv.Itoa(int(reactionType)))
 
 	if limit > 0 {
 		v.Set("limit", strconv.Itoa(limit))

@@ -2782,11 +2782,15 @@ type APIErrorMessage struct {
 
 // MessageReaction stores the data for a message reaction.
 type MessageReaction struct {
-	UserID    string `json:"user_id"`
-	MessageID string `json:"message_id"`
-	Emoji     Emoji  `json:"emoji"`
-	ChannelID string `json:"channel_id"`
-	GuildID   string `json:"guild_id,omitempty"`
+	UserID          string       `json:"user_id"`
+	MessageID       string       `json:"message_id"`
+	Emoji           Emoji        `json:"emoji"`
+	ChannelID       string       `json:"channel_id"`
+	GuildID         string       `json:"guild_id,omitempty"`
+	MessageAuthorID string       `json:"message_author_id,omitempty"`
+	Burst           bool         `json:"burst"`
+	BurstColors     []string     `json:"burst_colors,omitempty"`
+	Type            ReactionType `json:"type"`
 }
 
 // GatewayBotResponse stores the data for the gateway/bot response

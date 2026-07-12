@@ -634,11 +634,29 @@ const (
 	EmbedTypeLink    EmbedType = "link"
 )
 
+// ReactionType is the type of reaction.
+type ReactionType int
+
+// Valid ReactionType values.
+const (
+	ReactionTypeNormal ReactionType = iota
+	ReactionTypeBurst
+)
+
+// MessageReactionCountDetails contains normal and burst reaction counts.
+type MessageReactionCountDetails struct {
+	Burst  int `json:"burst"`
+	Normal int `json:"normal"`
+}
+
 // MessageReactions holds a reactions object for a message.
 type MessageReactions struct {
-	Count int    `json:"count"`
-	Me    bool   `json:"me"`
-	Emoji *Emoji `json:"emoji"`
+	Count        int                         `json:"count"`
+	CountDetails MessageReactionCountDetails `json:"count_details"`
+	Me           bool                        `json:"me"`
+	MeBurst      bool                        `json:"me_burst"`
+	Emoji        *Emoji                      `json:"emoji"`
+	BurstColors  []string                    `json:"burst_colors"`
 }
 
 // MessageActivity is sent with Rich Presence-related chat embeds
