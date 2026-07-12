@@ -256,6 +256,82 @@ func TestStateOnInterfaceRejectsMalformedUserUpdate(t *testing.T) {
 	}
 }
 
+func TestStateStageInstanceLifecycle(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	createdInstance := &StageInstance{ID: "stage", GuildID: "guild", ChannelID: "channel", Topic: "before"}
+	if err := state.OnInterface(session, &StageInstanceEventCreate{StageInstance: createdInstance}); err != nil {
+		t.Fatalf("create returned error: %v", err)
+	}
+	createdInstance.Topic = "mutated"
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.StageInstances) != 1 || guild.StageInstances[0].Topic != "before" || guild.StageInstances[0] == createdInstance {
+		t.Fatalf("created StageInstances = %#v", guild.StageInstances)
+	}
+
+	updatedInstance := &StageInstance{ID: "stage", GuildID: "guild", ChannelID: "channel", Topic: "after"}
+	update := &StageInstanceEventUpdate{StageInstance: updatedInstance}
+	if err = state.OnInterface(session, update); err != nil {
+		t.Fatalf("update returned error: %v", err)
+	}
+	if update.BeforeUpdate == nil || update.BeforeUpdate.Topic != "before" || update.BeforeUpdate == guild.StageInstances[0] {
+		t.Fatalf("BeforeUpdate = %#v", update.BeforeUpdate)
+	}
+	guild, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.StageInstances) != 1 || guild.StageInstances[0].Topic != "after" || guild.StageInstances[0] == updatedInstance {
+		t.Fatalf("updated StageInstances = %#v", guild.StageInstances)
+	}
+
+	deleted := &StageInstanceEventDelete{StageInstance: &StageInstance{ID: "stage", GuildID: "guild"}}
+	if err = state.OnInterface(session, deleted); err != nil {
+		t.Fatalf("delete returned error: %v", err)
+	}
+	if deleted.BeforeDelete == nil || deleted.BeforeDelete.Topic != "after" || deleted.BeforeDelete == guild.StageInstances[0] {
+		t.Fatalf("BeforeDelete = %#v", deleted.BeforeDelete)
+	}
+	guild, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.StageInstances) != 0 {
+		t.Fatalf("StageInstances after delete = %#v", guild.StageInstances)
+	}
+}
+
+func TestStateRejectsMalformedStageInstanceEvents(t *testing.T) {
+	tests := []interface{}{
+		(*StageInstanceEventCreate)(nil),
+		&StageInstanceEventCreate{},
+		&StageInstanceEventCreate{StageInstance: &StageInstance{}},
+		(*StageInstanceEventUpdate)(nil),
+		&StageInstanceEventUpdate{},
+		&StageInstanceEventUpdate{StageInstance: &StageInstance{}},
+		(*StageInstanceEventDelete)(nil),
+		&StageInstanceEventDelete{},
+		&StageInstanceEventDelete{StageInstance: &StageInstance{}},
+	}
+
+	for _, event := range tests {
+		state := NewState()
+		if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+			t.Fatalf("GuildAdd returned error: %v", err)
+		}
+		if err := state.OnInterface(&Session{StateEnabled: true}, event); !errors.Is(err, ErrStateInvalidData) {
+			t.Fatalf("OnInterface(%T) returned error %v, want %v", event, err, ErrStateInvalidData)
+		}
+	}
+}
+
 func TestStateOnInterfaceIgnoresMalformedVoiceStateWhenTrackingDisabled(t *testing.T) {
 	state := NewState()
 	state.TrackVoice = false

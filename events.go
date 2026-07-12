@@ -289,11 +289,15 @@ type StageInstanceEventCreate struct {
 // StageInstanceEventUpdate is the data for a StageInstanceEventUpdate event.
 type StageInstanceEventUpdate struct {
 	*StageInstance
+	// BeforeUpdate will be nil if the Stage instance was not previously cached.
+	BeforeUpdate *StageInstance `json:"-"`
 }
 
 // StageInstanceEventDelete is the data for a StageInstanceEventDelete event.
 type StageInstanceEventDelete struct {
 	*StageInstance
+	// BeforeDelete will be nil if the Stage instance was not previously cached.
+	BeforeDelete *StageInstance `json:"-"`
 }
 
 // GuildScheduledEventCreate is the data for a GuildScheduledEventCreate event.

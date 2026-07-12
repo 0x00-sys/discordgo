@@ -262,6 +262,11 @@ func copyGuildScheduledEvent(event *GuildScheduledEvent) *GuildScheduledEvent {
 	return &eventCopy
 }
 
+func copyStageInstance(instance *StageInstance) *StageInstance {
+	instanceCopy := *instance
+	return &instanceCopy
+}
+
 func (s *State) replaceGuild(oldGuild, newGuild *Guild) {
 	s.guildMap[newGuild.ID] = newGuild
 	for i, guild := range s.Guilds {
@@ -862,6 +867,58 @@ func (s *State) guildSoundboardSoundAdd(sound *SoundboardSound) (*SoundboardSoun
 	updated.SoundboardSounds = append(updated.SoundboardSounds, copySoundboardSound(sound))
 	s.replaceGuild(guild, updated)
 	return nil, nil
+}
+
+func (s *State) guildStageInstanceAdd(instance *StageInstance) (*StageInstance, error) {
+	if instance == nil || instance.ID == "" || instance.GuildID == "" {
+		return nil, ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[instance.GuildID]
+	if !ok {
+		return nil, ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	for i, cached := range guild.StageInstances {
+		if cached != nil && cached.ID == instance.ID {
+			updated.StageInstances[i] = copyStageInstance(instance)
+			s.replaceGuild(guild, updated)
+			return copyStageInstance(cached), nil
+		}
+	}
+
+	updated.StageInstances = append(updated.StageInstances, copyStageInstance(instance))
+	s.replaceGuild(guild, updated)
+	return nil, nil
+}
+
+func (s *State) guildStageInstanceRemove(guildID, instanceID string) (*StageInstance, error) {
+	if guildID == "" || instanceID == "" {
+		return nil, ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil, ErrStateNotFound
+	}
+
+	updated := copyGuild(guild)
+	for i, instance := range guild.StageInstances {
+		if instance != nil && instance.ID == instanceID {
+			updated.StageInstances = append(updated.StageInstances[:i], updated.StageInstances[i+1:]...)
+			s.replaceGuild(guild, updated)
+			return copyStageInstance(instance), nil
+		}
+	}
+
+	return nil, ErrStateNotFound
 }
 
 func (s *State) guildSoundboardSoundRemove(guildID, soundID string) (*SoundboardSound, error) {
@@ -2234,6 +2291,21 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			return ErrStateInvalidData
 		}
 		err = s.guildSoundboardSoundsReplace(t.GuildID, t.SoundboardSounds)
+	case *StageInstanceEventCreate:
+		if t == nil || t.StageInstance == nil {
+			return ErrStateInvalidData
+		}
+		_, err = s.guildStageInstanceAdd(t.StageInstance)
+	case *StageInstanceEventUpdate:
+		if t == nil || t.StageInstance == nil {
+			return ErrStateInvalidData
+		}
+		t.BeforeUpdate, err = s.guildStageInstanceAdd(t.StageInstance)
+	case *StageInstanceEventDelete:
+		if t == nil || t.StageInstance == nil {
+			return ErrStateInvalidData
+		}
+		t.BeforeDelete, err = s.guildStageInstanceRemove(t.GuildID, t.ID)
 	case *GuildScheduledEventCreate:
 		if t == nil || t.GuildScheduledEvent == nil {
 			return ErrStateInvalidData
