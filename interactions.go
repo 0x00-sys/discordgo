@@ -696,6 +696,69 @@ type InteractionResponse struct {
 	Data *InteractionResponseData `json:"data,omitempty"`
 }
 
+// MarshalJSON keeps UPDATE_MESSAGE callback data partial while preserving the
+// existing wire format for every other interaction response type.
+func (r InteractionResponse) MarshalJSON() ([]byte, error) {
+	type interactionResponse InteractionResponse
+	if r.Type != InteractionResponseUpdateMessage || r.Data == nil {
+		return json.Marshal(interactionResponse(r))
+	}
+
+	data := r.Data
+	var content **string
+	if data.ContentNull {
+		var value *string
+		content = &value
+	} else if data.Content != "" || data.ContentSet {
+		value := &data.Content
+		content = &value
+	}
+	var components *[]MessageComponent
+	if data.Components != nil || data.ComponentsSet {
+		components = &data.Components
+	}
+	var embeds *[]*MessageEmbed
+	if data.Embeds != nil || data.EmbedsSet {
+		embeds = &data.Embeds
+	}
+	var allowedMentions **MessageAllowedMentions
+	if data.AllowedMentions != nil || data.AllowedMentionsSet {
+		allowedMentions = &data.AllowedMentions
+	}
+	var flags **MessageFlags
+	if data.FlagsNull {
+		var value *MessageFlags
+		flags = &value
+	} else if data.Flags != 0 || data.FlagsSet {
+		value := &data.Flags
+		flags = &value
+	}
+
+	type updateMessageData struct {
+		Content         **string                 `json:"content,omitempty"`
+		Embeds          *[]*MessageEmbed         `json:"embeds,omitempty"`
+		AllowedMentions **MessageAllowedMentions `json:"allowed_mentions,omitempty"`
+		Components      *[]MessageComponent      `json:"components,omitempty"`
+		Attachments     *[]*MessageAttachment    `json:"attachments,omitempty"`
+		Flags           **MessageFlags           `json:"flags,omitempty"`
+	}
+
+	return json.Marshal(struct {
+		Type InteractionResponseType `json:"type,omitempty"`
+		Data updateMessageData       `json:"data"`
+	}{
+		Type: r.Type,
+		Data: updateMessageData{
+			Content:         content,
+			Embeds:          embeds,
+			AllowedMentions: allowedMentions,
+			Components:      components,
+			Attachments:     data.Attachments,
+			Flags:           flags,
+		},
+	})
+}
+
 // InteractionCallbackResponse is returned when an interaction response requests callback data.
 type InteractionCallbackResponse struct {
 	Interaction *InteractionCallback         `json:"interaction"`
@@ -726,18 +789,32 @@ type InteractionCallbackActivityInstance struct {
 
 // InteractionResponseData is response data for an interaction.
 type InteractionResponseData struct {
-	TTS             bool                    `json:"tts"`
-	Content         string                  `json:"content"`
-	Components      []MessageComponent      `json:"components"`
-	Embeds          []*MessageEmbed         `json:"embeds"`
+	TTS     bool   `json:"tts"`
+	Content string `json:"content"`
+	// ContentSet sends Content even when empty in an UPDATE_MESSAGE response.
+	ContentSet bool `json:"-"`
+	// ContentNull sends content as null in an UPDATE_MESSAGE response.
+	ContentNull bool               `json:"-"`
+	Components  []MessageComponent `json:"components"`
+	// ComponentsSet sends Components even when nil in an UPDATE_MESSAGE response.
+	ComponentsSet bool            `json:"-"`
+	Embeds        []*MessageEmbed `json:"embeds"`
+	// EmbedsSet sends Embeds even when nil in an UPDATE_MESSAGE response.
+	EmbedsSet       bool                    `json:"-"`
 	AllowedMentions *MessageAllowedMentions `json:"allowed_mentions,omitempty"`
-	Files           []*File                 `json:"-"`
-	Attachments     *[]*MessageAttachment   `json:"attachments,omitempty"`
-	Poll            *Poll                   `json:"poll,omitempty"`
+	// AllowedMentionsSet sends AllowedMentions even when nil in an UPDATE_MESSAGE response.
+	AllowedMentionsSet bool                  `json:"-"`
+	Files              []*File               `json:"-"`
+	Attachments        *[]*MessageAttachment `json:"attachments,omitempty"`
+	Poll               *Poll                 `json:"poll,omitempty"`
 
 	// NOTE: Only flags supported by interaction callback messages can be set.
 	// This includes MessageFlagsEphemeral and MessageFlagsIsComponentsV2.
 	Flags MessageFlags `json:"flags,omitempty"`
+	// FlagsSet sends Flags even when zero in an UPDATE_MESSAGE response.
+	FlagsSet bool `json:"-"`
+	// FlagsNull sends flags as null in an UPDATE_MESSAGE response.
+	FlagsNull bool `json:"-"`
 
 	// NOTE: autocomplete interaction only.
 	Choices []*ApplicationCommandOptionChoice `json:"choices,omitempty"`

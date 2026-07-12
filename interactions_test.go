@@ -380,3 +380,148 @@ func TestCurrentInteractionFieldsAndResponseTypes(t *testing.T) {
 		t.Fatalf("InteractionResponseLaunchActivity = %d, want 12", InteractionResponseLaunchActivity)
 	}
 }
+
+func TestInteractionResponseUpdateMessageMarshalJSON(t *testing.T) {
+	nilAttachments := []*MessageAttachment(nil)
+	emptyAttachments := []*MessageAttachment{}
+
+	tests := []struct {
+		name string
+		data *InteractionResponseData
+		want string
+	}{
+		{
+			name: "omits nil data",
+			data: nil,
+			want: `{"type":7}`,
+		},
+		{
+			name: "omits unspecified fields",
+			data: &InteractionResponseData{},
+			want: `{"type":7,"data":{}}`,
+		},
+		{
+			name: "component only",
+			data: &InteractionResponseData{
+				TTS:        true,
+				Components: []MessageComponent{TextDisplay{Content: "updated"}},
+				Poll:       &Poll{},
+				Choices:    []*ApplicationCommandOptionChoice{},
+				CustomID:   "ignored",
+				Title:      "ignored",
+			},
+			want: `{"type":7,"data":{"components":[{"content":"updated","type":10}]}}`,
+		},
+		{
+			name: "includes values and empty arrays",
+			data: &InteractionResponseData{
+				Content:         "updated",
+				Embeds:          []*MessageEmbed{},
+				AllowedMentions: &MessageAllowedMentions{Parse: []AllowedMentionType{}},
+				Components:      []MessageComponent{},
+				Attachments:     &emptyAttachments,
+				Flags:           MessageFlagsSuppressEmbeds,
+			},
+			want: `{"type":7,"data":{"content":"updated","embeds":[],"allowed_mentions":{"parse":[],"replied_user":false},"components":[],"attachments":[],"flags":4}}`,
+		},
+		{
+			name: "explicit empty and zero values",
+			data: &InteractionResponseData{
+				ContentSet:  true,
+				Embeds:      []*MessageEmbed{},
+				Components:  []MessageComponent{},
+				Attachments: &emptyAttachments,
+				FlagsSet:    true,
+			},
+			want: `{"type":7,"data":{"content":"","embeds":[],"components":[],"attachments":[],"flags":0}}`,
+		},
+		{
+			name: "explicit null values",
+			data: &InteractionResponseData{
+				Content:            "ignored",
+				ContentSet:         true,
+				ContentNull:        true,
+				EmbedsSet:          true,
+				AllowedMentionsSet: true,
+				ComponentsSet:      true,
+				Attachments:        &nilAttachments,
+				Flags:              MessageFlagsSuppressEmbeds,
+				FlagsSet:           true,
+				FlagsNull:          true,
+			},
+			want: `{"type":7,"data":{"content":null,"embeds":null,"allowed_mentions":null,"components":null,"attachments":null,"flags":null}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(InteractionResponse{
+				Type: InteractionResponseUpdateMessage,
+				Data: tt.data,
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}
+
+func TestInteractionResponseUpdateMessageMarshalJSONError(t *testing.T) {
+	_, err := json.Marshal(InteractionResponse{
+		Type: InteractionResponseUpdateMessage,
+		Data: &InteractionResponseData{
+			Components: []MessageComponent{unknownMessageComponent{
+				ComponentType: TextDisplayComponent,
+				RawData:       json.RawMessage(`{`),
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("json.Marshal returned nil error for invalid component JSON")
+	}
+}
+
+func TestInteractionResponseMarshalJSONPreservesOtherTypes(t *testing.T) {
+	data := &InteractionResponseData{
+		TTS:                true,
+		Content:            "content",
+		ContentSet:         true,
+		ContentNull:        true,
+		Components:         []MessageComponent{},
+		ComponentsSet:      true,
+		Embeds:             []*MessageEmbed{},
+		EmbedsSet:          true,
+		AllowedMentionsSet: true,
+		Flags:              MessageFlagsSuppressEmbeds,
+		FlagsSet:           true,
+		FlagsNull:          true,
+	}
+	types := []InteractionResponseType{
+		InteractionResponsePong,
+		InteractionResponseChannelMessageWithSource,
+		InteractionResponseDeferredChannelMessageWithSource,
+		InteractionResponseDeferredMessageUpdate,
+		InteractionApplicationCommandAutocompleteResult,
+		InteractionResponseModal,
+		InteractionResponsePremiumRequired,
+		InteractionResponseLaunchActivity,
+	}
+
+	for _, responseType := range types {
+		t.Run(strconv.Itoa(int(responseType)), func(t *testing.T) {
+			got, err := json.Marshal(InteractionResponse{
+				Type: responseType,
+				Data: data,
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+
+			want := `{"type":` + strconv.Itoa(int(responseType)) + `,"data":{"tts":true,"content":"content","components":[],"embeds":[],"flags":4}}`
+			if string(got) != want {
+				t.Fatalf("json.Marshal = %s, want %s", got, want)
+			}
+		})
+	}
+}
