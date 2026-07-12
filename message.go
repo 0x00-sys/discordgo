@@ -828,6 +828,12 @@ type MessageInteractionMetadata struct {
 	// ID of the message that contained interactive component.
 	// NOTE: present only on message component interactions.
 	InteractedMessageID string `json:"interacted_message_id,omitempty"`
+	// User the command was run on.
+	// NOTE: present only on user command interactions.
+	TargetUser *User `json:"target_user,omitempty"`
+	// ID of the message the command was run on.
+	// NOTE: present only on message command interactions.
+	TargetMessageID string `json:"target_message_id,omitempty"`
 	// Metadata for interaction that was used to open a modal.
 	// NOTE: present only on modal submit interactions.
 	TriggeringInteractionMetadata *MessageInteractionMetadata `json:"triggering_interaction_metadata,omitempty"`
