@@ -128,13 +128,14 @@ var (
 		return EndpointGuildScheduledEventUsers(gID, eID) + "/counts"
 	}
 
-	EndpointGuildWelcomeScreen   = func(gID string) string { return EndpointGuilds + gID + "/welcome-screen" }
-	EndpointGuildOnboarding      = func(gID string) string { return EndpointGuilds + gID + "/onboarding" }
-	EndpointGuildIncidentActions = func(gID string) string { return EndpointGuilds + gID + "/incident-actions" }
-	EndpointGuildTemplate        = func(tID string) string { return EndpointGuilds + "templates/" + tID }
-	EndpointGuildTemplates       = func(gID string) string { return EndpointGuilds + gID + "/templates" }
-	EndpointGuildTemplateSync    = func(gID, tID string) string { return EndpointGuilds + gID + "/templates/" + tID }
-	EndpointGuildMemberAvatar    = func(gId, uID, aID string) string {
+	EndpointGuildWelcomeScreen    = func(gID string) string { return EndpointGuilds + gID + "/welcome-screen" }
+	EndpointGuildNewMemberWelcome = func(gID string) string { return EndpointGuilds + gID + "/new-member-welcome" }
+	EndpointGuildOnboarding       = func(gID string) string { return EndpointGuilds + gID + "/onboarding" }
+	EndpointGuildIncidentActions  = func(gID string) string { return EndpointGuilds + gID + "/incident-actions" }
+	EndpointGuildTemplate         = func(tID string) string { return EndpointGuilds + "templates/" + tID }
+	EndpointGuildTemplates        = func(gID string) string { return EndpointGuilds + gID + "/templates" }
+	EndpointGuildTemplateSync     = func(gID, tID string) string { return EndpointGuilds + gID + "/templates/" + tID }
+	EndpointGuildMemberAvatar     = func(gId, uID, aID string) string {
 		return EndpointCDNGuilds + gId + "/users/" + uID + "/avatars/" + aID + ".png"
 	}
 	EndpointGuildMemberAvatarAnimated = func(gId, uID, aID string) string {
