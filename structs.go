@@ -3677,7 +3677,9 @@ const (
 		IntentDirectMessageTyping |
 		IntentGuildScheduledEvents |
 		IntentAutoModerationConfiguration |
-		IntentAutoModerationExecution
+		IntentAutoModerationExecution |
+		IntentGuildMessagePolls |
+		IntentDirectMessagePolls
 
 	IntentsAll = IntentsAllWithoutPrivileged |
 		IntentGuildMembers |
