@@ -171,13 +171,26 @@ type ApplicationIntegrationTypeConfig struct {
 	OAuth2InstallParams *ApplicationInstallParams `json:"oauth2_install_params,omitempty"`
 }
 
-// ApplicationEventWebhookStatus indicates whether an application's webhook events are enabled.
-type ApplicationEventWebhookStatus int
+// ApplicationWebhookEventStatus indicates whether an application's webhook events are enabled.
+type ApplicationWebhookEventStatus int
 
 const (
-	ApplicationEventWebhookStatusDisabled          ApplicationEventWebhookStatus = 1
-	ApplicationEventWebhookStatusEnabled           ApplicationEventWebhookStatus = 2
-	ApplicationEventWebhookStatusDisabledByDiscord ApplicationEventWebhookStatus = 3
+	ApplicationWebhookEventStatusDisabled          ApplicationWebhookEventStatus = 1
+	ApplicationWebhookEventStatusEnabled           ApplicationWebhookEventStatus = 2
+	ApplicationWebhookEventStatusDisabledByDiscord ApplicationWebhookEventStatus = 3
+)
+
+// ApplicationEventWebhookStatus is retained for compatibility.
+// Deprecated: use ApplicationWebhookEventStatus instead.
+type ApplicationEventWebhookStatus = ApplicationWebhookEventStatus
+
+const (
+	// Deprecated: use ApplicationWebhookEventStatusDisabled instead.
+	ApplicationEventWebhookStatusDisabled = ApplicationWebhookEventStatusDisabled
+	// Deprecated: use ApplicationWebhookEventStatusEnabled instead.
+	ApplicationEventWebhookStatusEnabled = ApplicationWebhookEventStatusEnabled
+	// Deprecated: use ApplicationWebhookEventStatusDisabledByDiscord instead.
+	ApplicationEventWebhookStatusDisabledByDiscord = ApplicationWebhookEventStatusDisabledByDiscord
 )
 
 // Application stores values for a Discord Application
@@ -210,8 +223,8 @@ type Application struct {
 	InteractionsEndpointURL           string                                                           `json:"interactions_endpoint_url,omitempty"`
 	RoleConnectionsVerificationURL    string                                                           `json:"role_connections_verification_url,omitempty"`
 	EventWebhooksURL                  string                                                           `json:"event_webhooks_url,omitempty"`
-	EventWebhooksStatus               ApplicationEventWebhookStatus                                    `json:"event_webhooks_status,omitempty"`
-	EventWebhooksTypes                []string                                                         `json:"event_webhooks_types,omitempty"`
+	EventWebhooksStatus               ApplicationWebhookEventStatus                                    `json:"event_webhooks_status,omitempty"`
+	EventWebhooksTypes                []ApplicationWebhookEventType                                    `json:"event_webhooks_types,omitempty"`
 	Tags                              []string                                                         `json:"tags,omitempty"`
 	InstallParams                     *ApplicationInstallParams                                        `json:"install_params,omitempty"`
 	IntegrationTypesConfig            map[ApplicationIntegrationType]*ApplicationIntegrationTypeConfig `json:"integration_types_config,omitempty"`
@@ -231,8 +244,8 @@ type ApplicationEditParams struct {
 	InteractionsEndpointURL        *string                                                          `json:"interactions_endpoint_url,omitempty"`
 	Tags                           *[]string                                                        `json:"tags,omitempty"`
 	EventWebhooksURL               *string                                                          `json:"event_webhooks_url,omitempty"`
-	EventWebhooksStatus            *ApplicationEventWebhookStatus                                   `json:"event_webhooks_status,omitempty"`
-	EventWebhooksTypes             *[]string                                                        `json:"event_webhooks_types,omitempty"`
+	EventWebhooksStatus            *ApplicationWebhookEventStatus                                   `json:"event_webhooks_status,omitempty"`
+	EventWebhooksTypes             *[]ApplicationWebhookEventType                                   `json:"event_webhooks_types,omitempty"`
 }
 
 // MarshalJSON ensures nullable application fields can be explicitly cleared.
