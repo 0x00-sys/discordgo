@@ -42,16 +42,17 @@ type State struct {
 	Ready
 
 	// MaxMessageCount represents how many messages per channel the state will store.
-	MaxMessageCount    int
-	TrackChannels      bool
-	TrackThreads       bool
-	TrackEmojis        bool
-	TrackStickers      bool
-	TrackMembers       bool
-	TrackThreadMembers bool
-	TrackRoles         bool
-	TrackVoice         bool
-	TrackPresences     bool
+	MaxMessageCount       int
+	TrackMessageReactions bool
+	TrackChannels         bool
+	TrackThreads          bool
+	TrackEmojis           bool
+	TrackStickers         bool
+	TrackMembers          bool
+	TrackThreadMembers    bool
+	TrackRoles            bool
+	TrackVoice            bool
+	TrackPresences        bool
 
 	guildMap   map[string]*Guild
 	channelMap map[string]*Channel
@@ -65,18 +66,19 @@ func NewState() *State {
 			PrivateChannels: []*Channel{},
 			Guilds:          []*Guild{},
 		},
-		TrackChannels:      true,
-		TrackThreads:       true,
-		TrackEmojis:        true,
-		TrackStickers:      true,
-		TrackMembers:       true,
-		TrackThreadMembers: true,
-		TrackRoles:         true,
-		TrackVoice:         true,
-		TrackPresences:     true,
-		guildMap:           make(map[string]*Guild),
-		channelMap:         make(map[string]*Channel),
-		memberMap:          make(map[string]map[string]*Member),
+		TrackMessageReactions: true,
+		TrackChannels:         true,
+		TrackThreads:          true,
+		TrackEmojis:           true,
+		TrackStickers:         true,
+		TrackMembers:          true,
+		TrackThreadMembers:    true,
+		TrackRoles:            true,
+		TrackVoice:            true,
+		TrackPresences:        true,
+		guildMap:              make(map[string]*Guild),
+		channelMap:            make(map[string]*Channel),
+		memberMap:             make(map[string]map[string]*Member),
 	}
 }
 
@@ -1556,6 +1558,243 @@ func (s *State) messageRemoveByID(channelID, messageID string) error {
 	return ErrStateNotFound
 }
 
+type messageReactionUpdateKind int
+
+const (
+	messageReactionAdd messageReactionUpdateKind = iota
+	messageReactionRemove
+	messageReactionRemoveAll
+	messageReactionRemoveEmoji
+)
+
+func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageReactionUpdateKind) error {
+	if reaction == nil || reaction.ChannelID == "" || reaction.MessageID == "" {
+		return ErrStateInvalidData
+	}
+
+	switch kind {
+	case messageReactionAdd, messageReactionRemove:
+		if reaction.UserID == "" || !reactionEmojiValid(&reaction.Emoji) {
+			return ErrStateInvalidData
+		}
+		if reaction.Type != ReactionTypeNormal && reaction.Type != ReactionTypeBurst {
+			return ErrStateInvalidData
+		}
+	case messageReactionRemoveEmoji:
+		if !reactionEmojiValid(&reaction.Emoji) {
+			return ErrStateInvalidData
+		}
+	case messageReactionRemoveAll:
+	default:
+		return ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	channel, ok := s.channelMap[reaction.ChannelID]
+	if !ok {
+		return nil
+	}
+
+	for messageIndex, message := range channel.Messages {
+		if message == nil || message.ID != reaction.MessageID {
+			continue
+		}
+
+		reactions := copyMessageReactionState(message.Reactions)
+		changed := false
+		burst := reaction.Burst || reaction.Type == ReactionTypeBurst
+		me := s.User != nil && reaction.UserID == s.User.ID
+
+		switch kind {
+		case messageReactionAdd:
+			found := false
+			for _, cached := range reactions {
+				if cached == nil || !reactionEmojiEqual(cached.Emoji, &reaction.Emoji) {
+					continue
+				}
+
+				found = true
+				if repairReactionCountDetails(cached, burst, false) {
+					changed = true
+				}
+				if burst && reaction.BurstColors != nil {
+					cached.BurstColors = append([]string(nil), reaction.BurstColors...)
+					changed = true
+				}
+
+				if me && ((burst && cached.MeBurst) || (!burst && cached.Me)) {
+					break
+				}
+
+				cached.Count++
+				if burst {
+					cached.CountDetails.Burst++
+					cached.MeBurst = me || cached.MeBurst
+				} else {
+					cached.CountDetails.Normal++
+					cached.Me = me || cached.Me
+				}
+				changed = true
+				break
+			}
+
+			if !found {
+				cached := &MessageReactions{
+					Count: 1,
+					Emoji: copyReactionEmoji(&reaction.Emoji),
+				}
+				if burst {
+					cached.CountDetails.Burst = 1
+					cached.MeBurst = me
+					cached.BurstColors = append([]string(nil), reaction.BurstColors...)
+				} else {
+					cached.CountDetails.Normal = 1
+					cached.Me = me
+				}
+				reactions = append(reactions, cached)
+				changed = true
+			}
+		case messageReactionRemove:
+			for i, cached := range reactions {
+				if cached == nil || !reactionEmojiEqual(cached.Emoji, &reaction.Emoji) {
+					continue
+				}
+
+				if repairReactionCountDetails(cached, burst, true) {
+					changed = true
+				}
+				if me {
+					if burst {
+						if !cached.MeBurst {
+							break
+						}
+						cached.MeBurst = false
+					} else {
+						if !cached.Me {
+							break
+						}
+						cached.Me = false
+					}
+				}
+
+				if cached.Count > 0 {
+					cached.Count--
+				}
+				if burst {
+					if cached.CountDetails.Burst > 0 {
+						cached.CountDetails.Burst--
+					}
+					if cached.CountDetails.Burst == 0 {
+						cached.BurstColors = nil
+					}
+				} else if cached.CountDetails.Normal > 0 {
+					cached.CountDetails.Normal--
+				}
+
+				if cached.Count == 0 {
+					reactions = append(reactions[:i], reactions[i+1:]...)
+				}
+				changed = true
+				break
+			}
+		case messageReactionRemoveAll:
+			if len(reactions) != 0 {
+				reactions = nil
+				changed = true
+			}
+		case messageReactionRemoveEmoji:
+			kept := reactions[:0]
+			for _, cached := range reactions {
+				if cached != nil && reactionEmojiEqual(cached.Emoji, &reaction.Emoji) {
+					changed = true
+					continue
+				}
+				kept = append(kept, cached)
+			}
+			reactions = kept
+		}
+
+		if !changed {
+			return nil
+		}
+
+		updatedMessage := *message
+		updatedMessage.Reactions = reactions
+		updatedChannel := copyChannel(channel)
+		updatedChannel.Messages[messageIndex] = &updatedMessage
+		s.channelMap[updatedChannel.ID] = updatedChannel
+		s.replaceChannel(channel, updatedChannel)
+		return nil
+	}
+
+	return nil
+}
+
+func repairReactionCountDetails(reaction *MessageReactions, burst, removing bool) bool {
+	if reaction.CountDetails.Normal+reaction.CountDetails.Burst == reaction.Count {
+		return false
+	}
+
+	burstCount := reaction.CountDetails.Burst
+	if burstCount < 0 {
+		burstCount = 0
+	}
+	if burstCount > reaction.Count {
+		burstCount = reaction.Count
+	}
+	if removing && burst && burstCount == 0 && reaction.Count > 0 {
+		burstCount = 1
+	}
+	reaction.CountDetails.Burst = burstCount
+	reaction.CountDetails.Normal = reaction.Count - burstCount
+	return true
+}
+
+func copyMessageReactionState(reactions []*MessageReactions) []*MessageReactions {
+	copied := make([]*MessageReactions, len(reactions))
+	for i, reaction := range reactions {
+		if reaction == nil {
+			continue
+		}
+
+		reactionCopy := *reaction
+		reactionCopy.Emoji = copyReactionEmoji(reaction.Emoji)
+		reactionCopy.BurstColors = append([]string(nil), reaction.BurstColors...)
+		copied[i] = &reactionCopy
+	}
+	return copied
+}
+
+func copyReactionEmoji(emoji *Emoji) *Emoji {
+	if emoji == nil {
+		return nil
+	}
+
+	emojiCopy := *emoji
+	emojiCopy.Roles = append([]string(nil), emoji.Roles...)
+	if emoji.User != nil {
+		userCopy := *emoji.User
+		emojiCopy.User = &userCopy
+	}
+	return &emojiCopy
+}
+
+func reactionEmojiValid(emoji *Emoji) bool {
+	return emoji != nil && (emoji.ID != "" || emoji.Name != "")
+}
+
+func reactionEmojiEqual(a, b *Emoji) bool {
+	if !reactionEmojiValid(a) || !reactionEmojiValid(b) {
+		return false
+	}
+	if a.ID != "" || b.ID != "" {
+		return a.ID != "" && a.ID == b.ID
+	}
+	return a.Name == b.Name
+}
+
 func (s *State) fillMessageGuildID(message *Message) {
 	if message == nil || message.GuildID != "" || message.ChannelID == "" {
 		return
@@ -2143,6 +2382,34 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			for _, mID := range t.Messages {
 				s.messageRemoveByID(t.ChannelID, mID)
 			}
+		}
+	case *MessageReactionAdd:
+		if s.MaxMessageCount != 0 && s.TrackMessageReactions {
+			if t == nil {
+				return ErrStateInvalidData
+			}
+			err = s.messageReactionUpdate(t.MessageReaction, messageReactionAdd)
+		}
+	case *MessageReactionRemove:
+		if s.MaxMessageCount != 0 && s.TrackMessageReactions {
+			if t == nil {
+				return ErrStateInvalidData
+			}
+			err = s.messageReactionUpdate(t.MessageReaction, messageReactionRemove)
+		}
+	case *MessageReactionRemoveAll:
+		if s.MaxMessageCount != 0 && s.TrackMessageReactions {
+			if t == nil {
+				return ErrStateInvalidData
+			}
+			err = s.messageReactionUpdate(t.MessageReaction, messageReactionRemoveAll)
+		}
+	case *MessageReactionRemoveEmoji:
+		if s.MaxMessageCount != 0 && s.TrackMessageReactions {
+			if t == nil {
+				return ErrStateInvalidData
+			}
+			err = s.messageReactionUpdate(t.MessageReaction, messageReactionRemoveEmoji)
 		}
 	case *VoiceStateUpdate:
 		if s.TrackVoice {
