@@ -214,6 +214,48 @@ func TestStateOnInterfaceRejectsMalformedVoiceStateEvent(t *testing.T) {
 	}
 }
 
+func TestStateOnInterfaceUserUpdate(t *testing.T) {
+	state := NewState()
+	old := &User{ID: "user", Username: "before"}
+	state.User = old
+
+	updated := &User{ID: "user", Username: "after", GlobalName: "After"}
+	if err := state.OnInterface(&Session{StateEnabled: true}, &UserUpdate{User: updated}); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	if state.User == updated {
+		t.Fatal("State.User aliases the event user")
+	}
+	if state.User.ID != "user" || state.User.Username != "after" || state.User.GlobalName != "After" {
+		t.Fatalf("State.User = %#v", state.User)
+	}
+	if old.Username != "before" {
+		t.Fatalf("old user was mutated: %#v", old)
+	}
+
+	updated.Username = "mutated"
+	if state.User.Username != "after" {
+		t.Fatalf("State.User changed with event user: %#v", state.User)
+	}
+}
+
+func TestStateOnInterfaceRejectsMalformedUserUpdate(t *testing.T) {
+	for _, event := range []*UserUpdate{
+		nil,
+		{},
+		{User: &User{}},
+	} {
+		state := NewState()
+		state.User = &User{ID: "user", Username: "before"}
+		if err := state.OnInterface(&Session{StateEnabled: true}, event); !errors.Is(err, ErrStateInvalidData) {
+			t.Fatalf("OnInterface returned error %v, want %v", err, ErrStateInvalidData)
+		}
+		if state.User.Username != "before" {
+			t.Fatalf("State.User changed after malformed event: %#v", state.User)
+		}
+	}
+}
+
 func TestStateOnInterfaceIgnoresMalformedVoiceStateWhenTrackingDisabled(t *testing.T) {
 	state := NewState()
 	state.TrackVoice = false

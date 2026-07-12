@@ -2464,7 +2464,14 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 
 			err = s.MemberAdd(m)
 		}
-
+	case *UserUpdate:
+		if t == nil || t.User == nil || t.User.ID == "" {
+			return ErrStateInvalidData
+		}
+		user := *t.User
+		s.Lock()
+		s.User = &user
+		s.Unlock()
 	}
 
 	return
