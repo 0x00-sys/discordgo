@@ -916,6 +916,64 @@ func TestGuildIncidentActionsEditRejectsNullResponse(t *testing.T) {
 	}
 }
 
+func TestGuildVanityURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/guilds/guild/vanity-url" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/vanity-url")
+		}
+
+		_, _ = w.Write([]byte(`{"code":"discord-go","uses":42}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	invite, err := session.GuildVanityURL("guild")
+	if err != nil {
+		t.Fatalf("GuildVanityURL returned error: %v", err)
+	}
+	if invite == nil || invite.Code != "discord-go" || invite.Uses != 42 {
+		t.Fatalf("invite = %#v, want code %q with %d uses", invite, "discord-go", 42)
+	}
+}
+
+func TestGuildVanityURLAllowsNullCode(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"code":null,"uses":0}`)),
+			Request:    r,
+		}, nil
+	})
+
+	invite, err := session.GuildVanityURL("guild")
+	if err != nil {
+		t.Fatalf("GuildVanityURL returned error: %v", err)
+	}
+	if invite == nil || invite.Code != "" || invite.Uses != 0 {
+		t.Fatalf("invite = %#v, want empty code and zero uses", invite)
+	}
+}
+
 func TestChannelInviteCreateWithTargetUsersFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

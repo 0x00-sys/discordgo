@@ -92,6 +92,7 @@ var (
 	EndpointGuildRole                = func(gID, rID string) string { return EndpointGuilds + gID + "/roles/" + rID }
 	EndpointGuildRoleMemberCounts    = func(gID string) string { return EndpointGuildRoles(gID) + "/member-counts" }
 	EndpointGuildInvites             = func(gID string) string { return EndpointGuilds + gID + "/invites" }
+	EndpointGuildVanityURL           = func(gID string) string { return EndpointGuilds + gID + "/vanity-url" }
 	EndpointGuildWidget              = func(gID string) string { return EndpointGuilds + gID + "/widget" }
 	EndpointGuildEmbed               = EndpointGuildWidget
 	EndpointGuildPrune               = func(gID string) string { return EndpointGuilds + gID + "/prune" }
