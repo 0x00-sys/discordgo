@@ -171,6 +171,15 @@ type ApplicationIntegrationTypeConfig struct {
 	OAuth2InstallParams *ApplicationInstallParams `json:"oauth2_install_params,omitempty"`
 }
 
+// ApplicationEventWebhookStatus indicates whether an application's webhook events are enabled.
+type ApplicationEventWebhookStatus int
+
+const (
+	ApplicationEventWebhookStatusDisabled          ApplicationEventWebhookStatus = 1
+	ApplicationEventWebhookStatusEnabled           ApplicationEventWebhookStatus = 2
+	ApplicationEventWebhookStatusDisabledByDiscord ApplicationEventWebhookStatus = 3
+)
+
 // Application stores values for a Discord Application
 type Application struct {
 	ID                                string                                                           `json:"id,omitempty"`
@@ -201,12 +210,58 @@ type Application struct {
 	InteractionsEndpointURL           string                                                           `json:"interactions_endpoint_url,omitempty"`
 	RoleConnectionsVerificationURL    string                                                           `json:"role_connections_verification_url,omitempty"`
 	EventWebhooksURL                  string                                                           `json:"event_webhooks_url,omitempty"`
-	EventWebhooksStatus               int                                                              `json:"event_webhooks_status,omitempty"`
+	EventWebhooksStatus               ApplicationEventWebhookStatus                                    `json:"event_webhooks_status,omitempty"`
 	EventWebhooksTypes                []string                                                         `json:"event_webhooks_types,omitempty"`
 	Tags                              []string                                                         `json:"tags,omitempty"`
 	InstallParams                     *ApplicationInstallParams                                        `json:"install_params,omitempty"`
 	IntegrationTypesConfig            map[ApplicationIntegrationType]*ApplicationIntegrationTypeConfig `json:"integration_types_config,omitempty"`
 	CustomInstallURL                  string                                                           `json:"custom_install_url,omitempty"`
+}
+
+// ApplicationEditParams contains fields that can be updated on the current application.
+type ApplicationEditParams struct {
+	CustomInstallURL               *string                                                          `json:"custom_install_url,omitempty"`
+	Description                    *string                                                          `json:"description,omitempty"`
+	RoleConnectionsVerificationURL *string                                                          `json:"role_connections_verification_url,omitempty"`
+	InstallParams                  *ApplicationInstallParams                                        `json:"install_params,omitempty"`
+	IntegrationTypesConfig         map[ApplicationIntegrationType]*ApplicationIntegrationTypeConfig `json:"integration_types_config,omitempty"`
+	Flags                          *int                                                             `json:"flags,omitempty"`
+	Icon                           *string                                                          `json:"icon,omitempty"`
+	CoverImage                     *string                                                          `json:"cover_image,omitempty"`
+	InteractionsEndpointURL        *string                                                          `json:"interactions_endpoint_url,omitempty"`
+	Tags                           *[]string                                                        `json:"tags,omitempty"`
+	EventWebhooksURL               *string                                                          `json:"event_webhooks_url,omitempty"`
+	EventWebhooksStatus            *ApplicationEventWebhookStatus                                   `json:"event_webhooks_status,omitempty"`
+	EventWebhooksTypes             *[]string                                                        `json:"event_webhooks_types,omitempty"`
+}
+
+// MarshalJSON ensures nullable application images can be explicitly cleared.
+func (p ApplicationEditParams) MarshalJSON() ([]byte, error) {
+	type applicationEditParams ApplicationEditParams
+
+	v := struct {
+		applicationEditParams
+		Icon       json.RawMessage `json:"icon,omitempty"`
+		CoverImage json.RawMessage `json:"cover_image,omitempty"`
+	}{applicationEditParams: applicationEditParams(p)}
+
+	var err error
+	if p.Icon != nil {
+		if *p.Icon == "" {
+			v.Icon = json.RawMessage("null")
+		} else if v.Icon, err = json.Marshal(p.Icon); err != nil {
+			return nil, err
+		}
+	}
+	if p.CoverImage != nil {
+		if *p.CoverImage == "" {
+			v.CoverImage = json.RawMessage("null")
+		} else if v.CoverImage, err = json.Marshal(p.CoverImage); err != nil {
+			return nil, err
+		}
+	}
+
+	return json.Marshal(v)
 }
 
 // ApplicationActivityLocationKind indicates where an activity instance is running.

@@ -743,6 +743,61 @@ func TestInviteCurrentFieldsAndTargetUsersJob(t *testing.T) {
 	}
 }
 
+func TestApplicationEditParamsNullableImages(t *testing.T) {
+	image := "data:image/png;base64,image"
+	empty := ""
+	tests := []struct {
+		name   string
+		params ApplicationEditParams
+		want   string
+	}{
+		{
+			name: "omits unset images",
+			want: `{}`,
+		},
+		{
+			name:   "sets images",
+			params: ApplicationEditParams{Icon: &image, CoverImage: &image},
+			want:   `{"icon":"data:image/png;base64,image","cover_image":"data:image/png;base64,image"}`,
+		},
+		{
+			name:   "clears images",
+			params: ApplicationEditParams{Icon: &empty, CoverImage: &empty},
+			want:   `{"icon":null,"cover_image":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}
+
+func TestApplicationEventWebhookStatusValues(t *testing.T) {
+	tests := []struct {
+		name string
+		got  ApplicationEventWebhookStatus
+		want ApplicationEventWebhookStatus
+	}{
+		{name: "disabled", got: ApplicationEventWebhookStatusDisabled, want: 1},
+		{name: "enabled", got: ApplicationEventWebhookStatusEnabled, want: 2},
+		{name: "disabled by Discord", got: ApplicationEventWebhookStatusDisabledByDiscord, want: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("status = %d, want %d", tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRoleColorsMemberParamsAndSubscriptionConstants(t *testing.T) {
 	secondary := 0x112233
 	tertiary := 0x445566

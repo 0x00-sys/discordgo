@@ -1425,6 +1425,171 @@ func TestApplicationActivityInstanceEndpoint(t *testing.T) {
 	}
 }
 
+func TestCurrentApplicationEndpoints(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/applications/@me" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/applications/@me")
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":"app","name":"Application","event_webhooks_status":3,"team":{"id":"team","members":[{"role":"admin","permissions":["*"]}]}}`))
+		case http.MethodPatch:
+			var payload map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			for key, want := range map[string]string{
+				"description":               `"updated"`,
+				"icon":                      `null`,
+				"cover_image":               `null`,
+				"tags":                      `[]`,
+				"event_webhooks_status":     `2`,
+				"event_webhooks_types":      `[]`,
+				"interactions_endpoint_url": `""`,
+			} {
+				if got := string(payload[key]); got != want {
+					t.Fatalf("%s = %s, want %s", key, got, want)
+				}
+			}
+			if _, ok := payload["custom_install_url"]; ok {
+				t.Fatal("custom_install_url was included when unset")
+			}
+			_, _ = w.Write([]byte(`{"id":"app","name":"Application","description":"updated","event_webhooks_status":2}`))
+		default:
+			t.Fatalf("method = %q, want GET or PATCH", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpoint := EndpointCurrentApplication
+	EndpointCurrentApplication = server.URL + "/applications/@me"
+	t.Cleanup(func() {
+		EndpointCurrentApplication = oldEndpoint
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	application, err := session.CurrentApplication()
+	if err != nil {
+		t.Fatalf("CurrentApplication returned error: %v", err)
+	}
+	if application.EventWebhooksStatus != ApplicationEventWebhookStatusDisabledByDiscord {
+		t.Fatalf("EventWebhooksStatus = %d", application.EventWebhooksStatus)
+	}
+	if application.Team == nil || len(application.Team.Members) != 1 {
+		t.Fatalf("Team = %#v", application.Team)
+	}
+	member := application.Team.Members[0]
+	if member.Role != "admin" || len(member.Permissions) != 1 || member.Permissions[0] != "*" {
+		t.Fatalf("Team member = %#v", member)
+	}
+
+	description := "updated"
+	empty := ""
+	tags := []string{}
+	eventTypes := []string{}
+	status := ApplicationEventWebhookStatusEnabled
+	application, err = session.CurrentApplicationEdit(&ApplicationEditParams{
+		Description:             &description,
+		Icon:                    &empty,
+		CoverImage:              &empty,
+		InteractionsEndpointURL: &empty,
+		Tags:                    &tags,
+		EventWebhooksStatus:     &status,
+		EventWebhooksTypes:      &eventTypes,
+	})
+	if err != nil {
+		t.Fatalf("CurrentApplicationEdit returned error: %v", err)
+	}
+	if application.Description != description || application.EventWebhooksStatus != status {
+		t.Fatalf("application = %#v", application)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestCurrentApplicationErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		body        string
+		call        func(*Session) (*Application, error)
+		wantJSONErr bool
+	}{
+		{
+			name:   "get http error",
+			status: http.StatusInternalServerError,
+			body:   `{"message":"failed"}`,
+			call: func(s *Session) (*Application, error) {
+				return s.CurrentApplication()
+			},
+		},
+		{
+			name:        "get malformed response",
+			status:      http.StatusOK,
+			body:        `{`,
+			wantJSONErr: true,
+			call: func(s *Session) (*Application, error) {
+				return s.CurrentApplication()
+			},
+		},
+		{
+			name:   "edit http error",
+			status: http.StatusInternalServerError,
+			body:   `{"message":"failed"}`,
+			call: func(s *Session) (*Application, error) {
+				return s.CurrentApplicationEdit(&ApplicationEditParams{})
+			},
+		},
+		{
+			name:        "edit malformed response",
+			status:      http.StatusOK,
+			body:        `{`,
+			wantJSONErr: true,
+			call: func(s *Session) (*Application, error) {
+				return s.CurrentApplicationEdit(&ApplicationEditParams{})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			application, err := tt.call(session)
+			if err == nil {
+				t.Fatal("call returned nil error")
+			}
+			if application != nil {
+				t.Fatalf("application = %#v, want nil", application)
+			}
+			if tt.wantJSONErr && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+		})
+	}
+}
+
 func TestWebhookDeleteWithTokenAllowsNoContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {

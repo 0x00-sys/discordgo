@@ -2329,6 +2329,28 @@ func (s *Session) GuildSoundboardSoundDelete(guildID, soundID string, options ..
 	return
 }
 
+// CurrentApplication returns the application associated with the current bot user.
+func (s *Session) CurrentApplication(options ...RequestOption) (application *Application, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointCurrentApplication, nil, EndpointCurrentApplication, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &application)
+	return
+}
+
+// CurrentApplicationEdit updates and returns the application associated with the current bot user.
+func (s *Session) CurrentApplicationEdit(params *ApplicationEditParams, options ...RequestOption) (application *Application, err error) {
+	body, err := s.RequestWithBucketID("PATCH", EndpointCurrentApplication, params, EndpointCurrentApplication, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &application)
+	return
+}
+
 // ApplicationEmojis returns all emojis for the given application
 // appID : ID of the application
 func (s *Session) ApplicationEmojis(appID string, options ...RequestOption) (emojis []*Emoji, err error) {

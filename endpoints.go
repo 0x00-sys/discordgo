@@ -262,6 +262,7 @@ var (
 	EndpointEmojiAnimated = func(eID string) string { return EndpointCDN + "emojis/" + eID + ".gif" }
 
 	EndpointApplications                      = EndpointAPI + "applications"
+	EndpointCurrentApplication                = EndpointApplications + "/@me"
 	EndpointApplication                       = func(aID string) string { return EndpointApplications + "/" + aID }
 	EndpointApplicationRoleConnectionMetadata = func(aID string) string { return EndpointApplication(aID) + "/role-connections/metadata" }
 
