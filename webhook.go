@@ -194,8 +194,21 @@ type WebhookParams struct {
 	// Use MessageFlagsIsComponentsV2 when sending components v2 messages.
 	Flags MessageFlags `json:"flags,omitempty"`
 	// Name of the thread to create.
-	// NOTE: can only be set if the webhook channel is a forum.
+	// NOTE: can only be set if the webhook channel is a forum or media channel.
 	ThreadName string `json:"thread_name,omitempty"`
+	// IDs of tags to apply to the created thread in a forum or media channel.
+	AppliedTags []string `json:"applied_tags,omitempty"`
+	Poll        *Poll    `json:"poll,omitempty"`
+}
+
+// WebhookExecuteOptions stores query parameters for executing a webhook.
+type WebhookExecuteOptions struct {
+	// Wait for server confirmation and return the created message.
+	Wait bool
+	// Send the message to this thread. The thread will automatically be unarchived.
+	ThreadID string
+	// Respect the components field. Non-application-owned webhooks may only send non-interactive components.
+	WithComponents bool
 }
 
 // WebhookEdit stores data for editing of a webhook message.

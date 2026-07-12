@@ -1836,6 +1836,278 @@ func TestInteractionTokenEndpointsOmitAuthorization(t *testing.T) {
 	}
 }
 
+func TestWebhookExecuteComplexJSON(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.AllowedMentions = &MessageAllowedMentions{Parse: []AllowedMentionType{}}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		wantPath := "/api/v" + APIVersion + "/webhooks/webhook/token"
+		if r.Method != http.MethodPost || r.URL.Path != wantPath {
+			t.Fatalf("request = %s %s, want POST %s", r.Method, r.URL.Path, wantPath)
+		}
+		if r.URL.RawQuery != "wait=true&with_components=true" {
+			t.Fatalf("query = %q, want wait=true&with_components=true", r.URL.RawQuery)
+		}
+		if authorization := r.Header.Get("Authorization"); authorization != "" {
+			t.Fatalf("Authorization = %q, want empty", authorization)
+		}
+
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			t.Fatalf("json.Unmarshal fields returned error: %v", err)
+		}
+		if _, ok := fields["applied_tags"]; !ok {
+			t.Fatalf("payload fields = %#v, want applied_tags", fields)
+		}
+		if _, ok := fields["poll"]; !ok {
+			t.Fatalf("payload fields = %#v, want poll", fields)
+		}
+
+		var payload WebhookParams
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal payload returned error: %v", err)
+		}
+		if payload.ThreadName != "topic" || len(payload.AppliedTags) != 2 || payload.AppliedTags[0] != "tag-one" || payload.AppliedTags[1] != "tag-two" {
+			t.Fatalf("thread payload = %#v/%#v", payload.ThreadName, payload.AppliedTags)
+		}
+		if payload.Poll == nil || payload.Poll.Question.Text != "Choose" || len(payload.Poll.Answers) != 2 || payload.Poll.Duration != 24 || !payload.Poll.AllowMultiselect {
+			t.Fatalf("Poll = %#v", payload.Poll)
+		}
+		if payload.AllowedMentions == nil || len(payload.AllowedMentions.Parse) != 0 {
+			t.Fatalf("AllowedMentions = %#v", payload.AllowedMentions)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"channel","content":"sent"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	message, err := session.WebhookExecuteComplex(
+		"webhook",
+		"token",
+		WebhookExecuteOptions{Wait: true, WithComponents: true},
+		&WebhookParams{
+			ThreadName:  "topic",
+			AppliedTags: []string{"tag-one", "tag-two"},
+			Poll: &Poll{
+				Question: PollMedia{Text: "Choose"},
+				Answers: []PollAnswer{
+					{Media: &PollMedia{Text: "One"}},
+					{Media: &PollMedia{Text: "Two"}},
+				},
+				AllowMultiselect: true,
+				Duration:         24,
+				LayoutType:       PollLayoutTypeDefault,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("WebhookExecuteComplex returned error: %v", err)
+	}
+	if message == nil || message.ID != "message" || message.ChannelID != "channel" || message.Content != "sent" {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
+func TestWebhookExecuteComplexMultipart(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.RawQuery != "thread_id=thread&wait=true&with_components=true" {
+			t.Fatalf("query = %q, want thread_id=thread&wait=true&with_components=true", r.URL.RawQuery)
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Fatalf("Content-Type = %q, want multipart/form-data", r.Header.Get("Content-Type"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm returned error: %v", err)
+		}
+
+		payloadJSON := r.MultipartForm.Value["payload_json"]
+		if len(payloadJSON) != 1 {
+			t.Fatalf("payload_json = %#v", payloadJSON)
+		}
+		var payload WebhookParams
+		if err := json.Unmarshal([]byte(payloadJSON[0]), &payload); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		if payload.Poll == nil || payload.Poll.Question.Text != "Upload?" || len(payload.Poll.Answers) != 2 {
+			t.Fatalf("Poll = %#v", payload.Poll)
+		}
+
+		file, header, err := r.FormFile("files[0]")
+		if err != nil {
+			t.Fatalf("FormFile returned error: %v", err)
+		}
+		defer file.Close()
+		contents, err := ioutil.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if header.Filename != "note.txt" || string(contents) != "attachment" {
+			t.Fatalf("file = %q/%q", header.Filename, contents)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"id":"message","channel_id":"thread"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	message, err := session.WebhookExecuteComplex(
+		"webhook",
+		"token",
+		WebhookExecuteOptions{Wait: true, ThreadID: "thread", WithComponents: true},
+		&WebhookParams{
+			Files: []*File{{
+				Name:        "note.txt",
+				ContentType: "text/plain",
+				Reader:      strings.NewReader("attachment"),
+			}},
+			Poll: &Poll{
+				Question: PollMedia{Text: "Upload?"},
+				Answers: []PollAnswer{
+					{Media: &PollMedia{Text: "Yes"}},
+					{Media: &PollMedia{Text: "No"}},
+				},
+				Duration: 1,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("WebhookExecuteComplex returned error: %v", err)
+	}
+	if message == nil || message.ID != "message" || message.ChannelID != "thread" {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
+func TestWebhookExecuteComplexErrors(t *testing.T) {
+	session, err := New("Bot secret")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	message, err := session.WebhookExecuteComplex("webhook", "token", WebhookExecuteOptions{}, nil)
+	if err == nil || err.Error() != "webhook data cannot be nil" {
+		t.Fatalf("error = %v, want webhook data cannot be nil", err)
+	}
+	if message != nil {
+		t.Fatalf("message = %#v, want nil", message)
+	}
+
+	t.Run("malformed response", func(t *testing.T) {
+		session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(`{`)),
+				Request:    r,
+			}, nil
+		})
+		message, err := session.WebhookExecuteComplex(
+			"webhook",
+			"token",
+			WebhookExecuteOptions{Wait: true},
+			&WebhookParams{Content: "hello"},
+		)
+		if !errors.Is(err, ErrJSONUnmarshal) {
+			t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+		}
+		if message != nil {
+			t.Fatalf("message = %#v, want nil", message)
+		}
+	})
+
+	t.Run("http error without wait", func(t *testing.T) {
+		session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Body:       io.NopCloser(strings.NewReader(`{"code":50035,"message":"Invalid Form Body"}`)),
+				Request:    r,
+			}, nil
+		})
+		message, err := session.WebhookExecuteComplex(
+			"webhook",
+			"token",
+			WebhookExecuteOptions{},
+			&WebhookParams{Content: "hello"},
+		)
+		var restErr *RESTError
+		if !errors.As(err, &restErr) || restErr.Response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("error = %T %v, want 400 RESTError", err, err)
+		}
+		if message != nil {
+			t.Fatalf("message = %#v, want nil", message)
+		}
+	})
+}
+
+func TestWebhookExecuteLegacyQueries(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantQuery string
+		call      func(*Session) (*Message, error)
+	}{
+		{
+			name:      "execute",
+			wantQuery: "wait=true",
+			call: func(s *Session) (*Message, error) {
+				return s.WebhookExecute("webhook", "token", true, &WebhookParams{Content: "hello"})
+			},
+		},
+		{
+			name:      "thread execute",
+			wantQuery: "thread_id=thread&wait=true",
+			call: func(s *Session) (*Message, error) {
+				return s.WebhookThreadExecute("webhook", "token", true, "thread", &WebhookParams{Content: "hello"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot secret")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.RawQuery != tt.wantQuery {
+					t.Fatalf("query = %q, want %q", r.URL.RawQuery, tt.wantQuery)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(`{"id":"message"}`)),
+					Request:    r,
+				}, nil
+			})
+
+			message, err := tt.call(session)
+			if err != nil {
+				t.Fatalf("execute returned error: %v", err)
+			}
+			if message == nil || message.ID != "message" {
+				t.Fatalf("message = %#v", message)
+			}
+		})
+	}
+}
+
 func TestInteractionRespondWithResponseJSON(t *testing.T) {
 	session, err := New("Bot secret")
 	if err != nil {
