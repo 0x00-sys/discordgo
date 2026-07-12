@@ -68,6 +68,18 @@ func TestNewToken(t *testing.T) {
 	}
 }
 
+func TestNewIncludesPollIntents(t *testing.T) {
+	d, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	want := IntentGuildMessagePolls | IntentDirectMessagePolls
+	if got := d.Identify.Intents & want; got != want {
+		t.Fatalf("default intents include poll intents = %d, want %d", got, want)
+	}
+}
+
 func TestOpenClose(t *testing.T) {
 	if envOAuth2Token == "" {
 		t.Skip("Skipping TestClose, DGU_TOKEN not set")
