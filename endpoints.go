@@ -306,12 +306,13 @@ var (
 	}
 	EndpointLobbyMemberInvites = func(lID, uID string) string { return EndpointLobbyMember(lID, uID) + "/invites" }
 
-	EndpointOAuth2                  = EndpointAPI + "oauth2/"
-	EndpointOAuth2Keys              = EndpointOAuth2 + "keys"
-	EndpointOAuth2Applications      = EndpointOAuth2 + "applications"
-	EndpointOAuth2Application       = func(aID string) string { return EndpointOAuth2Applications + "/" + aID }
-	EndpointOAuth2ApplicationsBot   = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/bot" }
-	EndpointOAuth2ApplicationAssets = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/assets" }
+	EndpointOAuth2                     = EndpointAPI + "oauth2/"
+	EndpointOAuth2CurrentAuthorization = EndpointOAuth2 + "@me"
+	EndpointOAuth2Keys                 = EndpointOAuth2 + "keys"
+	EndpointOAuth2Applications         = EndpointOAuth2 + "applications"
+	EndpointOAuth2Application          = func(aID string) string { return EndpointOAuth2Applications + "/" + aID }
+	EndpointOAuth2ApplicationsBot      = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/bot" }
+	EndpointOAuth2ApplicationAssets    = func(aID string) string { return EndpointOAuth2Applications + "/" + aID + "/assets" }
 
 	// TODO: Deprecated, remove in the next release
 	EndpointOauth2                  = EndpointOAuth2
