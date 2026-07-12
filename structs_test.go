@@ -743,8 +743,9 @@ func TestInviteCurrentFieldsAndTargetUsersJob(t *testing.T) {
 	}
 }
 
-func TestApplicationEditParamsNullableImages(t *testing.T) {
+func TestApplicationEditParamsNullableFields(t *testing.T) {
 	image := "data:image/png;base64,image"
+	webhookURL := "https://example.com/events"
 	empty := ""
 	tests := []struct {
 		name   string
@@ -756,14 +757,14 @@ func TestApplicationEditParamsNullableImages(t *testing.T) {
 			want: `{}`,
 		},
 		{
-			name:   "sets images",
-			params: ApplicationEditParams{Icon: &image, CoverImage: &image},
-			want:   `{"icon":"data:image/png;base64,image","cover_image":"data:image/png;base64,image"}`,
+			name:   "sets nullable fields",
+			params: ApplicationEditParams{Icon: &image, CoverImage: &image, EventWebhooksURL: &webhookURL},
+			want:   `{"icon":"data:image/png;base64,image","cover_image":"data:image/png;base64,image","event_webhooks_url":"https://example.com/events"}`,
 		},
 		{
-			name:   "clears images",
-			params: ApplicationEditParams{Icon: &empty, CoverImage: &empty},
-			want:   `{"icon":null,"cover_image":null}`,
+			name:   "clears nullable fields",
+			params: ApplicationEditParams{Icon: &empty, CoverImage: &empty, EventWebhooksURL: &empty},
+			want:   `{"icon":null,"cover_image":null,"event_webhooks_url":null}`,
 		},
 	}
 
