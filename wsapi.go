@@ -499,12 +499,13 @@ type helloOp struct {
 }
 
 // maxGatewayHeartbeatIntervalMsec bounds the raw millisecond interval so
-// that neither the interval conversion nor the missed-ACK deadline
-// (interval * FailedHeartbeatAcks) can overflow time.Duration.
-const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecond / (FailedHeartbeatAcks / time.Millisecond)
+// that its conversion to time.Duration cannot overflow.
+const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecond
 
-// FailedHeartbeatAcks is the Number of heartbeat intervals to wait until forcing a connection restart.
-const FailedHeartbeatAcks time.Duration = 5 * time.Millisecond
+// FailedHeartbeatAcks is the number of heartbeat intervals without an ACK that
+// forces a connection restart. The time.Duration type is retained for source
+// compatibility.
+const FailedHeartbeatAcks time.Duration = time.Millisecond
 
 var gatewayHeartbeatInitialJitter = randomGatewayHeartbeatInitialJitter
 
@@ -544,24 +545,28 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		}
 
 		s.RLock()
-		last := s.LastHeartbeatAck
+		lastAck := s.LastHeartbeatAck
+		lastSent := s.LastHeartbeatSent
 		s.RUnlock()
-		sequence := atomic.LoadInt64(s.sequence)
-		s.log(LogDebug, "sending gateway websocket heartbeat seq %d", sequence)
-		s.Lock()
-		s.LastHeartbeatSent = time.Now().UTC()
-		s.Unlock()
-		s.wsMutex.Lock()
-		err = wsConn.WriteJSON(heartbeatOp{1, sequence})
-		s.wsMutex.Unlock()
-		if err != nil || time.Now().UTC().Sub(last) > (heartbeatIntervalMsec*FailedHeartbeatAcks) {
+		missedAck := lastAck.Before(lastSent)
+		if !missedAck {
+			sequence := atomic.LoadInt64(s.sequence)
+			s.log(LogDebug, "sending gateway websocket heartbeat seq %d", sequence)
+			s.Lock()
+			s.LastHeartbeatSent = time.Now().UTC()
+			s.Unlock()
+			s.wsMutex.Lock()
+			err = wsConn.WriteJSON(heartbeatOp{1, sequence})
+			s.wsMutex.Unlock()
+		}
+		if err != nil || missedAck {
 			if isListeningClosed(listening) {
 				return
 			}
 			if err != nil {
 				s.log(LogError, "error sending heartbeat to gateway %s, %s", s.gateway, err)
 			} else {
-				s.log(LogError, "haven't gotten a heartbeat ACK in %v, triggering a reconnection", time.Now().UTC().Sub(last))
+				s.log(LogError, "haven't gotten a heartbeat ACK in %v, triggering a reconnection", time.Now().UTC().Sub(lastSent))
 			}
 			closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
 			if !closed {
@@ -952,11 +957,17 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	if e.Operation == 1 {
 		s.log(LogInformational, "sending heartbeat in response to Op1")
 
+		sentAt := time.Now().UTC()
 		err = s.gatewayWriteJSON(heartbeatOp{1, atomic.LoadInt64(s.sequence)})
 		if err != nil {
 			s.log(LogError, "error sending heartbeat in response to Op1")
 			return e, err
 		}
+		s.Lock()
+		if s.LastHeartbeatSent.Before(sentAt) {
+			s.LastHeartbeatSent = sentAt
+		}
+		s.Unlock()
 
 		return e, nil
 	}
