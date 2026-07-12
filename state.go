@@ -17,6 +17,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 )
 
 // ErrNilState is returned when the state is nil.
@@ -2548,6 +2549,33 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				t.BeforeDelete = &oldCopy
 			}
 			err = s.ChannelRemove(t.Channel)
+		}
+	case *ChannelPinsUpdate:
+		if s.TrackChannels {
+			if t == nil || t.ChannelID == "" {
+				return ErrStateInvalidData
+			}
+
+			var lastPinTimestamp *time.Time
+			if t.LastPinTimestamp != "" {
+				parsed, parseErr := time.Parse(time.RFC3339, t.LastPinTimestamp)
+				if parseErr != nil {
+					return ErrStateInvalidData
+				}
+				lastPinTimestamp = &parsed
+			}
+
+			s.Lock()
+			channel, ok := s.channelMap[t.ChannelID]
+			if !ok {
+				s.Unlock()
+				return ErrStateNotFound
+			}
+			updated := copyChannel(channel)
+			updated.LastPinTimestamp = lastPinTimestamp
+			s.channelMap[updated.ID] = updated
+			s.replaceChannel(channel, updated)
+			s.Unlock()
 		}
 	case *ThreadCreate:
 		if s.TrackThreads {
