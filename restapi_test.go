@@ -167,6 +167,52 @@ func TestUserUpdateComplexNullableImages(t *testing.T) {
 	}
 }
 
+func TestUserApplicationRoleConnectionDelete(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodDelete {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodDelete)
+		}
+		if r.URL.Path != "/users/@me/applications/app/role-connection" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/users/@me/applications/app/role-connection")
+		}
+		if got := r.Header.Get("X-Test-Request-Option"); got != "present" {
+			t.Fatalf("X-Test-Request-Option = %q, want present", got)
+		}
+
+		if requests == 1 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, `{"message":"failure"}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointUsers := EndpointUsers
+	EndpointUsers = server.URL + "/users/"
+	t.Cleanup(func() {
+		EndpointUsers = oldEndpointUsers
+	})
+
+	session, err := New("Bearer test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	requestOption := WithHeader("X-Test-Request-Option", "present")
+	if err = session.UserApplicationRoleConnectionDelete("app", requestOption, WithRestRetries(0)); err != nil {
+		t.Fatalf("UserApplicationRoleConnectionDelete returned error: %v", err)
+	}
+	if err = session.UserApplicationRoleConnectionDelete("app", requestOption, WithRestRetries(0)); err == nil {
+		t.Fatal("UserApplicationRoleConnectionDelete returned nil for REST error")
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
 //func (s *Session) UserChannelCreate(recipientID string) (st *Channel, err error) {
 
 func TestUserChannelCreate(t *testing.T) {
