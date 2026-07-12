@@ -4996,6 +4996,28 @@ func (s *Session) GuildWelcomeScreenEdit(guildID string, data *GuildWelcomeScree
 	return welcomeScreen, nil
 }
 
+// GuildHomeSettings returns the home settings shown to new guild members.
+// It returns nil when the guild has no home settings.
+// guildID : The ID of the guild
+func (s *Session) GuildHomeSettings(guildID string, options ...RequestOption) (settings *GuildHomeSettings, err error) {
+	endpoint := EndpointGuildNewMemberWelcome(guildID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, nil
+	}
+
+	if err = unmarshal(body, &settings); err != nil {
+		return nil, err
+	}
+	if settings == nil {
+		return nil, fmt.Errorf("%w: guild home settings response is null", ErrJSONUnmarshal)
+	}
+	return settings, nil
+}
+
 // GuildOnboarding returns onboarding configuration of a guild.
 // guildID   : The ID of the guild
 func (s *Session) GuildOnboarding(guildID string, options ...RequestOption) (onboarding *GuildOnboarding, err error) {

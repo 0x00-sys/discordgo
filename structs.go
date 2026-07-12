@@ -1242,6 +1242,49 @@ type GuildWelcomeScreenParams struct {
 	Description **string `json:"description,omitempty"`
 }
 
+// GuildHomeNewMemberActionType is the type of action shown to new guild members.
+type GuildHomeNewMemberActionType int
+
+// Guild home new member action types.
+const (
+	GuildHomeNewMemberActionTypeView GuildHomeNewMemberActionType = iota
+	GuildHomeNewMemberActionTypeTalk
+)
+
+// GuildHomeSettings represents the guild home settings shown to new members.
+type GuildHomeSettings struct {
+	GuildID          string                     `json:"guild_id"`
+	Enabled          bool                       `json:"enabled"`
+	WelcomeMessage   *GuildHomeWelcomeMessage   `json:"welcome_message"`
+	NewMemberActions []GuildHomeNewMemberAction `json:"new_member_actions"`
+	ResourceChannels []GuildHomeResourceChannel `json:"resource_channels"`
+}
+
+// GuildHomeWelcomeMessage is the welcome message shown to new guild members.
+type GuildHomeWelcomeMessage struct {
+	AuthorIDs []string `json:"author_ids"`
+	Message   string   `json:"message"`
+}
+
+// GuildHomeNewMemberAction is an action suggested to new guild members.
+type GuildHomeNewMemberAction struct {
+	ChannelID   string                       `json:"channel_id"`
+	ActionType  GuildHomeNewMemberActionType `json:"action_type"`
+	Title       string                       `json:"title"`
+	Description string                       `json:"description"`
+	Emoji       *Emoji                       `json:"emoji"`
+	Icon        string                       `json:"icon"`
+}
+
+// GuildHomeResourceChannel is a resource channel shown to new guild members.
+type GuildHomeResourceChannel struct {
+	ChannelID   string `json:"channel_id"`
+	Title       string `json:"title"`
+	Emoji       *Emoji `json:"emoji"`
+	Icon        string `json:"icon"`
+	Description string `json:"description"`
+}
+
 // A Guild holds all data related to a specific Discord Guild.  Guilds are also
 // sometimes referred to as Servers in the Discord client.
 type Guild struct {
