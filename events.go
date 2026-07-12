@@ -241,12 +241,16 @@ type GuildSoundboardSoundCreate struct {
 // GuildSoundboardSoundUpdate is the data for a GuildSoundboardSoundUpdate event.
 type GuildSoundboardSoundUpdate struct {
 	*SoundboardSound
+	// BeforeUpdate will be nil if the sound was not previously cached in the state cache.
+	BeforeUpdate *SoundboardSound `json:"-"`
 }
 
 // GuildSoundboardSoundDelete is the data for a GuildSoundboardSoundDelete event.
 type GuildSoundboardSoundDelete struct {
 	SoundID string `json:"sound_id"`
 	GuildID string `json:"guild_id"`
+	// BeforeDelete will be nil if the sound was not previously cached in the state cache.
+	BeforeDelete *SoundboardSound `json:"-"`
 }
 
 // GuildSoundboardSoundsUpdate is the data for a GuildSoundboardSoundsUpdate event.

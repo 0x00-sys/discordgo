@@ -197,6 +197,27 @@ func copyGuild(guild *Guild) *Guild {
 	return &guildCopy
 }
 
+func copySoundboardSound(sound *SoundboardSound) *SoundboardSound {
+	soundCopy := *sound
+	if sound.User != nil {
+		user := *sound.User
+		if user.AvatarDecorationData != nil {
+			decoration := *user.AvatarDecorationData
+			user.AvatarDecorationData = &decoration
+		}
+		if user.Collectibles != nil {
+			collectibles := *user.Collectibles
+			if collectibles.Nameplate != nil {
+				nameplate := *collectibles.Nameplate
+				collectibles.Nameplate = &nameplate
+			}
+			user.Collectibles = &collectibles
+		}
+		soundCopy.User = &user
+	}
+	return &soundCopy
+}
+
 func copyGuildScheduledEvent(event *GuildScheduledEvent) *GuildScheduledEvent {
 	eventCopy := *event
 	if event.ScheduledEndTime != nil {
@@ -812,6 +833,87 @@ func (s *State) Role(guildID, roleID string) (*Role, error) {
 	}
 
 	return nil, ErrStateNotFound
+}
+
+func (s *State) guildSoundboardSoundAdd(sound *SoundboardSound) (*SoundboardSound, error) {
+	if sound == nil || sound.SoundID == "" || sound.GuildID == "" {
+		return nil, ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[sound.GuildID]
+	if !ok {
+		return nil, nil
+	}
+
+	updated := copyGuild(guild)
+	for i, cached := range guild.SoundboardSounds {
+		if cached != nil && cached.SoundID == sound.SoundID {
+			updated.SoundboardSounds[i] = copySoundboardSound(sound)
+			s.replaceGuild(guild, updated)
+			return copySoundboardSound(cached), nil
+		}
+	}
+
+	updated.SoundboardSounds = append(updated.SoundboardSounds, copySoundboardSound(sound))
+	s.replaceGuild(guild, updated)
+	return nil, nil
+}
+
+func (s *State) guildSoundboardSoundRemove(guildID, soundID string) (*SoundboardSound, error) {
+	if guildID == "" || soundID == "" {
+		return nil, ErrStateInvalidData
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil, nil
+	}
+
+	for i, sound := range guild.SoundboardSounds {
+		if sound == nil || sound.SoundID != soundID {
+			continue
+		}
+
+		updated := copyGuild(guild)
+		updated.SoundboardSounds = append(updated.SoundboardSounds[:i], updated.SoundboardSounds[i+1:]...)
+		s.replaceGuild(guild, updated)
+		return copySoundboardSound(sound), nil
+	}
+
+	return nil, nil
+}
+
+func (s *State) guildSoundboardSoundsReplace(guildID string, sounds []*SoundboardSound) error {
+	if guildID == "" || sounds == nil {
+		return ErrStateInvalidData
+	}
+
+	copied := make([]*SoundboardSound, len(sounds))
+	for i, sound := range sounds {
+		if sound == nil || sound.SoundID == "" {
+			return ErrStateInvalidData
+		}
+		copied[i] = copySoundboardSound(sound)
+	}
+
+	s.Lock()
+	defer s.Unlock()
+
+	guild, ok := s.guildMap[guildID]
+	if !ok {
+		return nil
+	}
+
+	updated := copyGuild(guild)
+	updated.SoundboardSounds = copied
+	s.replaceGuild(guild, updated)
+	return nil
 }
 
 func (s *State) guildScheduledEventAdd(event *GuildScheduledEvent) (*GuildScheduledEvent, error) {
@@ -1868,6 +1970,31 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			updated.Stickers = t.Stickers
 			s.replaceGuild(guild, updated)
 		}
+	case *GuildSoundboardSoundCreate:
+		if t == nil || t.SoundboardSound == nil {
+			return ErrStateInvalidData
+		}
+		_, err = s.guildSoundboardSoundAdd(t.SoundboardSound)
+	case *GuildSoundboardSoundUpdate:
+		if t == nil || t.SoundboardSound == nil {
+			return ErrStateInvalidData
+		}
+		t.BeforeUpdate, err = s.guildSoundboardSoundAdd(t.SoundboardSound)
+	case *GuildSoundboardSoundDelete:
+		if t == nil {
+			return ErrStateInvalidData
+		}
+		t.BeforeDelete, err = s.guildSoundboardSoundRemove(t.GuildID, t.SoundID)
+	case *GuildSoundboardSoundsUpdate:
+		if t == nil {
+			return ErrStateInvalidData
+		}
+		err = s.guildSoundboardSoundsReplace(t.GuildID, t.SoundboardSounds)
+	case *SoundboardSounds:
+		if t == nil {
+			return ErrStateInvalidData
+		}
+		err = s.guildSoundboardSoundsReplace(t.GuildID, t.SoundboardSounds)
 	case *GuildScheduledEventCreate:
 		if t == nil || t.GuildScheduledEvent == nil {
 			return ErrStateInvalidData

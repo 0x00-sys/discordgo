@@ -1606,6 +1606,499 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 	}
 }
 
+func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	created := &SoundboardSound{
+		SoundID: "sound",
+		GuildID: "guild",
+		Name:    "created",
+		User: &User{
+			ID:                   "user",
+			Username:             "creator",
+			AvatarDecorationData: &AvatarDecorationData{Asset: "created-decoration"},
+			Collectibles:         &Collectibles{Nameplate: &Nameplate{Asset: "created-nameplate"}},
+		},
+	}
+	if err := state.OnInterface(session, &GuildSoundboardSoundCreate{SoundboardSound: created}); err != nil {
+		t.Fatalf("OnInterface(create) returned error: %v", err)
+	}
+	created.Name = "mutated"
+	created.User.Username = "mutated"
+	created.User.AvatarDecorationData.Asset = "mutated"
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.SoundboardSounds) != 1 || guild.SoundboardSounds[0].Name != "created" {
+		t.Fatalf("cached sounds = %#v, want one created sound", guild.SoundboardSounds)
+	}
+	if guild.SoundboardSounds[0].User.Username != "creator" ||
+		guild.SoundboardSounds[0].User.AvatarDecorationData.Asset != "created-decoration" {
+		t.Fatalf("cached creator = %#v, want an immutable copy", guild.SoundboardSounds[0].User)
+	}
+
+	replacement := &SoundboardSound{
+		SoundID: "sound",
+		GuildID: "guild",
+		Name:    "replacement",
+		User: &User{
+			ID:                   "user",
+			Username:             "old-creator",
+			AvatarDecorationData: &AvatarDecorationData{Asset: "old-decoration"},
+			Collectibles:         &Collectibles{Nameplate: &Nameplate{Asset: "old-nameplate"}},
+		},
+	}
+	if err := state.OnInterface(session, &GuildSoundboardSoundCreate{SoundboardSound: replacement}); err != nil {
+		t.Fatalf("OnInterface(replacement create) returned error: %v", err)
+	}
+
+	beforeUpdateGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(beforeUpdateGuild.SoundboardSounds) != 1 {
+		t.Fatalf("len(SoundboardSounds) = %d, want 1 after replacement", len(beforeUpdateGuild.SoundboardSounds))
+	}
+	old := beforeUpdateGuild.SoundboardSounds[0]
+	update := &GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{
+		SoundID: "sound",
+		GuildID: "guild",
+		Name:    "updated",
+		User: &User{
+			ID:                   "user",
+			Username:             "new-creator",
+			AvatarDecorationData: &AvatarDecorationData{Asset: "new-decoration"},
+			Collectibles:         &Collectibles{Nameplate: &Nameplate{Asset: "new-nameplate"}},
+		},
+	}}
+	if err := state.OnInterface(session, update); err != nil {
+		t.Fatalf("OnInterface(update) returned error: %v", err)
+	}
+	if update.BeforeUpdate == nil || update.BeforeUpdate.Name != "replacement" {
+		t.Fatalf("BeforeUpdate = %#v, want replacement", update.BeforeUpdate)
+	}
+	aliasesOld := update.BeforeUpdate == old ||
+		update.BeforeUpdate.User == old.User ||
+		update.BeforeUpdate.User.AvatarDecorationData == old.User.AvatarDecorationData ||
+		update.BeforeUpdate.User.Collectibles == old.User.Collectibles ||
+		update.BeforeUpdate.User.Collectibles.Nameplate == old.User.Collectibles.Nameplate
+	if aliasesOld {
+		t.Fatal("BeforeUpdate aliases the previous cached sound")
+	}
+
+	old.Name = "mutated-old"
+	old.User.Username = "mutated-old"
+	old.User.AvatarDecorationData.Asset = "mutated-old"
+	old.User.Collectibles.Nameplate.Asset = "mutated-old"
+	if update.BeforeUpdate.Name != "replacement" || update.BeforeUpdate.User.Username != "old-creator" ||
+		update.BeforeUpdate.User.AvatarDecorationData.Asset != "old-decoration" ||
+		update.BeforeUpdate.User.Collectibles.Nameplate.Asset != "old-nameplate" {
+		t.Fatalf("BeforeUpdate was mutated through the old snapshot: %#v", update.BeforeUpdate)
+	}
+
+	beforeDeleteGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	updated := beforeDeleteGuild.SoundboardSounds[0]
+	update.SoundboardSound.Name = "mutated-update"
+	update.SoundboardSound.User.Username = "mutated-update"
+	update.BeforeUpdate.Name = "mutated-before"
+	if updated.Name != "updated" || updated.User.Username != "new-creator" {
+		t.Fatalf("cached updated sound = %#v, want an immutable copy", updated)
+	}
+
+	deleted := &GuildSoundboardSoundDelete{GuildID: "guild", SoundID: "sound"}
+	if err := state.OnInterface(session, deleted); err != nil {
+		t.Fatalf("OnInterface(delete) returned error: %v", err)
+	}
+	if deleted.BeforeDelete == nil || deleted.BeforeDelete.Name != "updated" {
+		t.Fatalf("BeforeDelete = %#v, want updated", deleted.BeforeDelete)
+	}
+	aliasesUpdated := deleted.BeforeDelete == updated ||
+		deleted.BeforeDelete.User == updated.User ||
+		deleted.BeforeDelete.User.AvatarDecorationData == updated.User.AvatarDecorationData ||
+		deleted.BeforeDelete.User.Collectibles == updated.User.Collectibles ||
+		deleted.BeforeDelete.User.Collectibles.Nameplate == updated.User.Collectibles.Nameplate
+	if aliasesUpdated {
+		t.Fatal("BeforeDelete aliases the removed cached sound")
+	}
+	updated.Name = "mutated-deleted"
+	updated.User.Username = "mutated-deleted"
+	if deleted.BeforeDelete.Name != "updated" || deleted.BeforeDelete.User.Username != "new-creator" {
+		t.Fatalf("BeforeDelete was mutated through the removed snapshot: %#v", deleted.BeforeDelete)
+	}
+
+	guild, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(guild.SoundboardSounds) != 0 {
+		t.Fatalf("len(SoundboardSounds) = %d, want 0 after delete", len(guild.SoundboardSounds))
+	}
+}
+
+func TestStateGuildSoundboardSoundsBulkReplace(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		SoundboardSounds: []*SoundboardSound{
+			{SoundID: "old", GuildID: "guild", Name: "old"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	sounds := []*SoundboardSound{
+		{
+			SoundID: "new-a",
+			GuildID: "guild",
+			Name:    "new-a",
+			User: &User{
+				ID:                   "user",
+				Username:             "creator",
+				AvatarDecorationData: &AvatarDecorationData{Asset: "decoration"},
+				Collectibles:         &Collectibles{Nameplate: &Nameplate{Asset: "nameplate"}},
+			},
+		},
+		{SoundID: "new-b", GuildID: "guild", Name: "new-b"},
+	}
+	bulk := &GuildSoundboardSoundsUpdate{GuildID: "guild", SoundboardSounds: sounds}
+	if err := state.OnInterface(&Session{StateEnabled: true}, bulk); err != nil {
+		t.Fatalf("OnInterface(bulk) returned error: %v", err)
+	}
+	sounds[0].Name = "mutated"
+	sounds[0].User.Username = "mutated"
+	sounds[0].User.AvatarDecorationData.Asset = "mutated"
+	sounds[0].User.Collectibles.Nameplate.Asset = "mutated"
+	sounds[1] = &SoundboardSound{SoundID: "mutated"}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.SoundboardSounds) != 2 || current.SoundboardSounds[0].Name != "new-a" ||
+		current.SoundboardSounds[1].Name != "new-b" {
+		t.Fatalf("current sounds = %#v, want new-a and new-b", current.SoundboardSounds)
+	}
+	user := current.SoundboardSounds[0].User
+	if user.Username != "creator" || user.AvatarDecorationData.Asset != "decoration" ||
+		user.Collectibles.Nameplate.Asset != "nameplate" {
+		t.Fatalf("current creator = %#v, want an immutable copy", user)
+	}
+	if len(snapshot.SoundboardSounds) != 1 || snapshot.SoundboardSounds[0].Name != "old" {
+		t.Fatalf("old snapshot sounds = %#v, want old", snapshot.SoundboardSounds)
+	}
+
+	bulkSnapshot := current
+	if err := state.OnInterface(&Session{StateEnabled: true}, &GuildSoundboardSoundsUpdate{
+		GuildID:          "guild",
+		SoundboardSounds: []*SoundboardSound{},
+	}); err != nil {
+		t.Fatalf("OnInterface(empty bulk) returned error: %v", err)
+	}
+	current, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if current.SoundboardSounds == nil || len(current.SoundboardSounds) != 0 {
+		t.Fatalf("current sounds = %#v, want a non-nil empty slice", current.SoundboardSounds)
+	}
+	if len(bulkSnapshot.SoundboardSounds) != 2 || bulkSnapshot.SoundboardSounds[0].Name != "new-a" {
+		t.Fatalf("bulk snapshot sounds = %#v, want untouched new sounds", bulkSnapshot.SoundboardSounds)
+	}
+}
+
+func TestStateSoundboardSoundsReplace(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		SoundboardSounds: []*SoundboardSound{
+			{SoundID: "old", GuildID: "guild", Name: "old"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	if err := state.OnInterface(session, &SoundboardSounds{
+		GuildID: "guild",
+		SoundboardSounds: []*SoundboardSound{
+			{SoundID: "new-a", GuildID: "guild", Name: "new-a"},
+			{SoundID: "new-b", GuildID: "guild", Name: "new-b"},
+		},
+	}); err != nil {
+		t.Fatalf("OnInterface(response) returned error: %v", err)
+	}
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.SoundboardSounds) != 2 || current.SoundboardSounds[0].Name != "new-a" ||
+		current.SoundboardSounds[1].Name != "new-b" {
+		t.Fatalf("current sounds = %#v, want new-a and new-b", current.SoundboardSounds)
+	}
+	if len(snapshot.SoundboardSounds) != 1 || snapshot.SoundboardSounds[0].Name != "old" {
+		t.Fatalf("old snapshot sounds = %#v, want untouched old sound", snapshot.SoundboardSounds)
+	}
+
+	responseSnapshot := current
+	if err := state.OnInterface(session, &SoundboardSounds{
+		GuildID:          "guild",
+		SoundboardSounds: []*SoundboardSound{},
+	}); err != nil {
+		t.Fatalf("OnInterface(empty response) returned error: %v", err)
+	}
+	current, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if current.SoundboardSounds == nil || len(current.SoundboardSounds) != 0 {
+		t.Fatalf("current sounds = %#v, want a non-nil empty slice", current.SoundboardSounds)
+	}
+	if len(responseSnapshot.SoundboardSounds) != 2 || responseSnapshot.SoundboardSounds[0].Name != "new-a" {
+		t.Fatalf("response snapshot sounds = %#v, want untouched new sounds", responseSnapshot.SoundboardSounds)
+	}
+}
+
+func TestStateOnInterfaceRejectsMalformedGuildSoundboardEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{name: "nil create", event: (*GuildSoundboardSoundCreate)(nil)},
+		{name: "create missing sound", event: &GuildSoundboardSoundCreate{}},
+		{
+			name:  "create missing sound id",
+			event: &GuildSoundboardSoundCreate{SoundboardSound: &SoundboardSound{GuildID: "guild"}},
+		},
+		{
+			name:  "create missing guild id",
+			event: &GuildSoundboardSoundCreate{SoundboardSound: &SoundboardSound{SoundID: "sound"}},
+		},
+		{name: "nil update", event: (*GuildSoundboardSoundUpdate)(nil)},
+		{name: "update missing sound", event: &GuildSoundboardSoundUpdate{}},
+		{
+			name:  "update missing sound id",
+			event: &GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{GuildID: "guild"}},
+		},
+		{
+			name:  "update missing guild id",
+			event: &GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{SoundID: "sound"}},
+		},
+		{name: "nil delete", event: (*GuildSoundboardSoundDelete)(nil)},
+		{name: "delete missing sound id", event: &GuildSoundboardSoundDelete{GuildID: "guild"}},
+		{name: "delete missing guild id", event: &GuildSoundboardSoundDelete{SoundID: "sound"}},
+		{name: "nil bulk update", event: (*GuildSoundboardSoundsUpdate)(nil)},
+		{name: "bulk update missing guild id", event: &GuildSoundboardSoundsUpdate{SoundboardSounds: []*SoundboardSound{}}},
+		{name: "bulk update missing sounds", event: &GuildSoundboardSoundsUpdate{GuildID: "guild"}},
+		{
+			name: "bulk update nil sound",
+			event: &GuildSoundboardSoundsUpdate{
+				GuildID:          "guild",
+				SoundboardSounds: []*SoundboardSound{nil},
+			},
+		},
+		{
+			name: "bulk update missing sound id",
+			event: &GuildSoundboardSoundsUpdate{
+				GuildID:          "guild",
+				SoundboardSounds: []*SoundboardSound{{GuildID: "guild"}},
+			},
+		},
+		{name: "nil response", event: (*SoundboardSounds)(nil)},
+		{name: "response missing guild id", event: &SoundboardSounds{SoundboardSounds: []*SoundboardSound{}}},
+		{name: "response missing sounds", event: &SoundboardSounds{GuildID: "guild"}},
+		{
+			name: "response nil sound",
+			event: &SoundboardSounds{
+				GuildID:          "guild",
+				SoundboardSounds: []*SoundboardSound{nil},
+			},
+		},
+		{
+			name: "response missing sound id",
+			event: &SoundboardSounds{
+				GuildID:          "guild",
+				SoundboardSounds: []*SoundboardSound{{GuildID: "guild"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(&Session{StateEnabled: true}, tt.event)
+			})
+		})
+	}
+}
+
+func TestStateGuildSoundboardEventsIgnoreUnknownIDs(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		SoundboardSounds: []*SoundboardSound{
+			{SoundID: "known", GuildID: "guild", Name: "known"},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	unknownDelete := &GuildSoundboardSoundDelete{GuildID: "guild", SoundID: "unknown"}
+	if err := state.OnInterface(session, unknownDelete); err != nil {
+		t.Fatalf("OnInterface(unknown delete) returned error: %v", err)
+	}
+	if unknownDelete.BeforeDelete != nil {
+		t.Fatalf("BeforeDelete = %#v, want nil for unknown sound", unknownDelete.BeforeDelete)
+	}
+	unknownGuildEvents := []interface{}{
+		&GuildSoundboardSoundCreate{SoundboardSound: &SoundboardSound{GuildID: "unknown", SoundID: "sound"}},
+		&GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{GuildID: "unknown", SoundID: "sound"}},
+		&GuildSoundboardSoundDelete{GuildID: "unknown", SoundID: "sound"},
+		&GuildSoundboardSoundsUpdate{
+			GuildID:          "unknown",
+			SoundboardSounds: []*SoundboardSound{{GuildID: "unknown", SoundID: "sound"}},
+		},
+		&SoundboardSounds{
+			GuildID:          "unknown",
+			SoundboardSounds: []*SoundboardSound{{GuildID: "unknown", SoundID: "sound"}},
+		},
+	}
+	for _, event := range unknownGuildEvents {
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface(%T) returned error for unknown guild: %v", event, err)
+		}
+	}
+
+	unknownUpdate := &GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{
+		GuildID: "guild",
+		SoundID: "new",
+		Name:    "new",
+	}}
+	if err := state.OnInterface(session, unknownUpdate); err != nil {
+		t.Fatalf("OnInterface(unknown update) returned error: %v", err)
+	}
+	if unknownUpdate.BeforeUpdate != nil {
+		t.Fatalf("BeforeUpdate = %#v, want nil for uncached sound", unknownUpdate.BeforeUpdate)
+	}
+
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if len(current.SoundboardSounds) != 2 || current.SoundboardSounds[0].Name != "known" ||
+		current.SoundboardSounds[1].Name != "new" {
+		t.Fatalf("current sounds = %#v, want known and new", current.SoundboardSounds)
+	}
+	if len(snapshot.SoundboardSounds) != 1 || snapshot.SoundboardSounds[0].Name != "known" {
+		t.Fatalf("old snapshot sounds = %#v, want untouched known sound", snapshot.SoundboardSounds)
+	}
+	if _, err := state.Guild("unknown"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Guild(unknown) returned error %v, want %v", err, ErrStateNotFound)
+	}
+}
+
+func TestStateGuildSoundboardSoundsDoNotRaceGuildSnapshot(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		SoundboardSounds: []*SoundboardSound{
+			{SoundID: "sound", GuildID: "guild", Name: "initial", User: &User{ID: "user", Username: "initial"}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	snapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < 1000; i++ {
+			guild, err := state.Guild("guild")
+			if err != nil {
+				errCh <- err
+				return
+			}
+			for _, current := range []*Guild{snapshot, guild} {
+				for _, sound := range current.SoundboardSounds {
+					if sound != nil {
+						_ = sound.Name
+						if sound.User != nil {
+							_ = sound.User.Username
+						}
+					}
+				}
+			}
+		}
+		errCh <- nil
+	}()
+
+	session := &Session{StateEnabled: true}
+	for i := 0; i < 1000; i++ {
+		name := strconv.Itoa(i)
+		if err := state.OnInterface(session, &GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{
+			SoundID: "sound",
+			GuildID: "guild",
+			Name:    "updated-" + name,
+			User:    &User{ID: "user", Username: name},
+		}}); err != nil {
+			t.Fatalf("OnInterface(update) returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &GuildSoundboardSoundCreate{SoundboardSound: &SoundboardSound{
+			SoundID: "temporary",
+			GuildID: "guild",
+			Name:    name,
+		}}); err != nil {
+			t.Fatalf("OnInterface(create) returned error: %v", err)
+		}
+		deleteTemporary := &GuildSoundboardSoundDelete{GuildID: "guild", SoundID: "temporary"}
+		if err := state.OnInterface(session, deleteTemporary); err != nil {
+			t.Fatalf("OnInterface(delete) returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &SoundboardSounds{
+			GuildID: "guild",
+			SoundboardSounds: []*SoundboardSound{
+				{SoundID: "sound", GuildID: "guild", Name: "bulk-" + name, User: &User{ID: "user", Username: name}},
+			},
+		}); err != nil {
+			t.Fatalf("OnInterface(bulk) returned error: %v", err)
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("concurrent Guild returned error: %v", err)
+	}
+
+	if snapshot.SoundboardSounds[0].Name != "initial" || snapshot.SoundboardSounds[0].User.Username != "initial" {
+		t.Fatalf("old snapshot sound = %#v, want untouched initial sound", snapshot.SoundboardSounds[0])
+	}
+}
+
 func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
