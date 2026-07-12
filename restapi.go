@@ -2104,6 +2104,47 @@ func (s *Session) GuildEmojiDelete(guildID, emojiID string, options ...RequestOp
 	return
 }
 
+// Sticker returns the sticker for the given ID.
+func (s *Session) Sticker(stickerID string, options ...RequestOption) (sticker *Sticker, err error) {
+	endpoint := EndpointSticker(stickerID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointStickers, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &sticker)
+	return
+}
+
+// StickerPacks returns all available sticker packs.
+func (s *Session) StickerPacks(options ...RequestOption) (packs []*StickerPack, err error) {
+	body, err := s.RequestWithBucketID("GET", EndpointStickerPacks, nil, EndpointStickerPacks, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		StickerPacks []*StickerPack `json:"sticker_packs"`
+	}
+	if err = unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+
+	return response.StickerPacks, nil
+}
+
+// StickerPack returns the sticker pack for the given ID.
+func (s *Session) StickerPack(packID string, options ...RequestOption) (pack *StickerPack, err error) {
+	endpoint := EndpointStickerPack(packID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointStickerPacks, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &pack)
+	return
+}
+
 // SoundboardSoundSend sends a soundboard sound to a voice channel.
 // channelID     : The ID of a voice Channel.
 // soundID       : The ID of the soundboard sound to play.

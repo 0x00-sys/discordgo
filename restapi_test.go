@@ -186,6 +186,103 @@ func TestGuildBulkBan(t *testing.T) {
 	}
 }
 
+func TestStickerRetrieval(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+
+		switch r.URL.Path {
+		case "/stickers/sticker":
+			_, _ = w.Write([]byte(`{"id":"sticker","name":"Wave","type":1,"format_type":3}`))
+		case "/sticker-packs":
+			_, _ = w.Write([]byte(`{"sticker_packs":[{"id":"pack","name":"Wumpus Beyond","sku_id":"sku","stickers":[]}]}`))
+		case "/sticker-packs/pack":
+			_, _ = w.Write([]byte(`{"id":"pack","name":"Wumpus Beyond","sku_id":"sku","stickers":[{"id":"sticker","name":"Wave","type":1,"format_type":3}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointStickers := EndpointStickers
+	oldEndpointStickerPacks := EndpointStickerPacks
+	EndpointStickers = server.URL + "/stickers/"
+	EndpointStickerPacks = server.URL + "/sticker-packs"
+	t.Cleanup(func() {
+		EndpointStickers = oldEndpointStickers
+		EndpointStickerPacks = oldEndpointStickerPacks
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	sticker, err := session.Sticker("sticker")
+	if err != nil {
+		t.Fatalf("Sticker returned error: %v", err)
+	}
+	if sticker.ID != "sticker" || sticker.Name != "Wave" || sticker.FormatType != StickerFormatTypeLottie {
+		t.Fatalf("sticker = %#v", sticker)
+	}
+
+	packs, err := session.StickerPacks()
+	if err != nil {
+		t.Fatalf("StickerPacks returned error: %v", err)
+	}
+	if len(packs) != 1 || packs[0].ID != "pack" || packs[0].SKUID != "sku" {
+		t.Fatalf("packs = %#v", packs)
+	}
+
+	pack, err := session.StickerPack("pack")
+	if err != nil {
+		t.Fatalf("StickerPack returned error: %v", err)
+	}
+	if pack.ID != "pack" || len(pack.Stickers) != 1 || pack.Stickers[0].ID != "sticker" {
+		t.Fatalf("pack = %#v", pack)
+	}
+}
+
+func TestStickerRetrievalInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointStickers := EndpointStickers
+	oldEndpointStickerPacks := EndpointStickerPacks
+	EndpointStickers = server.URL + "/stickers/"
+	EndpointStickerPacks = server.URL + "/sticker-packs"
+	t.Cleanup(func() {
+		EndpointStickers = oldEndpointStickers
+		EndpointStickerPacks = oldEndpointStickerPacks
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "sticker", call: func() error { _, err := session.Sticker("sticker"); return err }},
+		{name: "sticker packs", call: func() error { _, err := session.StickerPacks(); return err }},
+		{name: "sticker pack", call: func() error { _, err := session.StickerPack("pack"); return err }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err == nil {
+				t.Fatal("returned nil error for invalid JSON")
+			}
+		})
+	}
+}
+
 func TestGuildBulkBanResponseValidation(t *testing.T) {
 	tests := []struct {
 		name    string
