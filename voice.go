@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // ------------------------------------------------------------------------------------------------
@@ -65,10 +66,11 @@ type VoiceConnection struct {
 	// Used to pass the sessionid from onVoiceStateUpdate
 	// sessionRecv chan string UNUSED ATM
 
-	aead         cipher.AEAD
-	nonceCounter uint32
-	sequence     int64
-	sequenceSet  bool
+	aead           cipher.AEAD
+	encryptionMode string
+	nonceCounter   uint32
+	sequence       int64
+	sequenceSet    bool
 
 	op4 voiceOP4
 	op2 voiceOP2
@@ -81,8 +83,10 @@ type VoiceConnection struct {
 type VoiceSpeakingUpdateHandler func(vc *VoiceConnection, vs *VoiceSpeakingUpdate)
 
 const (
-	voiceGatewayVersion         = 8
-	voiceMaxDaveProtocolVersion = 0
+	voiceGatewayVersion               = 8
+	voiceMaxDaveProtocolVersion       = 0
+	voiceModeAES256GCMRTPSize         = "aead_aes256_gcm_rtpsize"
+	voiceModeXChaCha20Poly1305RTPSize = "aead_xchacha20_poly1305_rtpsize"
 )
 
 // VoiceSpeakingFlags describes the type of audio being transmitted.
@@ -370,10 +374,10 @@ func (v *VoiceSpeakingUpdate) UnmarshalJSON(data []byte) error {
 // ------------------------------------------------------------------------------------------------
 
 // A voiceOP4 stores the data for the voice operation 4 websocket event
-// which provides us with the NaCl SecretBox encryption key
+// which provides the negotiated transport encryption key.
 type voiceOP4 struct {
-	SecretKey [32]byte `json:"secret_key"`
-	Mode      string   `json:"mode"`
+	SecretKey []int  `json:"secret_key"`
+	Mode      string `json:"mode"`
 }
 
 // A voiceOP2 stores the data for the voice operation 2 websocket event
@@ -607,43 +611,33 @@ func (v *VoiceConnection) onEvent(message []byte) {
 
 	case 2: // READY
 
-		if err := json.Unmarshal(e.RawData, &v.op2); err != nil {
+		op2 := voiceOP2{}
+		if err := json.Unmarshal(e.RawData, &op2); err != nil {
 			v.log(LogError, "OP2 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
+			v.failVoiceEncryption()
+			return
+		}
+		mode, err := selectVoiceEncryptionMode(op2.Modes)
+		if err != nil {
+			v.log(LogError, "OP2 encryption mode error, %s", err)
+			v.failVoiceEncryption()
 			return
 		}
 
+		v.Lock()
+		v.op2 = op2
+		v.aead = nil
+		v.encryptionMode = mode
+		v.nonceCounter = 0
+		v.op4 = voiceOP4{}
+		v.Ready = false
+		v.Unlock()
+
 		// Start the UDP connection
-		err := v.udpOpen()
+		err = v.udpOpen()
 		if err != nil {
 			v.log(LogError, "error opening udp connection, %s", err)
 			return
-		}
-
-		// Start the opusSender.
-		// TODO: Should we allow 48000/960 values to be user defined?
-		// answer: no, 48k is required as per discord documentaiton and 960 is the most optimal frame size (based on testing)
-		v.Lock()
-		if v.OpusSend == nil {
-			v.OpusSend = make(chan []byte, 2)
-		}
-		udpConn := v.udpConn
-		closeChan := v.close
-		opusSend := v.OpusSend
-		deaf := v.deaf
-
-		if !deaf {
-			if v.OpusRecv == nil {
-				v.OpusRecv = make(chan *Packet, 2)
-			}
-		}
-		opusRecv := v.OpusRecv
-		v.Unlock()
-
-		go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
-
-		// Start the opusReceiver
-		if !deaf {
-			go v.opusReceiver(udpConn, closeChan, opusRecv)
 		}
 
 		return
@@ -654,18 +648,63 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		return
 
 	case 4: // udp encryption secret key
-		v.Lock()
-		defer v.Unlock()
-
-		v.op4 = voiceOP4{}
-		if err := json.Unmarshal(e.RawData, &v.op4); err != nil {
+		op4 := voiceOP4{}
+		if err := json.Unmarshal(e.RawData, &op4); err != nil {
 			v.log(LogError, "OP4 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
+			v.failVoiceEncryption()
 			return
 		}
 
-		// TODO: error handling? meh
-		block, _ := aes.NewCipher(v.op4.SecretKey[:])
-		v.aead, _ = cipher.NewGCM(block)
+		var udpConn *net.UDPConn
+		var closeChan chan struct{}
+		var opusSend chan []byte
+		var opusRecv chan *Packet
+		startTransport := false
+		receive := false
+
+		v.Lock()
+		if op4.Mode != v.encryptionMode {
+			selectedMode := v.encryptionMode
+			v.Unlock()
+			v.log(LogError, "OP4 encryption mode %q does not match selected mode %q", op4.Mode, selectedMode)
+			v.failVoiceEncryption()
+			return
+		}
+
+		aead, err := newVoiceAEAD(op4.Mode, op4.SecretKey)
+		if err != nil {
+			v.Unlock()
+			v.log(LogError, "OP4 encryption setup error, %s", err)
+			v.failVoiceEncryption()
+			return
+		}
+
+		v.op4 = op4
+		v.aead = aead
+		if !v.Ready && v.udpConn != nil && v.close != nil {
+			if v.OpusSend == nil {
+				v.OpusSend = make(chan []byte, 2)
+			}
+			if !v.deaf && v.OpusRecv == nil {
+				v.OpusRecv = make(chan *Packet, 2)
+			}
+
+			udpConn = v.udpConn
+			closeChan = v.close
+			opusSend = v.OpusSend
+			opusRecv = v.OpusRecv
+			receive = !v.deaf
+			startTransport = true
+			v.Ready = true
+		}
+		v.Unlock()
+
+		if startTransport {
+			go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
+			if receive {
+				go v.opusReceiver(udpConn, closeChan, opusRecv)
+			}
+		}
 
 		return
 
@@ -719,6 +758,71 @@ func (v *VoiceConnection) callVoiceSpeakingUpdateHandler(h VoiceSpeakingUpdateHa
 	}()
 
 	h(v, vs)
+}
+
+func (v *VoiceConnection) failVoiceEncryption() {
+	v.Lock()
+	v.aead = nil
+	v.encryptionMode = ""
+	v.nonceCounter = 0
+	v.op4 = voiceOP4{}
+	v.Unlock()
+	v.Close()
+}
+
+func selectVoiceEncryptionMode(modes []string) (string, error) {
+	hasXChaCha := false
+	for _, mode := range modes {
+		switch mode {
+		case voiceModeAES256GCMRTPSize:
+			return mode, nil
+		case voiceModeXChaCha20Poly1305RTPSize:
+			hasXChaCha = true
+		}
+	}
+	if hasXChaCha {
+		return voiceModeXChaCha20Poly1305RTPSize, nil
+	}
+	return "", fmt.Errorf("no supported voice encryption mode")
+}
+
+func newVoiceAEAD(mode string, secretKey []int) (cipher.AEAD, error) {
+	if len(secretKey) != chacha20poly1305.KeySize {
+		return nil, fmt.Errorf("invalid voice secret key length %d", len(secretKey))
+	}
+
+	key := make([]byte, len(secretKey))
+	for i, value := range secretKey {
+		if value < 0 || value > 255 {
+			return nil, fmt.Errorf("invalid voice secret key byte at index %d", i)
+		}
+		key[i] = byte(value)
+	}
+
+	switch mode {
+	case voiceModeAES256GCMRTPSize:
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, fmt.Errorf("creating aes cipher: %w", err)
+		}
+		aead, err := cipher.NewGCM(block)
+		if err != nil {
+			return nil, fmt.Errorf("creating aes-gcm: %w", err)
+		}
+		return aead, nil
+	case voiceModeXChaCha20Poly1305RTPSize:
+		aead, err := chacha20poly1305.NewX(key)
+		if err != nil {
+			return nil, fmt.Errorf("creating xchacha20-poly1305: %w", err)
+		}
+		return aead, nil
+	default:
+		return nil, fmt.Errorf("unsupported voice encryption mode %q", mode)
+	}
+}
+
+func setVoiceNonce(nonce []byte, counter uint32) {
+	binary.BigEndian.PutUint32(nonce[:4], counter)
 }
 
 func redactedVoiceData(data []byte) string {
@@ -824,7 +928,7 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 type voiceUDPData struct {
 	Address string `json:"address"` // Public IP of machine running this code
 	Port    uint16 `json:"port"`    // UDP Port of machine running this code
-	Mode    string `json:"mode"`    // always "xsalsa20_poly1305"
+	Mode    string `json:"mode"`
 }
 
 type voiceUDPD struct {
@@ -862,6 +966,9 @@ func (v *VoiceConnection) udpOpen() (err error) {
 
 	if v.endpoint == "" {
 		return fmt.Errorf("empty endpoint")
+	}
+	if v.encryptionMode == "" {
+		return fmt.Errorf("empty voice encryption mode")
 	}
 
 	host := v.op2.IP + ":" + strconv.Itoa(v.op2.Port)
@@ -931,8 +1038,7 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	// Take the data from above and send it back to Discord to finalize
 	// the UDP connection handshake.
 
-	// AEAD AES256-GCM (RTP Size)	aead_aes256_gcm_rtpsize	32-bit incremental integer value, appended to payload	Available (Preferred)
-	data := voiceUDPOp{1, voiceUDPD{"udp", voiceUDPData{ip, port, "aead_aes256_gcm_rtpsize"}}}
+	data := voiceUDPOp{1, voiceUDPD{"udp", voiceUDPData{ip, port, v.encryptionMode}}}
 
 	v.wsMutex.Lock()
 	err = v.wsConn.WriteJSON(data)
@@ -992,11 +1098,6 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		return
 	}
 
-	// VoiceConnection is now ready to receive audio packets
-	// TODO: this needs reviewing as I think there must be a better way.
-	v.Lock()
-	v.Ready = true
-	v.Unlock()
 	defer func() {
 		v.Lock()
 		v.Ready = false
@@ -1008,12 +1109,15 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	var recvbuf []byte
 	var ok bool
 	udpHeader := make([]byte, 12)
-	nonce := make([]byte, 12)
+	var nonce []byte
 
 	// build the parts that don't change in the udpHeader
 	udpHeader[0] = 0x80
 	udpHeader[1] = 0x78
-	binary.BigEndian.PutUint32(udpHeader[8:], v.op2.SSRC)
+	v.RLock()
+	ssrc := v.op2.SSRC
+	v.RUnlock()
+	binary.BigEndian.PutUint32(udpHeader[8:], ssrc)
 
 	// start a send loop that loops until buf chan is closed
 	ticker := time.NewTicker(time.Millisecond * time.Duration(size/(rate/1000)))
@@ -1047,15 +1151,21 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 
 		// encrypt the opus data
 		// add incrementing nonce counter as per discord's requirements
-		v.RLock()
+		v.Lock()
 		aead := v.aead
-		v.RUnlock()
+		nonceCounter := v.nonceCounter
+		if aead != nil {
+			v.nonceCounter++
+		}
+		v.Unlock()
 		if aead == nil {
 			continue
 		}
 
-		binary.LittleEndian.PutUint32(nonce[:4], v.nonceCounter)
-		v.nonceCounter++
+		if len(nonce) != aead.NonceSize() {
+			nonce = make([]byte, aead.NonceSize())
+		}
+		setVoiceNonce(nonce, nonceCounter)
 
 		sendbuf := aead.Seal(nil, nonce, recvbuf, udpHeader)
 		sendbuf = append(sendbuf, nonce[:4]...) // 4 byte nonce to ciphertext appended
@@ -1111,7 +1221,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 	}
 
 	recvbuf := make([]byte, 2048)
-	var nonce [12]byte
+	var nonce []byte
 
 	for {
 		rlen, err := udpConn.Read(recvbuf)
@@ -1188,16 +1298,18 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 		nonceCounter := payload[len(payload)-4:]
 		cipherTextPayload := payload[:len(payload)-4]
 
-		binary.LittleEndian.PutUint32(nonce[:4], binary.LittleEndian.Uint32(nonceCounter))
-
 		v.RLock()
 		aead := v.aead
 		v.RUnlock()
 		if aead == nil {
 			continue
 		}
+		if len(nonce) != aead.NonceSize() {
+			nonce = make([]byte, aead.NonceSize())
+		}
+		setVoiceNonce(nonce, binary.BigEndian.Uint32(nonceCounter))
 		// AAD must cover the unencrypted header portion.
-		if plain, err := aead.Open(nil, nonce[:], cipherTextPayload, recvbuf[:aadLen]); err == nil {
+		if plain, err := aead.Open(nil, nonce, cipherTextPayload, recvbuf[:aadLen]); err == nil {
 			// If header extensions are present, strip decrypted extension payload to get to Opus.
 			if extPayloadBytes > 0 {
 				if len(plain) < extPayloadBytes {
