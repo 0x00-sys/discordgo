@@ -9,6 +9,7 @@ package discordgo
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -850,6 +851,51 @@ func TestCurrentChannelFlagValuesAndJSON(t *testing.T) {
 			}
 			if string(encoded) != tt.wantJSON {
 				t.Fatalf("JSON = %s, want %s", encoded, tt.wantJSON)
+			}
+		})
+	}
+}
+
+func TestCurrentAutoModerationVariants(t *testing.T) {
+	constants := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{name: "member update event", got: int(AutoModerationEventMemberUpdate), want: 2},
+		{name: "mention spam trigger", got: int(AutoModerationEventTriggerMentionSpam), want: 5},
+		{name: "member profile trigger", got: int(AutoModerationEventTriggerMemberProfile), want: 6},
+		{name: "block member interaction action", got: int(AutoModerationRuleActionBlockMemberInteraction), want: 4},
+	}
+	for _, tt := range constants {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("value = %d, want %d", tt.got, tt.want)
+			}
+		})
+	}
+
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mention raid protection %t", enabled), func(t *testing.T) {
+			metadata := AutoModerationTriggerMetadata{MentionRaidProtectionEnabled: &enabled}
+			encoded, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatalf("json.Unmarshal payload returned error: %v", err)
+			}
+			if got := string(payload["mention_raid_protection_enabled"]); got != fmt.Sprint(enabled) {
+				t.Fatalf("mention_raid_protection_enabled = %s, want %t", got, enabled)
+			}
+
+			var decoded AutoModerationTriggerMetadata
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if decoded.MentionRaidProtectionEnabled == nil || *decoded.MentionRaidProtectionEnabled != enabled {
+				t.Fatalf("MentionRaidProtectionEnabled = %v, want %t", decoded.MentionRaidProtectionEnabled, enabled)
 			}
 		})
 	}

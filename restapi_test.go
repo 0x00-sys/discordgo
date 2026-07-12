@@ -1593,6 +1593,93 @@ func TestCurrentApplicationErrors(t *testing.T) {
 	}
 }
 
+func TestAutoModerationRuleCreateCurrentVariants(t *testing.T) {
+	disabled := false
+	tests := []struct {
+		name           string
+		rule           *AutoModerationRule
+		wantProtection *bool
+	}{
+		{
+			name: "member profile rule",
+			rule: &AutoModerationRule{
+				Name:        "profile",
+				EventType:   AutoModerationEventMemberUpdate,
+				TriggerType: AutoModerationEventTriggerMemberProfile,
+				TriggerMetadata: &AutoModerationTriggerMetadata{
+					KeywordFilter: []string{"blocked"},
+					RegexPatterns: []string{"^blocked$"},
+				},
+				Actions: []AutoModerationAction{{Type: AutoModerationRuleActionBlockMemberInteraction}},
+			},
+		},
+		{
+			name: "mention raid protection disabled",
+			rule: &AutoModerationRule{
+				Name:        "mentions",
+				EventType:   AutoModerationEventMessageSend,
+				TriggerType: AutoModerationEventTriggerMentionSpam,
+				TriggerMetadata: &AutoModerationTriggerMetadata{
+					MentionTotalLimit:            5,
+					MentionRaidProtectionEnabled: &disabled,
+				},
+				Actions: []AutoModerationAction{{Type: AutoModerationRuleActionBlockMessage}},
+			},
+			wantProtection: &disabled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPost {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodPost)
+				}
+				wantPath := "/api/v" + APIVersion + "/guilds/guild/auto-moderation/rules"
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				if got := r.Header.Get("X-Test"); got != "automod" {
+					t.Fatalf("X-Test = %q, want automod", got)
+				}
+
+				var payload AutoModerationRule
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("Decode returned error: %v", err)
+				}
+				if payload.EventType != tt.rule.EventType || payload.TriggerType != tt.rule.TriggerType || len(payload.Actions) != 1 || payload.Actions[0].Type != tt.rule.Actions[0].Type {
+					t.Fatalf("payload = %#v", payload)
+				}
+				if tt.wantProtection != nil && (payload.TriggerMetadata == nil || payload.TriggerMetadata.MentionRaidProtectionEnabled == nil || *payload.TriggerMetadata.MentionRaidProtectionEnabled != *tt.wantProtection) {
+					t.Fatalf("MentionRaidProtectionEnabled = %#v", payload.TriggerMetadata)
+				}
+				body, err := json.Marshal(&payload)
+				if err != nil {
+					t.Fatalf("json.Marshal returned error: %v", err)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(bytes.NewReader(body)),
+					Request:    r,
+				}, nil
+			})
+
+			created, err := session.AutoModerationRuleCreate("guild", tt.rule, WithHeader("X-Test", "automod"))
+			if err != nil {
+				t.Fatalf("AutoModerationRuleCreate returned error: %v", err)
+			}
+			if created.EventType != tt.rule.EventType || created.TriggerType != tt.rule.TriggerType || created.Actions[0].Type != tt.rule.Actions[0].Type {
+				t.Fatalf("created rule = %#v", created)
+			}
+		})
+	}
+}
+
 func TestWebhookDeleteWithTokenAllowsNoContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
