@@ -1879,6 +1879,24 @@ func (s *Session) GuildVanityURL(guildID string, options ...RequestOption) (st *
 	return
 }
 
+// GuildWidget returns the public widget data for a guild.
+func (s *Session) GuildWidget(guildID string, options ...RequestOption) (*GuildWidget, error) {
+	endpoint := EndpointGuildWidgetJSON(guildID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var widget *GuildWidget
+	if err = unmarshal(body, &widget); err != nil {
+		return nil, err
+	}
+	if widget == nil {
+		return nil, fmt.Errorf("%w: guild widget response is null", ErrJSONUnmarshal)
+	}
+	return widget, nil
+}
+
 // GuildRoles returns all roles for a given guild.
 // guildID   : The ID of a Guild.
 func (s *Session) GuildRoles(guildID string, options ...RequestOption) (st []*Role, err error) {
