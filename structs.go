@@ -45,6 +45,11 @@ type Session struct {
 	// Should voice connections reconnect on a session reconnect.
 	ShouldReconnectVoiceOnSessionError bool
 
+	// VoiceDAVESessionFactory creates the optional backend used for Discord's
+	// DAVE end-to-end voice encryption. When nil, voice identifies with DAVE
+	// protocol version 0.
+	VoiceDAVESessionFactory VoiceDAVESessionFactory
+
 	// Should the session retry requests when rate limited.
 	ShouldRetryOnRateLimit bool
 

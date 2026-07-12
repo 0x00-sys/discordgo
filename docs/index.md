@@ -20,6 +20,7 @@ gamers that's free, secure, and works on both your desktop and phone.
 
 ### Learn More
 * Check out the [Getting Started](GettingStarted.md) section
+* Configure [DAVE voice encryption](DAVE.md)
 * Read the reference docs on [Godoc](https://godoc.org/github.com/bwmarrin/discordgo) or [GoWalker](https://gowalker.org/github.com/bwmarrin/discordgo)
 * Try the [examples](https://github.com/bwmarrin/discordgo/tree/master/examples)
 * Explore [Awesome DiscordGo](https://github.com/bwmarrin/discordgo/wiki/Awesome-DiscordGo)

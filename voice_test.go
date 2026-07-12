@@ -1207,7 +1207,7 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 		if err := json.Unmarshal(message, &heartbeat); err != nil {
 			t.Fatalf("json.Unmarshal returned error: %v", err)
 		}
-		if heartbeat.Op != 3 || heartbeat.Data.Timestamp <= 0 || heartbeat.Data.SequenceAck == nil || *heartbeat.Data.SequenceAck != 10 {
+		if heartbeat.Op != 3 || heartbeat.Data.Timestamp <= 0 || heartbeat.Data.SequenceAck != 10 {
 			t.Fatalf("heartbeat = %#v, want op 3 with seq_ack 10", heartbeat)
 		}
 	case <-time.After(time.Second):
@@ -1215,13 +1215,14 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 	}
 }
 
-func TestVoiceHeartbeatOmitsUnsetSequence(t *testing.T) {
-	payload, err := json.Marshal(voiceHeartbeatOp{Op: 3, Data: voiceHeartbeatData{Timestamp: 1}})
+func TestVoiceHeartbeatIncludesUnsetSequence(t *testing.T) {
+	vc := &VoiceConnection{}
+	payload, err := json.Marshal(voiceHeartbeatOp{Op: 3, Data: voiceHeartbeatData{Timestamp: 1, SequenceAck: vc.voiceSequenceAck()}})
 	if err != nil {
 		t.Fatalf("json.Marshal returned error: %v", err)
 	}
-	if strings.Contains(string(payload), "seq_ack") {
-		t.Fatalf("heartbeat = %s, want seq_ack omitted", payload)
+	if !strings.Contains(string(payload), `"seq_ack":-1`) {
+		t.Fatalf("heartbeat = %s, want seq_ack -1", payload)
 	}
 }
 
