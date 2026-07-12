@@ -14,6 +14,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -32,6 +33,7 @@ import (
 // A VoiceConnection struct holds all the data and functions related to a Discord Voice Connection.
 type VoiceConnection struct {
 	sync.RWMutex
+	lifecycleMu sync.Mutex
 
 	Debug         bool // If true, print extra logging -- DEPRECATED
 	LogLevel      int
@@ -72,6 +74,16 @@ type VoiceConnection struct {
 	sequence       int64
 	sequenceSet    bool
 
+	daveMu                      sync.Mutex
+	dave                        VoiceDAVESession
+	daveGeneration              uint64
+	daveMaxProtocolVersion      int
+	daveProtocolVersion         uint16
+	davePreparedProtocolVersion uint16
+	davePendingTransitions      map[uint16]uint16
+	daveUsers                   map[string]struct{}
+	daveSSRCToUserID            map[uint32]string
+
 	op4 voiceOP4
 	op2 voiceOP2
 
@@ -84,7 +96,6 @@ type VoiceSpeakingUpdateHandler func(vc *VoiceConnection, vs *VoiceSpeakingUpdat
 
 const (
 	voiceGatewayVersion               = 8
-	voiceMaxDaveProtocolVersion       = 0
 	voiceModeAES256GCMRTPSize         = "aead_aes256_gcm_rtpsize"
 	voiceModeXChaCha20Poly1305RTPSize = "aead_xchacha20_poly1305_rtpsize"
 )
@@ -273,11 +284,12 @@ func (v *VoiceConnection) Disconnect() (err error) {
 
 // Close closes the voice ws and udp connections
 func (v *VoiceConnection) Close() {
+	v.lifecycleMu.Lock()
+	defer v.lifecycleMu.Unlock()
 
 	v.log(LogInformational, "called")
 
 	v.Lock()
-	defer v.Unlock()
 
 	v.Ready = false
 	v.speaking = false
@@ -318,6 +330,12 @@ func (v *VoiceConnection) Close() {
 
 		v.wsConn = nil
 	}
+	v.Unlock()
+
+	// Media goroutines must be stopped before the DAVE session is cleared;
+	// otherwise an in-flight sender could observe protocol version 0 and leak
+	// a plaintext frame during teardown.
+	v.closeVoiceDAVE()
 }
 
 // AddHandler adds a Handler for VoiceSpeakingUpdate events.
@@ -376,8 +394,9 @@ func (v *VoiceSpeakingUpdate) UnmarshalJSON(data []byte) error {
 // A voiceOP4 stores the data for the voice operation 4 websocket event
 // which provides the negotiated transport encryption key.
 type voiceOP4 struct {
-	SecretKey []int  `json:"secret_key"`
-	Mode      string `json:"mode"`
+	SecretKey           []int  `json:"secret_key"`
+	Mode                string `json:"mode"`
+	DAVEProtocolVersion uint16 `json:"dave_protocol_version"`
 }
 
 // A voiceOP2 stores the data for the voice operation 2 websocket event
@@ -422,15 +441,16 @@ func (v *VoiceConnection) waitUntilConnected() error {
 // after VoiceChannelJoin is used and the data VOICE websocket events
 // are captured.
 func (v *VoiceConnection) open() (err error) {
+	v.lifecycleMu.Lock()
+	defer v.lifecycleMu.Unlock()
 
 	v.log(LogInformational, "called")
 
 	v.Lock()
-	defer v.Unlock()
-
 	// Don't open a websocket if one is already open
 	if v.wsConn != nil {
 		v.log(LogWarning, "refusing to overwrite non-nil websocket")
+		v.Unlock()
 		return
 	}
 
@@ -442,6 +462,7 @@ func (v *VoiceConnection) open() (err error) {
 		}
 
 		if i > 20 { // only loop for up to 1 second total
+			v.Unlock()
 			return fmt.Errorf("did not receive voice Session ID in time")
 		}
 		// Release the lock, so sessionID can be populated upon receiving a VoiceStateUpdate event.
@@ -450,42 +471,94 @@ func (v *VoiceConnection) open() (err error) {
 		i++
 		v.Lock()
 	}
+	session := v.session
+	userID := v.UserID
+	channelID := v.ChannelID
+	v.Unlock()
+	if session == nil {
+		return ErrWSNotFound
+	}
+
+	session.RLock()
+	factory := session.VoiceDAVESessionFactory
+	dialer := session.Dialer
+	session.RUnlock()
+	if dialer == nil {
+		return ErrWSNotFound
+	}
+
+	daveSession, daveCallbacks, maxDAVEVersion, err := v.newVoiceDAVESession(factory, userID, channelID)
+	if err != nil {
+		return err
+	}
+	closeUninstalledDAVE := func() {
+		if daveSession == nil {
+			return
+		}
+		if closeErr := daveSession.Close(); closeErr != nil {
+			v.log(LogError, "DAVE close error, %s", closeErr)
+		}
+		daveSession = nil
+	}
+
+	v.Lock()
+	if v.wsConn != nil {
+		v.log(LogWarning, "refusing to overwrite non-nil websocket")
+		v.Unlock()
+		closeUninstalledDAVE()
+		return nil
+	}
+	if v.disconnecting || v.session != session || v.UserID != userID || v.ChannelID != channelID {
+		v.Unlock()
+		closeUninstalledDAVE()
+		return ErrWSNotFound
+	}
 
 	// Connect to VoiceConnection Websocket
 	v.sequence = 0
 	v.sequenceSet = false
 	vg := "wss://" + strings.TrimSuffix(v.endpoint, ":80") + "?v=" + strconv.Itoa(voiceGatewayVersion)
 	v.log(LogInformational, "connecting to voice endpoint %s", vg)
-	v.wsConn, _, err = v.session.Dialer.Dial(vg, nil)
+	wsConn, _, err := dialer.Dial(vg, nil)
 	if err != nil {
+		v.Unlock()
+		closeUninstalledDAVE()
 		v.log(LogWarning, "error connecting to voice endpoint %s, %s", vg, err)
 		v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 		return
 	}
+	v.wsConn = wsConn
+	v.installVoiceDAVESessionLocked(daveSession, daveCallbacks, maxDAVEVersion)
 
 	type voiceHandshakeData struct {
 		ServerID               string `json:"server_id"`
 		UserID                 string `json:"user_id"`
 		SessionID              string `json:"session_id"`
 		Token                  string `json:"token"`
-		MaxDaveProtocolVersion int    `json:"max_dave_protocol_version"`
+		MaxDAVEProtocolVersion int    `json:"max_dave_protocol_version"`
 	}
 	type voiceHandshakeOp struct {
 		Op   int                `json:"op"` // Always 0
 		Data voiceHandshakeData `json:"d"`
 	}
-	data := voiceHandshakeOp{0, voiceHandshakeData{v.GuildID, v.UserID, v.sessionID, v.token, voiceMaxDaveProtocolVersion}}
+	data := voiceHandshakeOp{0, voiceHandshakeData{v.GuildID, v.UserID, v.sessionID, v.token, maxDAVEVersion}}
 
 	v.wsMutex.Lock()
-	err = v.wsConn.WriteJSON(data)
+	err = wsConn.WriteJSON(data)
 	v.wsMutex.Unlock()
 	if err != nil {
+		v.wsConn = nil
+		v.Unlock()
+		_ = wsConn.Close()
+		v.closeVoiceDAVE()
 		v.log(LogWarning, "error sending init packet, %s", err)
 		return
 	}
 
 	v.close = make(chan struct{})
-	go v.wsListen(v.wsConn, v.close)
+	closeChan := v.close
+	v.Unlock()
+	go v.wsListen(wsConn, closeChan)
 
 	// add loop/check for Ready bool here?
 	// then return false if not ready?
@@ -501,7 +574,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 	v.log(LogInformational, "called")
 
 	for {
-		_, message, err := wsConn.ReadMessage()
+		messageType, message, err := wsConn.ReadMessage()
 		if err != nil {
 			select {
 			case <-close:
@@ -512,15 +585,18 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 			closeErr, isCloseErr := err.(*websocket.CloseError)
 
 			// 4014 indicates a manual disconnection by someone in the guild;
+			// 4017 indicates that the server requires DAVE support;
 			// 4021 indicates that the voice connection was dropped due to rate limiting;
 			// 4022 indicates that the call was terminated.
 			// we shouldn't reconnect.
-			if isCloseErr && (closeErr.Code == 4014 || closeErr.Code == 4021 || closeErr.Code == 4022) {
+			if isCloseErr && (closeErr.Code == 4014 || closeErr.Code == 4017 || closeErr.Code == 4021 || closeErr.Code == 4022) {
 				v.log(LogInformational, "received %d manual disconnection", closeErr.Code)
 
 				// Abandon the voice WS connection
 				v.Lock()
-				v.wsConn = nil
+				if v.wsConn == wsConn {
+					v.wsConn = nil
+				}
 				v.Unlock()
 
 				if closeErr.Code == 4014 {
@@ -556,27 +632,29 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 			// Detect if we have been closed manually. If a Close() has already
 			// happened, the websocket we are listening on will be different to the
 			// current session.
-			v.RLock()
+			v.Lock()
 			sameConnection := v.wsConn == wsConn
-			v.RUnlock()
+			if sameConnection {
+				v.wsConn = nil
+			}
+			v.Unlock()
 			if sameConnection {
 
 				v.log(LogError, "voice endpoint %s websocket closed unexpectedly, %s", v.endpoint, err)
 
 				// Start reconnect goroutine then exit.
-				go v.reconnect()
+				canResume := !isCloseErr || closeErr.Code == 4015 || closeErr.Code < 4000
+				go v.reconnectWithResume(canResume)
 			}
 			return
 		}
-
-		v.updateSequence(message)
 
 		// Pass received message to voice event handler
 		select {
 		case <-close:
 			return
 		default:
-			go v.onEvent(message)
+			v.dispatchVoiceMessage(messageType, message)
 		}
 	}
 }
@@ -588,11 +666,23 @@ func (v *VoiceConnection) updateSequence(message []byte) {
 	if err := json.Unmarshal(message, &payload); err != nil || payload.Sequence == nil {
 		return
 	}
+	v.updateVoiceSequence(*payload.Sequence)
+}
 
+func (v *VoiceConnection) updateVoiceSequence(sequence int64) {
 	v.Lock()
-	v.sequence = *payload.Sequence
+	v.sequence = sequence
 	v.sequenceSet = true
 	v.Unlock()
+}
+
+func (v *VoiceConnection) voiceSequenceAck() int64 {
+	v.RLock()
+	defer v.RUnlock()
+	if !v.sequenceSet {
+		return -1
+	}
+	return v.sequence
 }
 
 // wsEvent handles any voice websocket events. This is only called by the
@@ -632,6 +722,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		v.op4 = voiceOP4{}
 		v.Ready = false
 		v.Unlock()
+		v.onDAVELocalSSRC(op2.SSRC)
 
 		// Start the UDP connection
 		err = v.udpOpen()
@@ -698,6 +789,11 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			v.Ready = true
 		}
 		v.Unlock()
+		if err := v.onDAVESessionDescription(op4.DAVEProtocolVersion); err != nil {
+			v.log(LogError, "OP4 DAVE setup error, %s", err)
+			v.failVoiceEncryption()
+			return
+		}
 
 		if startTransport {
 			go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
@@ -709,6 +805,13 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		return
 
 	case 5:
+		voiceSpeakingUpdate := &VoiceSpeakingUpdate{}
+		if err := json.Unmarshal(e.RawData, voiceSpeakingUpdate); err != nil {
+			v.log(LogError, "OP5 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
+			return
+		}
+		v.onDAVESpeakingUpdate(voiceSpeakingUpdate)
+
 		v.RLock()
 		handlers := append([]VoiceSpeakingUpdateHandler(nil), v.voiceSpeakingUpdateHandlers...)
 		v.RUnlock()
@@ -717,15 +820,32 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
-		voiceSpeakingUpdate := &VoiceSpeakingUpdate{}
-		if err := json.Unmarshal(e.RawData, voiceSpeakingUpdate); err != nil {
-			v.log(LogError, "OP5 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
-			return
-		}
-
 		for _, h := range handlers {
 			v.callVoiceSpeakingUpdateHandler(h, voiceSpeakingUpdate)
 		}
+
+	case 9: // RESUMED
+		return
+
+	case 11: // CLIENTS CONNECT
+		v.onDAVEClientsConnect(e.RawData)
+		return
+
+	case 13: // CLIENT DISCONNECT
+		v.onDAVEClientDisconnect(e.RawData)
+		return
+
+	case voiceOpDAVEPrepareTransition:
+		v.onDAVEPrepareTransition(e.RawData)
+		return
+
+	case voiceOpDAVEExecuteTransition:
+		v.onDAVEExecuteTransition(e.RawData)
+		return
+
+	case voiceOpDAVEPrepareEpoch:
+		v.onDAVEPrepareEpoch(e.RawData)
+		return
 
 	case 8:
 		hello := voiceOP8{}
@@ -873,8 +993,8 @@ type voiceHeartbeatOp struct {
 }
 
 type voiceHeartbeatData struct {
-	Timestamp   int64  `json:"t"`
-	SequenceAck *int64 `json:"seq_ack,omitempty"`
+	Timestamp   int64 `json:"t"`
+	SequenceAck int64 `json:"seq_ack"`
 }
 
 // NOTE :: When a guild voice server changes how do we shut this down
@@ -894,13 +1014,7 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 	defer ticker.Stop()
 	for {
 		v.log(LogDebug, "sending heartbeat packet")
-		var sequenceAck *int64
-		v.RLock()
-		if v.sequenceSet {
-			sequence := v.sequence
-			sequenceAck = &sequence
-		}
-		v.RUnlock()
+		sequenceAck := v.voiceSequenceAck()
 		v.wsMutex.Lock()
 		err = wsConn.WriteJSON(voiceHeartbeatOp{3, voiceHeartbeatData{
 			Timestamp:   time.Now().UnixNano() / int64(time.Millisecond),
@@ -1108,6 +1222,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	var timestamp uint32
 	var recvbuf []byte
 	var ok bool
+	var err error
 	udpHeader := make([]byte, 12)
 	var nonce []byte
 
@@ -1149,6 +1264,33 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		binary.BigEndian.PutUint16(udpHeader[2:], sequence)
 		binary.BigEndian.PutUint32(udpHeader[4:], timestamp)
 
+		var daveFrame []byte
+		waitedForDAVE := false
+		for {
+			daveFrame, err = v.encryptDAVEFrame(ssrc, recvbuf)
+			if !errors.Is(err, errDAVETransitionPending) {
+				break
+			}
+			waitedForDAVE = true
+			select {
+			case <-close:
+				return
+			case <-ticker.C:
+			}
+		}
+		if err != nil {
+			v.log(LogDebug, "DAVE encrypt error, %s", err)
+			if !waitedForDAVE {
+				select {
+				case <-close:
+					return
+				case <-ticker.C:
+				}
+			}
+			continue
+		}
+		recvbuf = daveFrame
+
 		// encrypt the opus data
 		// add incrementing nonce counter as per discord's requirements
 		v.Lock()
@@ -1173,13 +1315,21 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 
 		// block here until we're exactly at the right time :)
 		// Then send rtp audio packet to Discord over UDP
-		select {
-		case <-close:
-			return
-		case <-ticker.C:
-			// continue
+		if !waitedForDAVE {
+			select {
+			case <-close:
+				return
+			case <-ticker.C:
+				// continue
+			}
+		} else {
+			select {
+			case <-close:
+				return
+			default:
+			}
 		}
-		_, err := udpConn.Write(sendbuf)
+		_, err = udpConn.Write(sendbuf)
 
 		if err != nil {
 			v.log(LogError, "udp write error, %s", err)
@@ -1237,7 +1387,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 				v.log(LogError, "udp read error, %s, %s", v.endpoint, err)
 				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 
-				go v.reconnect()
+				go v.reconnectWithResume(false)
 			}
 			return
 		}
@@ -1322,6 +1472,12 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 			continue
 		}
 
+		p.Opus, err = v.decryptDAVEFrame(p.SSRC, p.Opus)
+		if err != nil {
+			v.log(LogDebug, "DAVE decrypt error for ssrc %d, %s", p.SSRC, err)
+			continue
+		}
+
 		if c != nil {
 			select {
 			case c <- &p:
@@ -1338,6 +1494,10 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 // It will be cleaned up once a proven stable option is flushed out.
 // aka: this is ugly shit code, please don't judge too harshly.
 func (v *VoiceConnection) reconnect() {
+	v.reconnectWithResume(true)
+}
+
+func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 
 	v.log(LogInformational, "called")
 
@@ -1355,6 +1515,15 @@ func (v *VoiceConnection) reconnect() {
 		v.reconnecting = false
 		v.Unlock()
 	}()
+
+	if canResume && v.canResumeVoice() && v.isSessionVoiceConnection() {
+		if err := v.resumeVoice(); err == nil {
+			v.log(LogInformational, "successfully resumed voice websocket")
+			return
+		} else {
+			v.log(LogWarning, "could not resume voice websocket, %s", err)
+		}
+	}
 
 	// Close any currently open connections
 	v.Close()
