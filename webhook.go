@@ -166,6 +166,12 @@ type Webhook struct {
 
 	// ApplicationID is the bot/OAuth2 application that created this webhook
 	ApplicationID string `json:"application_id,omitempty"`
+	// SourceGuild is the guild of the followed channel for channel follower webhooks.
+	SourceGuild *Guild `json:"source_guild,omitempty"`
+	// SourceChannel is the followed channel for channel follower webhooks.
+	SourceChannel *Channel `json:"source_channel,omitempty"`
+	// URL is the webhook execution URL returned by the webhooks OAuth2 flow.
+	URL string `json:"url,omitempty"`
 }
 
 // WebhookType is the type of Webhook (see WebhookType* consts) in the Webhook struct
@@ -176,6 +182,7 @@ type WebhookType int
 const (
 	WebhookTypeIncoming        WebhookType = 1
 	WebhookTypeChannelFollower WebhookType = 2
+	WebhookTypeApplication     WebhookType = 3
 )
 
 // WebhookParams is a struct for webhook params, used in the WebhookExecute command.

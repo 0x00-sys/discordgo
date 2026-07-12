@@ -50,6 +50,35 @@ func TestApplicationWebhookConstants(t *testing.T) {
 	}
 }
 
+func TestWebhookCurrentFields(t *testing.T) {
+	data := []byte(`{
+		"id":"webhook",
+		"type":2,
+		"guild_id":"guild",
+		"channel_id":"channel",
+		"application_id":null,
+		"source_guild":{"id":"source-guild","name":"Source Guild","icon":"icon"},
+		"source_channel":{"id":"source-channel","name":"announcements"},
+		"url":"https://discord.com/api/webhooks/webhook/token"
+	}`)
+	var webhook Webhook
+	if err := json.Unmarshal(data, &webhook); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if webhook.Type != WebhookTypeChannelFollower || webhook.SourceGuild == nil || webhook.SourceGuild.ID != "source-guild" || webhook.SourceGuild.Name != "Source Guild" {
+		t.Fatalf("SourceGuild = %#v", webhook.SourceGuild)
+	}
+	if webhook.SourceChannel == nil || webhook.SourceChannel.ID != "source-channel" || webhook.SourceChannel.Name != "announcements" {
+		t.Fatalf("SourceChannel = %#v", webhook.SourceChannel)
+	}
+	if webhook.URL != "https://discord.com/api/webhooks/webhook/token" {
+		t.Fatalf("URL = %q", webhook.URL)
+	}
+	if WebhookTypeApplication != 3 {
+		t.Fatalf("WebhookTypeApplication = %d, want 3", WebhookTypeApplication)
+	}
+}
+
 func TestApplicationWebhookEventTypes(t *testing.T) {
 	tests := []struct {
 		name      string
