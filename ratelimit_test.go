@@ -744,6 +744,9 @@ func TestThreadRoutesUseStableBuckets(t *testing.T) {
 	if _, err := session.ThreadMembers("thread", 50, true, "after-user"); err != nil {
 		t.Fatalf("ThreadMembers returned error: %v", err)
 	}
+	if _, err := session.ThreadsSearch("channel", &ThreadSearchOptions{Name: "needle", Tags: []string{"tag"}}); err != nil {
+		t.Fatalf("ThreadsSearch returned error: %v", err)
+	}
 	if _, err := session.ThreadsArchived("channel", &before, 50); err != nil {
 		t.Fatalf("ThreadsArchived returned error: %v", err)
 	}
@@ -758,6 +761,7 @@ func TestThreadRoutesUseStableBuckets(t *testing.T) {
 		EndpointChannelMessageThread("channel", ""),
 		EndpointThreadMember("thread", ""),
 		EndpointThreadMembers("thread"),
+		EndpointChannelThreadsSearch("channel"),
 		EndpointChannelPublicArchivedThreads("channel"),
 		EndpointChannelPrivateArchivedThreads("channel"),
 		EndpointChannelJoinedPrivateArchivedThreads("channel"),
@@ -767,7 +771,7 @@ func TestThreadRoutesUseStableBuckets(t *testing.T) {
 		}
 	}
 
-	for _, value := range []string{"message-one", "message-two", "member-one", "member-two", "member-three", "after-user", "?"} {
+	for _, value := range []string{"message-one", "message-two", "member-one", "member-two", "member-three", "after-user", "needle", "tag", "?"} {
 		assertRateLimitBucketsDoNotContain(t, session, value)
 	}
 }

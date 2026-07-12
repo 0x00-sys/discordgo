@@ -61,6 +61,29 @@ type RESTError struct {
 	Message *APIErrorMessage // Message may be nil.
 }
 
+// ThreadSearchIndexNotReadyError is returned when Discord is still indexing
+// the channel for thread search.
+type ThreadSearchIndexNotReadyError struct {
+	RESTError        *RESTError `json:"-"`
+	Message          string     `json:"message"`
+	Code             int        `json:"code"`
+	DocumentsIndexed int        `json:"documents_indexed"`
+	RetryAfter       int        `json:"retry_after"`
+}
+
+// Error returns the underlying REST error when available.
+func (e *ThreadSearchIndexNotReadyError) Error() string {
+	if e.RESTError != nil {
+		return e.RESTError.Error()
+	}
+	return e.Message
+}
+
+// Unwrap returns the underlying REST error.
+func (e *ThreadSearchIndexNotReadyError) Unwrap() error {
+	return e.RESTError
+}
+
 // newRestError returns a new REST API error.
 func newRestError(req *http.Request, resp *http.Response, body []byte) *RESTError {
 	req = redactedRequest(req)
@@ -4195,6 +4218,73 @@ func (s *Session) GuildThreadsActive(guildID string, options ...RequestOption) (
 
 	err = unmarshal(body, &threads)
 	return
+}
+
+// ThreadsSearch returns threads matching the search options in a channel.
+func (s *Session) ThreadsSearch(channelID string, opts *ThreadSearchOptions, options ...RequestOption) (result *ThreadSearchResult, err error) {
+	endpoint := EndpointChannelThreadsSearch(channelID)
+	uri := endpoint
+
+	if opts != nil {
+		queryParams := url.Values{}
+		if opts.Name != "" {
+			queryParams.Set("name", opts.Name)
+		}
+		if opts.Slop != nil {
+			queryParams.Set("slop", strconv.Itoa(*opts.Slop))
+		}
+		if opts.MinID != "" {
+			queryParams.Set("min_id", opts.MinID)
+		}
+		if opts.MaxID != "" {
+			queryParams.Set("max_id", opts.MaxID)
+		}
+		for _, tag := range opts.Tags {
+			queryParams.Add("tag", tag)
+		}
+		if opts.TagSetting != "" {
+			queryParams.Set("tag_setting", string(opts.TagSetting))
+		}
+		if opts.Archived != nil {
+			queryParams.Set("archived", strconv.FormatBool(*opts.Archived))
+		}
+		if opts.SortBy != "" {
+			queryParams.Set("sort_by", string(opts.SortBy))
+		}
+		if opts.SortOrder != "" {
+			queryParams.Set("sort_order", string(opts.SortOrder))
+		}
+		if opts.Limit > 0 {
+			queryParams.Set("limit", strconv.Itoa(opts.Limit))
+		}
+		if opts.Offset > 0 {
+			queryParams.Set("offset", strconv.Itoa(opts.Offset))
+		}
+		if len(queryParams) > 0 {
+			uri += "?" + queryParams.Encode()
+		}
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
+	if err != nil {
+		var restErr *RESTError
+		if errors.As(err, &restErr) && restErr.Response != nil && restErr.Response.StatusCode == http.StatusAccepted {
+			var indexErr *ThreadSearchIndexNotReadyError
+			if decodeErr := unmarshal(restErr.ResponseBody, &indexErr); decodeErr == nil && indexErr != nil {
+				indexErr.RESTError = restErr
+				return nil, indexErr
+			}
+		}
+		return nil, err
+	}
+
+	if err = unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, fmt.Errorf("%w: thread search response is null", ErrJSONUnmarshal)
+	}
+	return result, nil
 }
 
 // ThreadsArchived returns archived threads for specified channel.
