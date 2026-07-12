@@ -253,6 +253,11 @@ type ApplicationEditParams struct {
 	EventWebhooksTypes             *[]ApplicationWebhookEventType                                   `json:"event_webhooks_types,omitempty"`
 }
 
+// ActivitiesAttachmentResponse stores an uploaded application attachment.
+type ActivitiesAttachmentResponse struct {
+	Attachment *MessageAttachment `json:"attachment"`
+}
+
 // MarshalJSON ensures nullable application fields can be explicitly cleared.
 func (p ApplicationEditParams) MarshalJSON() ([]byte, error) {
 	type applicationEditParams ApplicationEditParams
