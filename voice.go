@@ -78,17 +78,37 @@ type VoiceConnection struct {
 // VoiceSpeakingUpdate event
 type VoiceSpeakingUpdateHandler func(vc *VoiceConnection, vs *VoiceSpeakingUpdate)
 
+// VoiceSpeakingFlags describes the type of audio being transmitted.
+type VoiceSpeakingFlags int
+
+// Valid VoiceSpeakingFlags values.
+const (
+	VoiceSpeakingFlagMicrophone VoiceSpeakingFlags = 1 << iota
+	VoiceSpeakingFlagSoundshare
+	VoiceSpeakingFlagPriority
+)
+
 // Speaking sends a speaking notification to Discord over the voice websocket.
 // This must be sent as true prior to sending audio and should be set to false
 // once finished sending audio.
 // b : Send true if speaking, false if not.
 func (v *VoiceConnection) Speaking(b bool) (err error) {
+	flags := VoiceSpeakingFlags(0)
+	if b {
+		flags = VoiceSpeakingFlagMicrophone
+	}
+	return v.SpeakingFlags(flags)
+}
 
-	v.log(LogDebug, "called (%t)", b)
+// SpeakingFlags sends a speaking notification with the provided audio flags.
+func (v *VoiceConnection) SpeakingFlags(flags VoiceSpeakingFlags) (err error) {
+
+	v.log(LogDebug, "called (%d)", flags)
 
 	type voiceSpeakingData struct {
-		Speaking bool `json:"speaking"`
-		Delay    int  `json:"delay"`
+		Speaking VoiceSpeakingFlags `json:"speaking"`
+		Delay    int                `json:"delay"`
+		SSRC     uint32             `json:"ssrc"`
 	}
 
 	type voiceSpeakingOp struct {
@@ -101,12 +121,13 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 	// Close(), reconnect() and the heartbeat behind v.Lock.
 	v.RLock()
 	wsConn := v.wsConn
+	ssrc := v.op2.SSRC
 	v.RUnlock()
 	if wsConn == nil {
 		return fmt.Errorf("no VoiceConnection websocket")
 	}
 
-	data := voiceSpeakingOp{5, voiceSpeakingData{b, 0}}
+	data := voiceSpeakingOp{5, voiceSpeakingData{flags, 0, ssrc}}
 	v.wsMutex.Lock()
 	err = wsConn.WriteJSON(data)
 	v.wsMutex.Unlock()
@@ -119,7 +140,7 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 		return
 	}
 
-	v.speaking = b
+	v.speaking = flags != 0
 
 	return
 }
@@ -298,9 +319,43 @@ func (v *VoiceConnection) AddHandler(h VoiceSpeakingUpdateHandler) {
 
 // VoiceSpeakingUpdate is a struct for a VoiceSpeakingUpdate event.
 type VoiceSpeakingUpdate struct {
-	UserID   string `json:"user_id"`
-	SSRC     int    `json:"ssrc"`
-	Speaking bool   `json:"speaking"`
+	UserID        string             `json:"user_id"`
+	SSRC          int                `json:"ssrc"`
+	Speaking      bool               `json:"-"`
+	SpeakingFlags VoiceSpeakingFlags `json:"speaking"`
+}
+
+// UnmarshalJSON supports current integer speaking flags and legacy boolean payloads.
+func (v *VoiceSpeakingUpdate) UnmarshalJSON(data []byte) error {
+	var payload struct {
+		UserID   string          `json:"user_id"`
+		SSRC     int             `json:"ssrc"`
+		Speaking json.RawMessage `json:"speaking"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+
+	var flags VoiceSpeakingFlags
+	if len(payload.Speaking) > 0 {
+		if payload.Speaking[0] == 't' || payload.Speaking[0] == 'f' {
+			var speaking bool
+			if err := json.Unmarshal(payload.Speaking, &speaking); err != nil {
+				return err
+			}
+			if speaking {
+				flags = VoiceSpeakingFlagMicrophone
+			}
+		} else if err := json.Unmarshal(payload.Speaking, &flags); err != nil {
+			return err
+		}
+	}
+
+	v.UserID = payload.UserID
+	v.SSRC = payload.SSRC
+	v.SpeakingFlags = flags
+	v.Speaking = flags != 0
+	return nil
 }
 
 // ------------------------------------------------------------------------------------------------

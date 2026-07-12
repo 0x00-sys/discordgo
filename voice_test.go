@@ -2,6 +2,7 @@ package discordgo
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -423,6 +424,107 @@ func TestRedactedVoiceDataInvalidJSON(t *testing.T) {
 
 	if got := redactedVoiceData(data); got != string(data) {
 		t.Fatalf("redactedVoiceData() = %q, want %q", got, string(data))
+	}
+}
+
+func TestVoiceSpeakingPayloadCurrentFlags(t *testing.T) {
+	messages := make(chan []byte, 2)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for i := 0; i < 2; i++ {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			messages <- message
+		}
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	vc := &VoiceConnection{wsConn: conn, op2: voiceOP2{SSRC: 42}}
+	flags := VoiceSpeakingFlagMicrophone | VoiceSpeakingFlagPriority
+	if err := vc.SpeakingFlags(flags); err != nil {
+		t.Fatalf("SpeakingFlags returned error: %v", err)
+	}
+	vc.RLock()
+	if !vc.speaking {
+		vc.RUnlock()
+		t.Fatal("speaking = false after non-zero flags")
+	}
+	vc.RUnlock()
+
+	if err := vc.Speaking(false); err != nil {
+		t.Fatalf("Speaking returned error: %v", err)
+	}
+	vc.RLock()
+	if vc.speaking {
+		vc.RUnlock()
+		t.Fatal("speaking = true after Speaking(false)")
+	}
+	vc.RUnlock()
+
+	for _, want := range []VoiceSpeakingFlags{flags, 0} {
+		select {
+		case message := <-messages:
+			var payload struct {
+				Op   int `json:"op"`
+				Data struct {
+					Speaking VoiceSpeakingFlags `json:"speaking"`
+					Delay    int                `json:"delay"`
+					SSRC     uint32             `json:"ssrc"`
+				} `json:"d"`
+			}
+			if err := json.Unmarshal(message, &payload); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if payload.Op != 5 || payload.Data.Speaking != want || payload.Data.Delay != 0 || payload.Data.SSRC != 42 {
+				t.Fatalf("payload = %#v, want speaking=%d delay=0 ssrc=42", payload, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for speaking payload")
+		}
+	}
+}
+
+func TestVoiceSpeakingUpdateCurrentAndLegacyPayloads(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      string
+		wantFlags    VoiceSpeakingFlags
+		wantSpeaking bool
+	}{
+		{name: "current bitmask", payload: `{"user_id":"user","ssrc":42,"speaking":5}`, wantFlags: VoiceSpeakingFlagMicrophone | VoiceSpeakingFlagPriority, wantSpeaking: true},
+		{name: "legacy true", payload: `{"user_id":"user","ssrc":42,"speaking":true}`, wantFlags: VoiceSpeakingFlagMicrophone, wantSpeaking: true},
+		{name: "legacy false", payload: `{"user_id":"user","ssrc":42,"speaking":false}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var update VoiceSpeakingUpdate
+			if err := json.Unmarshal([]byte(tt.payload), &update); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if update.UserID != "user" || update.SSRC != 42 || update.SpeakingFlags != tt.wantFlags || update.Speaking != tt.wantSpeaking {
+				t.Fatalf("update = %#v", update)
+			}
+		})
+	}
+
+	var update VoiceSpeakingUpdate
+	if err := json.Unmarshal([]byte(`{"speaking":"invalid"}`), &update); err == nil {
+		t.Fatal("json.Unmarshal returned nil error for invalid speaking flags")
 	}
 }
 
