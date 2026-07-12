@@ -1248,6 +1248,147 @@ func TestSoundboardEndpoints(t *testing.T) {
 	}
 }
 
+func TestGuildScheduledEventRecurrencePayloads(t *testing.T) {
+	requests := 0
+	patches := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		rawRule, ok := payload["recurrence_rule"]
+		if !ok {
+			t.Fatalf("recurrence_rule missing from %s request", r.Method)
+		}
+
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /guilds/guild/scheduled-events":
+			var rule GuildScheduledEventRecurrenceRuleParams
+			if err := json.Unmarshal(rawRule, &rule); err != nil {
+				t.Fatalf("Unmarshal create recurrence_rule returned error: %v", err)
+			}
+			if !rule.Start.Equal(time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)) || rule.Frequency != GuildScheduledEventRecurrenceRuleFrequencyWeekly || rule.Interval != 2 {
+				t.Fatalf("create recurrence_rule = %#v", rule)
+			}
+			if len(rule.ByWeekday) != 1 || rule.ByWeekday[0] != GuildScheduledEventRecurrenceRuleWeekdayWednesday {
+				t.Fatalf("create by_weekday = %#v", rule.ByWeekday)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"event",
+				"guild_id":"guild",
+				"scheduled_start_time":"2026-07-15T12:00:00Z",
+				"recurrence_rule":{
+					"start":"2026-07-15T12:00:00Z",
+					"end":null,
+					"frequency":2,
+					"interval":2,
+					"by_weekday":[2],
+					"count":null
+				}
+			}`))
+		case http.MethodPatch + " /guilds/guild/scheduled-events/event":
+			patches++
+			if patches == 1 {
+				var rule GuildScheduledEventRecurrenceRuleParams
+				if err := json.Unmarshal(rawRule, &rule); err != nil {
+					t.Fatalf("Unmarshal edit recurrence_rule returned error: %v", err)
+				}
+				if rule.Frequency != GuildScheduledEventRecurrenceRuleFrequencyMonthly || rule.Interval != 1 || len(rule.ByNWeekday) != 1 || rule.ByNWeekday[0].N != 4 || rule.ByNWeekday[0].Day != GuildScheduledEventRecurrenceRuleWeekdayWednesday {
+					t.Fatalf("edit recurrence_rule = %#v", rule)
+				}
+				_, _ = w.Write([]byte(`{
+					"id":"event",
+					"guild_id":"guild",
+					"scheduled_start_time":"2026-07-15T12:00:00Z",
+					"recurrence_rule":{
+						"start":"2026-07-15T12:00:00Z",
+						"end":null,
+						"frequency":1,
+						"interval":1,
+						"by_n_weekday":[{"n":4,"day":2}],
+						"count":null
+					}
+				}`))
+				return
+			}
+			if string(rawRule) != "null" {
+				t.Fatalf("clear recurrence_rule = %s, want null", rawRule)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"event",
+				"guild_id":"guild",
+				"scheduled_start_time":"2026-07-15T12:00:00Z",
+				"recurrence_rule":null
+			}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	createRule := &GuildScheduledEventRecurrenceRuleParams{
+		Start:     start,
+		Frequency: GuildScheduledEventRecurrenceRuleFrequencyWeekly,
+		Interval:  2,
+		ByWeekday: []GuildScheduledEventRecurrenceRuleWeekday{GuildScheduledEventRecurrenceRuleWeekdayWednesday},
+	}
+	created, err := session.GuildScheduledEventCreate("guild", &GuildScheduledEventParams{
+		Name:               "Recurring event",
+		ScheduledStartTime: &start,
+		PrivacyLevel:       GuildScheduledEventPrivacyLevelGuildOnly,
+		EntityType:         GuildScheduledEventEntityTypeVoice,
+		RecurrenceRule:     &createRule,
+	})
+	if err != nil {
+		t.Fatalf("GuildScheduledEventCreate returned error: %v", err)
+	}
+	if created.RecurrenceRule == nil || created.RecurrenceRule.Frequency != GuildScheduledEventRecurrenceRuleFrequencyWeekly {
+		t.Fatalf("created recurrence rule = %#v", created.RecurrenceRule)
+	}
+
+	editRule := &GuildScheduledEventRecurrenceRuleParams{
+		Start:     start,
+		Frequency: GuildScheduledEventRecurrenceRuleFrequencyMonthly,
+		Interval:  1,
+		ByNWeekday: []GuildScheduledEventRecurrenceRuleNWeekday{
+			{N: 4, Day: GuildScheduledEventRecurrenceRuleWeekdayWednesday},
+		},
+	}
+	edited, err := session.GuildScheduledEventEdit("guild", "event", &GuildScheduledEventParams{RecurrenceRule: &editRule})
+	if err != nil {
+		t.Fatalf("GuildScheduledEventEdit returned error: %v", err)
+	}
+	if edited.RecurrenceRule == nil || len(edited.RecurrenceRule.ByNWeekday) != 1 {
+		t.Fatalf("edited recurrence rule = %#v", edited.RecurrenceRule)
+	}
+
+	var clearRule *GuildScheduledEventRecurrenceRuleParams
+	cleared, err := session.GuildScheduledEventEdit("guild", "event", &GuildScheduledEventParams{RecurrenceRule: &clearRule})
+	if err != nil {
+		t.Fatalf("GuildScheduledEventEdit clear returned error: %v", err)
+	}
+	if cleared.RecurrenceRule != nil {
+		t.Fatalf("cleared recurrence rule = %#v, want nil", cleared.RecurrenceRule)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
+	}
+}
+
 func TestApplicationActivityInstanceEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

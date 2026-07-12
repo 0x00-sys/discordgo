@@ -375,6 +375,85 @@ func TestGuildCreateScheduledEvents(t *testing.T) {
 	}
 }
 
+func TestGuildScheduledEventRecurrenceRule(t *testing.T) {
+	var event GuildScheduledEvent
+	if err := json.Unmarshal([]byte(`{
+		"id":"event",
+		"guild_id":"guild",
+		"scheduled_start_time":"2026-07-15T12:00:00Z",
+		"recurrence_rule":{
+			"start":"2026-07-15T12:00:00Z",
+			"end":"2026-12-31T12:00:00Z",
+			"frequency":1,
+			"interval":2,
+			"by_weekday":[0,4],
+			"by_n_weekday":[{"n":4,"day":2}],
+			"by_month":[1,7,12],
+			"by_month_day":[1,24],
+			"by_year_day":[100],
+			"count":12
+		}
+	}`), &event); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+
+	rule := event.RecurrenceRule
+	if rule == nil {
+		t.Fatal("RecurrenceRule is nil")
+	}
+	if want := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC); !rule.Start.Equal(want) {
+		t.Fatalf("Start = %v, want %v", rule.Start, want)
+	}
+	if rule.End == nil || !rule.End.Equal(time.Date(2026, time.December, 31, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("End = %v", rule.End)
+	}
+	if rule.Frequency != GuildScheduledEventRecurrenceRuleFrequencyMonthly || rule.Interval != 2 {
+		t.Fatalf("frequency and interval = %d and %d", rule.Frequency, rule.Interval)
+	}
+	if len(rule.ByWeekday) != 2 || rule.ByWeekday[0] != GuildScheduledEventRecurrenceRuleWeekdayMonday || rule.ByWeekday[1] != GuildScheduledEventRecurrenceRuleWeekdayFriday {
+		t.Fatalf("ByWeekday = %#v", rule.ByWeekday)
+	}
+	if len(rule.ByNWeekday) != 1 || rule.ByNWeekday[0].N != 4 || rule.ByNWeekday[0].Day != GuildScheduledEventRecurrenceRuleWeekdayWednesday {
+		t.Fatalf("ByNWeekday = %#v", rule.ByNWeekday)
+	}
+	if len(rule.ByMonth) != 3 || rule.ByMonth[0] != GuildScheduledEventRecurrenceRuleMonthJanuary || rule.ByMonth[1] != GuildScheduledEventRecurrenceRuleMonthJuly || rule.ByMonth[2] != GuildScheduledEventRecurrenceRuleMonthDecember {
+		t.Fatalf("ByMonth = %#v", rule.ByMonth)
+	}
+	if len(rule.ByMonthDay) != 2 || rule.ByMonthDay[0] != 1 || rule.ByMonthDay[1] != 24 {
+		t.Fatalf("ByMonthDay = %#v", rule.ByMonthDay)
+	}
+	if len(rule.ByYearDay) != 1 || rule.ByYearDay[0] != 100 {
+		t.Fatalf("ByYearDay = %#v", rule.ByYearDay)
+	}
+	if rule.Count == nil || *rule.Count != 12 {
+		t.Fatalf("Count = %v", rule.Count)
+	}
+
+	if GuildScheduledEventRecurrenceRuleFrequencyYearly != 0 || GuildScheduledEventRecurrenceRuleFrequencyDaily != 3 {
+		t.Fatal("recurrence frequency constants do not match Discord values")
+	}
+	if GuildScheduledEventRecurrenceRuleWeekdayMonday != 0 || GuildScheduledEventRecurrenceRuleWeekdaySunday != 6 {
+		t.Fatal("recurrence weekday constants do not match Discord values")
+	}
+	if GuildScheduledEventRecurrenceRuleMonthJanuary != 1 || GuildScheduledEventRecurrenceRuleMonthDecember != 12 {
+		t.Fatal("recurrence month constants do not match Discord values")
+	}
+}
+
+func TestGuildScheduledEventRecurrenceRuleOmitted(t *testing.T) {
+	encoded, err := json.Marshal(GuildScheduledEventParams{})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if _, ok := payload["recurrence_rule"]; ok {
+		t.Fatalf("recurrence_rule unexpectedly present in %s", encoded)
+	}
+}
+
 func TestGuildCreateSoundboardSounds(t *testing.T) {
 	var event GuildCreate
 	if err := json.Unmarshal([]byte(`{"id":"guild","soundboard_sounds":[{"sound_id":"sound","name":"Airhorn","volume":1,"emoji_id":null,"emoji_name":"📣","guild_id":"guild","available":true}]}`), &event); err != nil {
