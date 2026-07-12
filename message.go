@@ -125,6 +125,9 @@ type Message struct {
 	// The ID of the channel in which the message was sent.
 	ChannelID string `json:"channel_id"`
 
+	// The type of channel the message was sent in, if provided by a gateway event.
+	ChannelType ChannelType `json:"channel_type,omitempty"`
+
 	// The ID of the guild in which the message was sent.
 	GuildID string `json:"guild_id,omitempty"`
 
