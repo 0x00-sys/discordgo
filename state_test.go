@@ -5290,3 +5290,785 @@ func TestGuildDeleteUnavailableCachesUnknownGuildStub(t *testing.T) {
 		t.Fatal("guild unavailable flag was not set on stub")
 	}
 }
+
+func TestMessageReactionStateLifecycle(t *testing.T) {
+	state, session := newMessageReactionTestState(t)
+	wave := Emoji{Name: "wave"}
+
+	events := []struct {
+		name  string
+		event interface{}
+		check func(*testing.T)
+	}{
+		{
+			name: "add normal",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionState(t, state, wave, 1, 1, 0, false, false, nil)
+			},
+		},
+		{
+			name: "add burst for bot",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+				Burst: true, Type: ReactionTypeBurst, BurstColors: []string{"#ff00ff"},
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionState(t, state, wave, 2, 1, 1, false, true, []string{"#ff00ff"})
+			},
+		},
+		{
+			name: "add normal for bot",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionState(t, state, wave, 3, 2, 1, true, true, []string{"#ff00ff"})
+			},
+		},
+		{
+			name: "remove burst for bot",
+			event: &MessageReactionRemove{MessageReaction: &MessageReaction{
+				UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+				Burst: true, Type: ReactionTypeBurst,
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionState(t, state, wave, 2, 2, 0, true, false, nil)
+			},
+		},
+		{
+			name: "remove normal for bot",
+			event: &MessageReactionRemove{MessageReaction: &MessageReaction{
+				UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionState(t, state, wave, 1, 1, 0, false, false, nil)
+			},
+		},
+		{
+			name: "add custom emoji",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message",
+				Emoji: Emoji{ID: "emoji", Name: "old-name"},
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionState(t, state, Emoji{ID: "emoji", Name: "new-name"}, 1, 1, 0, false, false, nil)
+			},
+		},
+		{
+			name: "remove custom emoji by id",
+			event: &MessageReactionRemoveEmoji{MessageReaction: &MessageReaction{
+				ChannelID: "channel", MessageID: "message", Emoji: Emoji{ID: "emoji", Name: "new-name"},
+			}},
+			check: func(t *testing.T) {
+				assertMessageReactionMissing(t, state, Emoji{ID: "emoji"})
+			},
+		},
+		{
+			name: "remove all",
+			event: &MessageReactionRemoveAll{MessageReaction: &MessageReaction{
+				ChannelID: "channel", MessageID: "message",
+			}},
+			check: func(t *testing.T) {
+				message, err := state.Message("channel", "message")
+				if err != nil {
+					t.Fatalf("Message returned error: %v", err)
+				}
+				if len(message.Reactions) != 0 {
+					t.Fatalf("Reactions len = %d, want 0", len(message.Reactions))
+				}
+			},
+		},
+	}
+
+	for _, tt := range events {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := state.OnInterface(session, tt.event); err != nil {
+				t.Fatalf("OnInterface returned error: %v", err)
+			}
+			tt.check(t)
+		})
+	}
+}
+
+func TestMessageReactionStateCanBeDisabled(t *testing.T) {
+	state, session := newMessageReactionTestState(t)
+	state.TrackMessageReactions = false
+
+	if !NewState().TrackMessageReactions {
+		t.Fatal("TrackMessageReactions is disabled by default")
+	}
+
+	event := &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: Emoji{Name: "wave"},
+	}}
+	if err := state.OnInterface(session, event); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	message, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if len(message.Reactions) != 0 {
+		t.Fatalf("Reactions len = %d, want 0", len(message.Reactions))
+	}
+}
+
+func TestMessageReactionStateIgnoresMalformedEventsWhenDisabled(t *testing.T) {
+	events := []interface{}{
+		(*MessageReactionAdd)(nil),
+		(*MessageReactionRemove)(nil),
+		(*MessageReactionRemoveAll)(nil),
+		(*MessageReactionRemoveEmoji)(nil),
+		&MessageReactionAdd{},
+		&MessageReactionRemove{},
+		&MessageReactionRemoveAll{},
+		&MessageReactionRemoveEmoji{},
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*State)
+	}{
+		{
+			name: "tracking disabled",
+			setup: func(state *State) {
+				state.TrackMessageReactions = false
+			},
+		},
+		{
+			name: "message caching disabled",
+			setup: func(state *State) {
+				state.TrackMessageReactions = true
+				state.MaxMessageCount = 0
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			state.MaxMessageCount = 1
+			tt.setup(state)
+			for _, event := range events {
+				if err := state.OnInterface(&Session{StateEnabled: true}, event); err != nil {
+					t.Fatalf("OnInterface returned error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestStateOnInterfaceRejectsMalformedMessageReactionEvents(t *testing.T) {
+	validEmoji := Emoji{Name: "wave"}
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{name: "nil add", event: (*MessageReactionAdd)(nil)},
+		{name: "nil remove", event: (*MessageReactionRemove)(nil)},
+		{name: "nil remove all", event: (*MessageReactionRemoveAll)(nil)},
+		{name: "nil remove emoji", event: (*MessageReactionRemoveEmoji)(nil)},
+		{name: "add missing reaction", event: &MessageReactionAdd{}},
+		{name: "remove missing reaction", event: &MessageReactionRemove{}},
+		{name: "remove all missing reaction", event: &MessageReactionRemoveAll{}},
+		{name: "remove emoji missing reaction", event: &MessageReactionRemoveEmoji{}},
+		{
+			name: "add missing channel",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "user", MessageID: "message", Emoji: validEmoji,
+			}},
+		},
+		{
+			name: "add missing message",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", Emoji: validEmoji,
+			}},
+		},
+		{
+			name: "add missing user",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				ChannelID: "channel", MessageID: "message", Emoji: validEmoji,
+			}},
+		},
+		{
+			name: "add missing emoji",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message",
+			}},
+		},
+		{
+			name: "add invalid reaction type",
+			event: &MessageReactionAdd{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: validEmoji,
+				Type: ReactionType(2),
+			}},
+		},
+		{
+			name: "remove missing user",
+			event: &MessageReactionRemove{MessageReaction: &MessageReaction{
+				ChannelID: "channel", MessageID: "message", Emoji: validEmoji,
+			}},
+		},
+		{
+			name: "remove missing emoji",
+			event: &MessageReactionRemove{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message",
+			}},
+		},
+		{
+			name: "remove invalid reaction type",
+			event: &MessageReactionRemove{MessageReaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: validEmoji,
+				Type: ReactionType(2),
+			}},
+		},
+		{
+			name: "remove all missing message",
+			event: &MessageReactionRemoveAll{MessageReaction: &MessageReaction{
+				ChannelID: "channel",
+			}},
+		},
+		{
+			name: "remove emoji missing emoji",
+			event: &MessageReactionRemoveEmoji{MessageReaction: &MessageReaction{
+				ChannelID: "channel", MessageID: "message",
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, session := newMessageReactionTestState(t)
+			assertStateInvalidData(t, func() error {
+				return state.OnInterface(session, tt.event)
+			})
+		})
+	}
+}
+
+func TestMessageReactionStateIgnoresUnknownCacheEntries(t *testing.T) {
+	state, session := newMessageReactionTestState(t)
+	wave := Emoji{Name: "wave"}
+	if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+	}}); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	events := []interface{}{
+		&MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "user", ChannelID: "unknown", MessageID: "message", Emoji: wave,
+		}},
+		&MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "user", ChannelID: "channel", MessageID: "unknown", Emoji: wave,
+		}},
+		&MessageReactionRemove{MessageReaction: &MessageReaction{
+			UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: Emoji{Name: "unknown"},
+		}},
+		&MessageReactionRemoveEmoji{MessageReaction: &MessageReaction{
+			ChannelID: "channel", MessageID: "message", Emoji: Emoji{Name: "unknown"},
+		}},
+		&MessageReactionRemoveAll{MessageReaction: &MessageReaction{
+			ChannelID: "channel", MessageID: "unknown",
+		}},
+	}
+
+	for _, event := range events {
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	}
+	assertMessageReactionState(t, state, wave, 1, 1, 0, false, false, nil)
+}
+
+func TestMessageReactionStateDoesNotMutateSnapshots(t *testing.T) {
+	state, session := newMessageReactionTestState(t)
+	wave := Emoji{Name: "wave"}
+	if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+	}}); err != nil {
+		t.Fatalf("OnInterface(add normal) returned error: %v", err)
+	}
+
+	channelSnapshot, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	messageSnapshot := channelSnapshot.Messages[0]
+	colors := []string{"#ff00ff"}
+	addBurst := &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+		Burst: true, Type: ReactionTypeBurst, BurstColors: colors,
+	}}
+	if err := state.OnInterface(session, addBurst); err != nil {
+		t.Fatalf("OnInterface(add burst) returned error: %v", err)
+	}
+	colors[0] = "#000000"
+	addBurst.BurstColors[0] = "#111111"
+
+	if messageSnapshot.Reactions[0].Count != 1 || messageSnapshot.Reactions[0].CountDetails.Burst != 0 {
+		t.Fatal("held message snapshot was mutated by reaction add")
+	}
+	assertMessageReactionState(t, state, wave, 2, 1, 1, false, false, []string{"#ff00ff"})
+
+	custom := Emoji{
+		ID: "emoji", Name: "custom", Roles: []string{"role"},
+		User: &User{ID: "creator", Username: "creator"},
+	}
+	addCustom := &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: custom,
+	}}
+	if err := state.OnInterface(session, addCustom); err != nil {
+		t.Fatalf("OnInterface(add custom) returned error: %v", err)
+	}
+	addCustom.Emoji.Name = "changed"
+	addCustom.Emoji.Roles[0] = "changed"
+	addCustom.Emoji.User.Username = "changed"
+
+	customSnapshot := mustMessageReaction(t, state, Emoji{ID: "emoji"})
+	if customSnapshot.Emoji.Name != "custom" || customSnapshot.Emoji.Roles[0] != "role" || customSnapshot.Emoji.User.Username != "creator" {
+		t.Fatalf("cached emoji aliases event payload: %#v", customSnapshot.Emoji)
+	}
+
+	beforeRemove, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if err := state.OnInterface(session, &MessageReactionRemove{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: Emoji{ID: "emoji"},
+	}}); err != nil {
+		t.Fatalf("OnInterface(remove) returned error: %v", err)
+	}
+	if len(beforeRemove.Reactions) != 2 {
+		t.Fatal("held message snapshot was mutated by reaction remove")
+	}
+	assertMessageReactionMissing(t, state, Emoji{ID: "emoji"})
+
+	if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: custom,
+	}}); err != nil {
+		t.Fatalf("OnInterface(add custom) returned error: %v", err)
+	}
+	beforeRemoveEmoji, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if err := state.OnInterface(session, &MessageReactionRemoveEmoji{MessageReaction: &MessageReaction{
+		ChannelID: "channel", MessageID: "message", Emoji: Emoji{ID: "emoji", Name: "renamed"},
+	}}); err != nil {
+		t.Fatalf("OnInterface(remove emoji) returned error: %v", err)
+	}
+	if len(beforeRemoveEmoji.Reactions) != 2 {
+		t.Fatal("held message snapshot was mutated by reaction remove emoji")
+	}
+
+	if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: custom,
+	}}); err != nil {
+		t.Fatalf("OnInterface(add custom) returned error: %v", err)
+	}
+	beforeRemoveAll, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if err := state.OnInterface(session, &MessageReactionRemoveAll{MessageReaction: &MessageReaction{
+		ChannelID: "channel", MessageID: "message",
+	}}); err != nil {
+		t.Fatalf("OnInterface(remove all) returned error: %v", err)
+	}
+	if len(beforeRemoveAll.Reactions) != 2 {
+		t.Fatal("held message snapshot was mutated by reaction remove all")
+	}
+}
+
+func TestMessageReactionStateReplacesThreadOwner(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	state.User = &User{ID: "bot"}
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{{
+			ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread,
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "thread"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	guildSnapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	threadSnapshot := guildSnapshot.Threads[0]
+	event := &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "thread", MessageID: "message", Emoji: Emoji{Name: "wave"},
+	}}
+	if err := state.OnInterface(&Session{StateEnabled: true, State: state}, event); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	currentGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	currentThread, err := state.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if currentGuild == guildSnapshot || currentGuild.Threads[0] == threadSnapshot {
+		t.Fatal("reaction update reused the thread owner snapshot")
+	}
+	if currentGuild.Threads[0] != currentThread || state.channelMap["thread"] != currentThread {
+		t.Fatal("guild thread slice and channel map do not reference the replacement")
+	}
+	if len(threadSnapshot.Messages[0].Reactions) != 0 {
+		t.Fatal("held thread snapshot was mutated")
+	}
+	if len(currentThread.Messages[0].Reactions) != 1 {
+		t.Fatalf("current thread reactions len = %d, want 1", len(currentThread.Messages[0].Reactions))
+	}
+}
+
+func TestMessageReactionStateReplacesPrivateChannelOwner(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	state.User = &User{ID: "bot"}
+	if err := state.ChannelAdd(&Channel{ID: "dm", Type: ChannelTypeDM}); err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "dm"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+
+	channelSnapshot := state.PrivateChannels[0]
+	event := &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "dm", MessageID: "message", Emoji: Emoji{Name: "wave"},
+	}}
+	if err := state.OnInterface(&Session{StateEnabled: true, State: state}, event); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	current, err := state.Channel("dm")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if state.PrivateChannels[0] == channelSnapshot {
+		t.Fatal("reaction update reused the private channel owner snapshot")
+	}
+	if state.PrivateChannels[0] != current || state.channelMap["dm"] != current {
+		t.Fatal("private channel slice and channel map do not reference the replacement")
+	}
+	if len(channelSnapshot.Messages[0].Reactions) != 0 {
+		t.Fatal("held private channel snapshot was mutated")
+	}
+	if len(current.Messages[0].Reactions) != 1 {
+		t.Fatalf("current private channel reactions len = %d, want 1", len(current.Messages[0].Reactions))
+	}
+}
+
+func TestMessageReactionStateRepairsMissingCountDetails(t *testing.T) {
+	tests := []struct {
+		name       string
+		event      func(*MessageReaction) interface{}
+		wantCount  int
+		wantNormal int
+		wantBurst  int
+	}{
+		{
+			name: "add normal", event: func(reaction *MessageReaction) interface{} {
+				return &MessageReactionAdd{MessageReaction: reaction}
+			},
+			wantCount: 3, wantNormal: 3,
+		},
+		{
+			name: "add burst", event: func(reaction *MessageReaction) interface{} {
+				reaction.Burst = true
+				reaction.Type = ReactionTypeBurst
+				return &MessageReactionAdd{MessageReaction: reaction}
+			},
+			wantCount: 3, wantNormal: 2, wantBurst: 1,
+		},
+		{
+			name: "remove normal", event: func(reaction *MessageReaction) interface{} {
+				return &MessageReactionRemove{MessageReaction: reaction}
+			},
+			wantCount: 1, wantNormal: 1,
+		},
+		{
+			name: "remove burst", event: func(reaction *MessageReaction) interface{} {
+				reaction.Burst = true
+				reaction.Type = ReactionTypeBurst
+				return &MessageReactionRemove{MessageReaction: reaction}
+			},
+			wantCount: 1, wantNormal: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			state.MaxMessageCount = 10
+			state.User = &User{ID: "bot"}
+			if err := state.GuildAdd(&Guild{
+				ID: "guild",
+				Channels: []*Channel{{
+					ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText,
+				}},
+			}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+			if err := state.MessageAdd(&Message{
+				ID: "message", ChannelID: "channel",
+				Reactions: []*MessageReactions{{
+					Count: 2,
+					Emoji: &Emoji{Name: "wave"},
+				}},
+			}); err != nil {
+				t.Fatalf("MessageAdd returned error: %v", err)
+			}
+			session := &Session{StateEnabled: true, State: state}
+
+			reaction := &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: Emoji{Name: "wave"},
+			}
+			if err := state.OnInterface(session, tt.event(reaction)); err != nil {
+				t.Fatalf("OnInterface returned error: %v", err)
+			}
+			assertMessageReactionState(
+				t,
+				state,
+				Emoji{Name: "wave"},
+				tt.wantCount,
+				tt.wantNormal,
+				tt.wantBurst,
+				false,
+				false,
+				nil,
+			)
+		})
+	}
+}
+
+func TestMessageReactionStateDeduplicatesBotEvents(t *testing.T) {
+	state, session := newMessageReactionTestState(t)
+	wave := Emoji{Name: "wave"}
+	for _, event := range []interface{}{
+		&MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+		}},
+		&MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+			Burst: true, Type: ReactionTypeBurst, BurstColors: []string{"#ff00ff"},
+		}},
+	} {
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface setup returned error: %v", err)
+		}
+	}
+
+	for _, event := range []interface{}{
+		&MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+		}},
+		&MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+			Burst: true, Type: ReactionTypeBurst,
+		}},
+	} {
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	}
+	assertMessageReactionState(t, state, wave, 2, 1, 1, true, true, []string{"#ff00ff"})
+
+	removeNormal := &MessageReactionRemove{MessageReaction: &MessageReaction{
+		UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+	}}
+	if err := state.OnInterface(session, removeNormal); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	if err := state.OnInterface(session, removeNormal); err != nil {
+		t.Fatalf("OnInterface duplicate returned error: %v", err)
+	}
+	assertMessageReactionState(t, state, wave, 1, 0, 1, false, true, []string{"#ff00ff"})
+
+	removeBurst := &MessageReactionRemove{MessageReaction: &MessageReaction{
+		UserID: "bot", ChannelID: "channel", MessageID: "message", Emoji: wave,
+		Burst: true, Type: ReactionTypeBurst,
+	}}
+	if err := state.OnInterface(session, removeBurst); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	if err := state.OnInterface(session, removeBurst); err != nil {
+		t.Fatalf("OnInterface duplicate returned error: %v", err)
+	}
+	assertMessageReactionMissing(t, state, wave)
+}
+
+func TestMessageReactionStateMutatorsDoNotRaceSnapshots(t *testing.T) {
+	state, session := newMessageReactionTestState(t)
+	wave := Emoji{Name: "wave"}
+	if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+	}}); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			message, err := state.Message("channel", "message")
+			if err != nil {
+				continue
+			}
+			for _, reaction := range message.Reactions {
+				if reaction == nil {
+					continue
+				}
+				_ = reaction.Count
+				_ = reaction.CountDetails.Normal
+				_ = reaction.CountDetails.Burst
+				_ = reaction.Me
+				_ = reaction.MeBurst
+				for _, color := range reaction.BurstColors {
+					_ = color
+				}
+				if reaction.Emoji != nil {
+					_ = reaction.Emoji.ID
+					_ = reaction.Emoji.Name
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 500; i++ {
+		burst := &MessageReaction{
+			UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+			Burst: true, Type: ReactionTypeBurst, BurstColors: []string{"#ff00ff"},
+		}
+		if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: burst}); err != nil {
+			t.Fatalf("OnInterface(add) returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &MessageReactionRemove{MessageReaction: burst}); err != nil {
+			t.Fatalf("OnInterface(remove) returned error: %v", err)
+		}
+		custom := &MessageReaction{
+			UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: Emoji{ID: "emoji"},
+		}
+		if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: custom}); err != nil {
+			t.Fatalf("OnInterface(add custom) returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &MessageReactionRemoveEmoji{MessageReaction: custom}); err != nil {
+			t.Fatalf("OnInterface(remove emoji) returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &MessageReactionRemoveAll{MessageReaction: &MessageReaction{
+			ChannelID: "channel", MessageID: "message",
+		}}); err != nil {
+			t.Fatalf("OnInterface(remove all) returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &MessageReactionAdd{MessageReaction: &MessageReaction{
+			UserID: "user", ChannelID: "channel", MessageID: "message", Emoji: wave,
+		}}); err != nil {
+			t.Fatalf("OnInterface(reset) returned error: %v", err)
+		}
+	}
+
+	close(done)
+	wg.Wait()
+}
+
+func newMessageReactionTestState(t *testing.T) (*State, *Session) {
+	t.Helper()
+	state := NewState()
+	state.MaxMessageCount = 10
+	state.User = &User{ID: "bot"}
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{{
+			ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText,
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+	return state, &Session{StateEnabled: true, State: state}
+}
+
+func mustMessageReaction(t *testing.T, state *State, emoji Emoji) *MessageReactions {
+	t.Helper()
+	message, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	for _, reaction := range message.Reactions {
+		if reaction != nil && reactionEmojiEqual(reaction.Emoji, &emoji) {
+			return reaction
+		}
+	}
+	t.Fatalf("reaction for emoji %#v not found", emoji)
+	return nil
+}
+
+func assertMessageReactionState(
+	t *testing.T,
+	state *State,
+	emoji Emoji,
+	count, normal, burst int,
+	me, meBurst bool,
+	colors []string,
+) {
+	t.Helper()
+	reaction := mustMessageReaction(t, state, emoji)
+	if reaction.Count != count || reaction.CountDetails.Normal != normal || reaction.CountDetails.Burst != burst {
+		t.Fatalf(
+			"reaction counts = (%d, normal %d, burst %d), want (%d, normal %d, burst %d)",
+			reaction.Count,
+			reaction.CountDetails.Normal,
+			reaction.CountDetails.Burst,
+			count,
+			normal,
+			burst,
+		)
+	}
+	if reaction.Me != me || reaction.MeBurst != meBurst {
+		t.Fatalf("reaction me flags = (%t, %t), want (%t, %t)", reaction.Me, reaction.MeBurst, me, meBurst)
+	}
+	if len(reaction.BurstColors) != len(colors) {
+		t.Fatalf("BurstColors = %#v, want %#v", reaction.BurstColors, colors)
+	}
+	for i := range colors {
+		if reaction.BurstColors[i] != colors[i] {
+			t.Fatalf("BurstColors = %#v, want %#v", reaction.BurstColors, colors)
+		}
+	}
+}
+
+func assertMessageReactionMissing(t *testing.T, state *State, emoji Emoji) {
+	t.Helper()
+	message, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	for _, reaction := range message.Reactions {
+		if reaction != nil && reactionEmojiEqual(reaction.Emoji, &emoji) {
+			t.Fatalf("reaction for emoji %#v is still cached", emoji)
+		}
+	}
+}
