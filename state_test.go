@@ -5004,6 +5004,11 @@ func TestVoiceStateUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	if len(current.VoiceStates) != 0 {
 		t.Fatalf("current.VoiceStates len = %d, want 0 after leave", len(current.VoiceStates))
 	}
+	for i, voiceState := range current.VoiceStates[len(current.VoiceStates):cap(current.VoiceStates)] {
+		if voiceState != nil {
+			t.Fatalf("VoiceStates backing array entry %d still retains removed user %q", len(current.VoiceStates)+i, voiceState.UserID)
+		}
+	}
 }
 
 func TestEmojiAddDoesNotMutateGuildSnapshot(t *testing.T) {

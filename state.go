@@ -2162,7 +2162,9 @@ func (s *State) voiceStateUpdate(update *VoiceStateUpdate) error {
 	if update.ChannelID == "" {
 		for i, state := range updated.VoiceStates {
 			if state != nil && state.UserID == update.UserID {
-				updated.VoiceStates = append(updated.VoiceStates[:i], updated.VoiceStates[i+1:]...)
+				copy(updated.VoiceStates[i:], updated.VoiceStates[i+1:])
+				updated.VoiceStates[len(updated.VoiceStates)-1] = nil
+				updated.VoiceStates = updated.VoiceStates[:len(updated.VoiceStates)-1]
 				s.replaceGuild(guild, updated)
 				return nil
 			}
