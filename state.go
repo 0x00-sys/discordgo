@@ -445,7 +445,9 @@ func (s *State) GuildRemove(guild *Guild) error {
 
 	for i, g := range s.Guilds {
 		if g != nil && g.ID == guild.ID {
-			s.Guilds = append(s.Guilds[:i], s.Guilds[i+1:]...)
+			copy(s.Guilds[i:], s.Guilds[i+1:])
+			s.Guilds[len(s.Guilds)-1] = nil
+			s.Guilds = s.Guilds[:len(s.Guilds)-1]
 			return nil
 		}
 	}

@@ -890,6 +890,11 @@ func TestGuildRemoveClearsGuildIndexes(t *testing.T) {
 	if err := state.GuildRemove(&Guild{ID: "guild"}); err != nil {
 		t.Fatalf("GuildRemove returned error: %v", err)
 	}
+	for i, guild := range state.Guilds[len(state.Guilds):cap(state.Guilds)] {
+		if guild != nil {
+			t.Fatalf("Guilds backing array entry %d still retains the removed guild", len(state.Guilds)+i)
+		}
+	}
 
 	if _, err := state.Channel("channel"); !errors.Is(err, ErrStateNotFound) {
 		t.Fatalf("Channel returned error %v, want %v", err, ErrStateNotFound)
