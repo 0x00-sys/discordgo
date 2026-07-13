@@ -3893,11 +3893,11 @@ func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
 				Members: []*ThreadMember{
 					{
 						ID:     "thread",
-						UserID: "remove",
+						UserID: "keep",
 					},
 					{
 						ID:     "thread",
-						UserID: "keep",
+						UserID: "remove",
 					},
 				},
 			},
@@ -3928,6 +3928,11 @@ func TestThreadMembersUpdateRemovesByUserID(t *testing.T) {
 	}
 	if thread.MemberCount != 1 {
 		t.Fatalf("MemberCount = %d, want 1", thread.MemberCount)
+	}
+	for i, member := range thread.Members[len(thread.Members):cap(thread.Members)] {
+		if member != nil {
+			t.Fatalf("Members backing array entry %d still retains removed member %q", len(thread.Members)+i, member.UserID)
+		}
 	}
 }
 

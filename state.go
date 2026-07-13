@@ -1367,6 +1367,9 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 			}
 			members = append(members, member)
 		}
+		for i := len(members); i < len(updated.Members); i++ {
+			updated.Members[i] = nil
+		}
 		updated.Members = members
 	}
 
