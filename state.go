@@ -1061,14 +1061,15 @@ func (s *State) updateGuildScheduledEventUserCount(guildID, eventID string, delt
 			continue
 		}
 
-		updated := copyGuild(guild)
+		updated := *guild
+		updated.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), guild.GuildScheduledEvents...)
 		updatedEvent := copyGuildScheduledEvent(event)
 		updatedEvent.UserCount += delta
 		if updatedEvent.UserCount < 0 {
 			updatedEvent.UserCount = 0
 		}
 		updated.GuildScheduledEvents[i] = updatedEvent
-		s.replaceGuild(guild, updated)
+		s.replaceGuild(guild, &updated)
 		return nil
 	}
 
