@@ -259,8 +259,15 @@ func TestStateOnInterfaceRejectsMalformedUserUpdate(t *testing.T) {
 
 func TestStateStageInstanceLifecycle(t *testing.T) {
 	state := NewState()
-	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	initialGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 	session := &Session{StateEnabled: true}
 
@@ -276,6 +283,9 @@ func TestStateStageInstanceLifecycle(t *testing.T) {
 	if len(guild.StageInstances) != 1 || guild.StageInstances[0].Topic != "before" || guild.StageInstances[0] == createdInstance {
 		t.Fatalf("created StageInstances = %#v", guild.StageInstances)
 	}
+	if &guild.Channels[0] != &initialGuild.Channels[0] {
+		t.Fatal("stage instance create copied the unrelated channels backing array")
+	}
 
 	updatedInstance := &StageInstance{ID: "stage", GuildID: "guild", ChannelID: "channel", Topic: "after"}
 	update := &StageInstanceEventUpdate{StageInstance: updatedInstance}
@@ -285,19 +295,22 @@ func TestStateStageInstanceLifecycle(t *testing.T) {
 	if update.BeforeUpdate == nil || update.BeforeUpdate.Topic != "before" || update.BeforeUpdate == guild.StageInstances[0] {
 		t.Fatalf("BeforeUpdate = %#v", update.BeforeUpdate)
 	}
-	guild, err = state.Guild("guild")
+	beforeDeleteGuild, err := state.Guild("guild")
 	if err != nil {
 		t.Fatalf("Guild returned error: %v", err)
 	}
-	if len(guild.StageInstances) != 1 || guild.StageInstances[0].Topic != "after" || guild.StageInstances[0] == updatedInstance {
-		t.Fatalf("updated StageInstances = %#v", guild.StageInstances)
+	if len(beforeDeleteGuild.StageInstances) != 1 || beforeDeleteGuild.StageInstances[0].Topic != "after" || beforeDeleteGuild.StageInstances[0] == updatedInstance {
+		t.Fatalf("updated StageInstances = %#v", beforeDeleteGuild.StageInstances)
+	}
+	if &beforeDeleteGuild.Channels[0] != &guild.Channels[0] {
+		t.Fatal("stage instance update copied the unrelated channels backing array")
 	}
 
 	deleted := &StageInstanceEventDelete{StageInstance: &StageInstance{ID: "stage", GuildID: "guild"}}
 	if err = state.OnInterface(session, deleted); err != nil {
 		t.Fatalf("delete returned error: %v", err)
 	}
-	if deleted.BeforeDelete == nil || deleted.BeforeDelete.Topic != "after" || deleted.BeforeDelete == guild.StageInstances[0] {
+	if deleted.BeforeDelete == nil || deleted.BeforeDelete.Topic != "after" || deleted.BeforeDelete == beforeDeleteGuild.StageInstances[0] {
 		t.Fatalf("BeforeDelete = %#v", deleted.BeforeDelete)
 	}
 	guild, err = state.Guild("guild")
@@ -306,6 +319,9 @@ func TestStateStageInstanceLifecycle(t *testing.T) {
 	}
 	if len(guild.StageInstances) != 0 {
 		t.Fatalf("StageInstances after delete = %#v", guild.StageInstances)
+	}
+	if &guild.Channels[0] != &beforeDeleteGuild.Channels[0] {
+		t.Fatal("stage instance delete copied the unrelated channels backing array")
 	}
 	for i, instance := range guild.StageInstances[len(guild.StageInstances):cap(guild.StageInstances)] {
 		if instance != nil {
@@ -7026,6 +7042,41 @@ func BenchmarkStateSoundboardUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := state.guildSoundboardSoundAdd(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateStageInstanceUpdateGuildSnapshot(b *testing.B) {
+	instances := make([]*StageInstance, 10)
+	for i := range instances {
+		instances[i] = &StageInstance{ID: "stage-" + strconv.Itoa(i), GuildID: "guild"}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       instances,
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &StageInstance{ID: "stage-0", GuildID: "guild", Topic: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := state.guildStageInstanceAdd(update); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -899,17 +899,18 @@ func (s *State) guildStageInstanceAdd(instance *StageInstance) (*StageInstance, 
 		return nil, ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.StageInstances = append([]*StageInstance(nil), guild.StageInstances...)
 	for i, cached := range guild.StageInstances {
 		if cached != nil && cached.ID == instance.ID {
 			updated.StageInstances[i] = copyStageInstance(instance)
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return copyStageInstance(cached), nil
 		}
 	}
 
 	updated.StageInstances = append(updated.StageInstances, copyStageInstance(instance))
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil, nil
 }
 
@@ -926,13 +927,14 @@ func (s *State) guildStageInstanceRemove(guildID, instanceID string) (*StageInst
 		return nil, ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.StageInstances = append([]*StageInstance(nil), guild.StageInstances...)
 	for i, instance := range guild.StageInstances {
 		if instance != nil && instance.ID == instanceID {
 			copy(updated.StageInstances[i:], updated.StageInstances[i+1:])
 			updated.StageInstances[len(updated.StageInstances)-1] = nil
 			updated.StageInstances = updated.StageInstances[:len(updated.StageInstances)-1]
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return copyStageInstance(instance), nil
 		}
 	}
