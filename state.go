@@ -1307,10 +1307,10 @@ outer:
 				if synced := syncedThreads[m.ID]; synced != nil {
 					synced.Member = m
 				}
-				copied := copyChannel(c)
+				copied := *c
 				copied.Member = m
-				s.channelMap[m.ID] = copied
-				replaceThreadInGuild(updated, c, copied)
+				s.channelMap[m.ID] = &copied
+				replaceThreadInGuild(updated, c, &copied)
 			}
 		}
 	}
@@ -1415,10 +1415,10 @@ func (s *State) ThreadMemberUpdate(mu *ThreadMemberUpdate) error {
 	if !ok {
 		return ErrStateNotFound
 	}
-	updated := copyChannel(thread)
+	updated := *thread
 	updated.Member = mu.ThreadMember
-	s.channelMap[mu.ID] = updated
-	s.replaceChannel(thread, updated)
+	s.channelMap[mu.ID] = &updated
+	s.replaceChannel(thread, &updated)
 	return nil
 }
 
@@ -2688,10 +2688,10 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				s.Unlock()
 				return ErrStateNotFound
 			}
-			updated := copyChannel(channel)
+			updated := *channel
 			updated.LastPinTimestamp = lastPinTimestamp
-			s.channelMap[updated.ID] = updated
-			s.replaceChannel(channel, updated)
+			s.channelMap[updated.ID] = &updated
+			s.replaceChannel(channel, &updated)
 			s.Unlock()
 		}
 	case *ThreadCreate:

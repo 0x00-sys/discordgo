@@ -6472,6 +6472,52 @@ func assertMessageReactionMissing(t *testing.T, state *State, emoji Emoji) {
 		}
 	}
 }
+
+func BenchmarkStateThreadMemberUpdateSnapshot(b *testing.B) {
+	threadMessages := make([]*Message, 100)
+	threadMembers := make([]*ThreadMember, 100)
+	for i := range threadMessages {
+		threadMessages[i] = &Message{ID: "message-" + strconv.Itoa(i), ChannelID: "thread"}
+		threadMembers[i] = &ThreadMember{ID: "thread", UserID: "member-" + strconv.Itoa(i)}
+	}
+	thread := &Channel{
+		ID:                   "thread",
+		GuildID:              "guild",
+		Type:                 ChannelTypeGuildPublicThread,
+		Recipients:           make([]*User, 10),
+		Messages:             threadMessages,
+		PermissionOverwrites: make([]*PermissionOverwrite, 10),
+		Members:              threadMembers,
+		AvailableTags:        make([]ForumTag, 10),
+		AppliedTags:          make([]string, 10),
+	}
+
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:        "guild",
+		Members:   make([]*Member, 1000),
+		Presences: make([]*Presence, 1000),
+		Threads:   []*Channel{thread},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	updates := make([]*ThreadMemberUpdate, 101)
+	for i := range updates {
+		updates[i] = &ThreadMemberUpdate{ThreadMember: &ThreadMember{
+			ID:     "thread",
+			UserID: "current-" + strconv.Itoa(i),
+		}}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.ThreadMemberUpdate(updates[i%len(updates)]); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkStateMessageAddGuildSnapshot(b *testing.B) {
 	const maxMessageCount = 100
 
@@ -6546,9 +6592,14 @@ func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 			PermissionOverwrites: []*PermissionOverwrite{{ID: "role"}},
 		}},
 		Threads: []*Channel{{
-			ID:      "thread",
-			GuildID: "guild",
-			Type:    ChannelTypeGuildPublicThread,
+			ID:                   "thread",
+			GuildID:              "guild",
+			Type:                 ChannelTypeGuildPublicThread,
+			Messages:             []*Message{{ID: "thread-message", ChannelID: "thread"}},
+			PermissionOverwrites: []*PermissionOverwrite{{ID: "thread-role"}},
+			Members:              []*ThreadMember{{ID: "thread", UserID: "other"}},
+			AvailableTags:        []ForumTag{{ID: "tag"}},
+			AppliedTags:          []string{"tag"},
 		}},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
@@ -6599,6 +6650,15 @@ func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 	}
 	if &afterMessage.Members[0] != &afterThread.Members[0] {
 		t.Fatal("ThreadMemberUpdate copied the unrelated guild member backing array")
+	}
+	beforeThread := afterMessage.Threads[0]
+	updatedThread := afterThread.Threads[0]
+	if &beforeThread.Messages[0] != &updatedThread.Messages[0] ||
+		&beforeThread.PermissionOverwrites[0] != &updatedThread.PermissionOverwrites[0] ||
+		&beforeThread.Members[0] != &updatedThread.Members[0] ||
+		&beforeThread.AvailableTags[0] != &updatedThread.AvailableTags[0] ||
+		&beforeThread.AppliedTags[0] != &updatedThread.AppliedTags[0] {
+		t.Fatal("ThreadMemberUpdate copied an unrelated thread slice")
 	}
 	if afterMessage.Threads[0].Member != nil || afterThread.Threads[0].Member == nil {
 		t.Fatalf("thread member snapshots = (%#v, %#v), want (nil, non-nil)", afterMessage.Threads[0].Member, afterThread.Threads[0].Member)
