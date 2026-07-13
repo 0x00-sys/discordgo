@@ -5886,6 +5886,66 @@ func TestMessageReactionStateDoesNotMutateSnapshots(t *testing.T) {
 	}
 }
 
+func TestMessageReactionRemovalReleasesRemovedReference(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     messageReactionUpdateKind
+		reaction *MessageReaction
+	}{
+		{
+			name: "remove",
+			kind: messageReactionRemove,
+			reaction: &MessageReaction{
+				UserID: "user", ChannelID: "channel", MessageID: "message",
+				Emoji: Emoji{ID: "remove"}, Type: ReactionTypeNormal,
+			},
+		},
+		{
+			name: "remove emoji",
+			kind: messageReactionRemoveEmoji,
+			reaction: &MessageReaction{
+				ChannelID: "channel", MessageID: "message", Emoji: Emoji{ID: "remove"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := NewState()
+			state.MaxMessageCount = 10
+			if err := state.GuildAdd(&Guild{
+				ID:       "guild",
+				Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+			}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+			if err := state.MessageAdd(&Message{
+				ID: "message", ChannelID: "channel",
+				Reactions: []*MessageReactions{
+					{Count: 1, CountDetails: MessageReactionCountDetails{Normal: 1}, Emoji: &Emoji{ID: "keep"}},
+					{Count: 1, CountDetails: MessageReactionCountDetails{Normal: 1}, Emoji: &Emoji{ID: "remove"}},
+				},
+			}); err != nil {
+				t.Fatalf("MessageAdd returned error: %v", err)
+			}
+
+			if err := state.messageReactionUpdate(tt.reaction, tt.kind); err != nil {
+				t.Fatalf("messageReactionUpdate returned error: %v", err)
+			}
+
+			message, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatalf("Message returned error: %v", err)
+			}
+			for i, reaction := range message.Reactions[len(message.Reactions):cap(message.Reactions)] {
+				if reaction != nil {
+					t.Fatalf("Reactions backing array entry %d still retains removed emoji %q", len(message.Reactions)+i, reaction.Emoji.ID)
+				}
+			}
+		})
+	}
+}
+
 func TestMessageReactionStateReplacesThreadOwner(t *testing.T) {
 	state := NewState()
 	state.MaxMessageCount = 10
