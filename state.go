@@ -922,7 +922,9 @@ func (s *State) guildStageInstanceRemove(guildID, instanceID string) (*StageInst
 	updated := copyGuild(guild)
 	for i, instance := range guild.StageInstances {
 		if instance != nil && instance.ID == instanceID {
-			updated.StageInstances = append(updated.StageInstances[:i], updated.StageInstances[i+1:]...)
+			copy(updated.StageInstances[i:], updated.StageInstances[i+1:])
+			updated.StageInstances[len(updated.StageInstances)-1] = nil
+			updated.StageInstances = updated.StageInstances[:len(updated.StageInstances)-1]
 			s.replaceGuild(guild, updated)
 			return copyStageInstance(instance), nil
 		}
