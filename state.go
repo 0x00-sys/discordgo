@@ -1554,7 +1554,8 @@ func (s *State) MessageAdd(message *Message) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyChannel(c)
+	updated := *c
+	updated.Messages = append([]*Message(nil), c.Messages...)
 
 	// If the message exists, merge in the new message contents into a
 	// copy; the cached message is a shared snapshot.
@@ -1590,8 +1591,8 @@ func (s *State) MessageAdd(message *Message) error {
 			}
 
 			updated.Messages[i] = &merged
-			s.channelMap[updated.ID] = updated
-			s.replaceChannel(c, updated)
+			s.channelMap[updated.ID] = &updated
+			s.replaceChannel(c, &updated)
 			return nil
 		}
 	}
@@ -1606,8 +1607,8 @@ func (s *State) MessageAdd(message *Message) error {
 		updated.Messages = updated.Messages[overflow:]
 	}
 
-	s.channelMap[updated.ID] = updated
-	s.replaceChannel(c, updated)
+	s.channelMap[updated.ID] = &updated
+	s.replaceChannel(c, &updated)
 	return nil
 }
 
@@ -1770,7 +1771,8 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyChannel(c)
+	updated := *c
+	updated.Messages = append([]*Message(nil), c.Messages...)
 	for i, cached := range updated.Messages {
 		if cached == nil || cached.ID != update.ID {
 			continue
@@ -1783,8 +1785,8 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 			fields = legacyMessageUpdateFields(message)
 		}
 		updated.Messages[i] = mergeMessageUpdate(cached, message, fields)
-		s.channelMap[updated.ID] = updated
-		s.replaceChannel(c, updated)
+		s.channelMap[updated.ID] = &updated
+		s.replaceChannel(c, &updated)
 		return nil
 	}
 
@@ -1796,8 +1798,8 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 		}
 		updated.Messages = updated.Messages[overflow:]
 	}
-	s.channelMap[updated.ID] = updated
-	s.replaceChannel(c, updated)
+	s.channelMap[updated.ID] = &updated
+	s.replaceChannel(c, &updated)
 	return nil
 }
 
@@ -1826,7 +1828,8 @@ func (s *State) messageRemoveByID(channelID, messageID string) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyChannel(c)
+	updated := *c
+	updated.Messages = append([]*Message(nil), c.Messages...)
 	for i, m := range updated.Messages {
 		if m == nil {
 			continue
@@ -1835,8 +1838,8 @@ func (s *State) messageRemoveByID(channelID, messageID string) error {
 			copy(updated.Messages[i:], updated.Messages[i+1:])
 			updated.Messages[len(updated.Messages)-1] = nil
 			updated.Messages = updated.Messages[:len(updated.Messages)-1]
-			s.channelMap[updated.ID] = updated
-			s.replaceChannel(c, updated)
+			s.channelMap[updated.ID] = &updated
+			s.replaceChannel(c, &updated)
 			return nil
 		}
 	}
@@ -1895,10 +1898,11 @@ func (s *State) messagePollVoteUpdate(channelID, messageID, userID string, answe
 			updatedPoll.Results = &updatedResults
 			updatedMessage := *message
 			updatedMessage.Poll = &updatedPoll
-			updatedChannel := copyChannel(channel)
+			updatedChannel := *channel
+			updatedChannel.Messages = append([]*Message(nil), channel.Messages...)
 			updatedChannel.Messages[messageIndex] = &updatedMessage
-			s.channelMap[updatedChannel.ID] = updatedChannel
-			s.replaceChannel(channel, updatedChannel)
+			s.channelMap[updatedChannel.ID] = &updatedChannel
+			s.replaceChannel(channel, &updatedChannel)
 			return nil
 		}
 
@@ -2077,10 +2081,11 @@ func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageRea
 
 		updatedMessage := *message
 		updatedMessage.Reactions = reactions
-		updatedChannel := copyChannel(channel)
+		updatedChannel := *channel
+		updatedChannel.Messages = append([]*Message(nil), channel.Messages...)
 		updatedChannel.Messages[messageIndex] = &updatedMessage
-		s.channelMap[updatedChannel.ID] = updatedChannel
-		s.replaceChannel(channel, updatedChannel)
+		s.channelMap[updatedChannel.ID] = &updatedChannel
+		s.replaceChannel(channel, &updatedChannel)
 		return nil
 	}
 
