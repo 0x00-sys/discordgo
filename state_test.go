@@ -6472,3 +6472,124 @@ func assertMessageReactionMissing(t *testing.T, state *State, emoji Emoji) {
 		}
 	}
 }
+func BenchmarkStateMessageAddGuildSnapshot(b *testing.B) {
+	const maxMessageCount = 100
+
+	messages := make([]*Message, maxMessageCount)
+	for i := range messages {
+		messages[i] = &Message{
+			ID:        "seed-" + strconv.Itoa(i),
+			ChannelID: "target",
+		}
+	}
+	channels := make([]*Channel, 100)
+	channels[0] = &Channel{
+		ID:                   "target",
+		GuildID:              "guild",
+		Messages:             messages,
+		PermissionOverwrites: make([]*PermissionOverwrite, 10),
+	}
+	for i := 1; i < len(channels); i++ {
+		channels[i] = &Channel{ID: "channel-" + strconv.Itoa(i), GuildID: "guild"}
+	}
+
+	state := NewState()
+	state.MaxMessageCount = maxMessageCount
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 20),
+		Emojis:               make([]*Emoji, 20),
+		Stickers:             make([]*Sticker, 20),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             channels,
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 100),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+	}); err != nil {
+		b.Fatal(err)
+	}
+
+	replacements := make([]*Message, maxMessageCount+1)
+	for i := range replacements {
+		replacements[i] = &Message{
+			ID:        "replacement-" + strconv.Itoa(i),
+			ChannelID: "target",
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.MessageAdd(replacements[i%len(replacements)]); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 1
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{{
+			GuildID: "guild",
+			User:    &User{ID: "member"},
+		}},
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+		Threads: []*Channel{{
+			ID:      "thread",
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	beforeMessage, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel"}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+	afterMessage, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after MessageAdd: %v", err)
+	}
+	if &beforeMessage.Channels[0] == &afterMessage.Channels[0] {
+		t.Fatal("MessageAdd reused the guild channel backing array")
+	}
+	if &beforeMessage.Members[0] != &afterMessage.Members[0] {
+		t.Fatal("MessageAdd copied the unrelated guild member backing array")
+	}
+	if len(beforeMessage.Channels[0].Messages) != 0 || len(afterMessage.Channels[0].Messages) != 1 {
+		t.Fatalf("message snapshots = (%d, %d), want (0, 1)", len(beforeMessage.Channels[0].Messages), len(afterMessage.Channels[0].Messages))
+	}
+
+	if err := state.ThreadMemberUpdate(&ThreadMemberUpdate{
+		GuildID: "guild",
+		ThreadMember: &ThreadMember{
+			ID:     "thread",
+			UserID: "member",
+		},
+	}); err != nil {
+		t.Fatalf("ThreadMemberUpdate returned error: %v", err)
+	}
+	afterThread, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after ThreadMemberUpdate: %v", err)
+	}
+	if &afterMessage.Threads[0] == &afterThread.Threads[0] {
+		t.Fatal("ThreadMemberUpdate reused the guild thread backing array")
+	}
+	if &afterMessage.Members[0] != &afterThread.Members[0] {
+		t.Fatal("ThreadMemberUpdate copied the unrelated guild member backing array")
+	}
+	if afterMessage.Threads[0].Member != nil || afterThread.Threads[0].Member == nil {
+		t.Fatalf("thread member snapshots = (%#v, %#v), want (nil, non-nil)", afterMessage.Threads[0].Member, afterThread.Threads[0].Member)
+	}
+}
