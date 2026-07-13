@@ -167,7 +167,8 @@ func (s *Session) OAuth2PublicKeys(options ...RequestOption) (keys *OAuth2Keys, 
 }
 
 // Application returns an Application structure of a specific Application
-//   appID : The ID of an Application
+//
+//	appID : The ID of an Application
 func (s *Session) Application(appID string) (st *Application, err error) {
 
 	body, err := s.RequestWithBucketID("GET", EndpointOAuth2Application(appID), nil, EndpointOAuth2Application(""))
@@ -192,8 +193,9 @@ func (s *Session) Applications() (st []*Application, err error) {
 }
 
 // ApplicationCreate creates a new Application
-//    name : Name of Application / Bot
-//    uris : Redirect URIs (Not required)
+//
+//	name : Name of Application / Bot
+//	uris : Redirect URIs (Not required)
 func (s *Session) ApplicationCreate(ap *Application) (st *Application, err error) {
 
 	data := struct {
@@ -211,7 +213,8 @@ func (s *Session) ApplicationCreate(ap *Application) (st *Application, err error
 }
 
 // ApplicationUpdate updates an existing Application
-//   var : desc
+//
+//	var : desc
 func (s *Session) ApplicationUpdate(appID string, ap *Application) (st *Application, err error) {
 
 	data := struct {
@@ -229,7 +232,8 @@ func (s *Session) ApplicationUpdate(appID string, ap *Application) (st *Applicat
 }
 
 // ApplicationDelete deletes an existing Application
-//   appID : The ID of an Application
+//
+//	appID : The ID of an Application
 func (s *Session) ApplicationDelete(appID string) (err error) {
 
 	_, err = s.RequestWithBucketID("DELETE", EndpointOAuth2Application(appID), nil, EndpointOAuth2Application(""))
@@ -265,7 +269,7 @@ func (s *Session) ApplicationAssets(appID string) (ass []*Asset, err error) {
 
 // ApplicationBotCreate creates an Application Bot Account
 //
-//   appID : The ID of an Application
+//	appID : The ID of an Application
 //
 // NOTE: func name may change, if I can think up something better.
 func (s *Session) ApplicationBotCreate(appID string) (st *User, err error) {
