@@ -1594,7 +1594,11 @@ func (s *State) MessageAdd(message *Message) error {
 	updated.Messages = append(updated.Messages, message)
 
 	if len(updated.Messages) > s.MaxMessageCount {
-		updated.Messages = updated.Messages[len(updated.Messages)-s.MaxMessageCount:]
+		overflow := len(updated.Messages) - s.MaxMessageCount
+		for i := range overflow {
+			updated.Messages[i] = nil
+		}
+		updated.Messages = updated.Messages[overflow:]
 	}
 
 	s.channelMap[updated.ID] = updated
@@ -1781,7 +1785,11 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 
 	updated.Messages = append(updated.Messages, message)
 	if len(updated.Messages) > s.MaxMessageCount {
-		updated.Messages = updated.Messages[len(updated.Messages)-s.MaxMessageCount:]
+		overflow := len(updated.Messages) - s.MaxMessageCount
+		for i := range overflow {
+			updated.Messages[i] = nil
+		}
+		updated.Messages = updated.Messages[overflow:]
 	}
 	s.channelMap[updated.ID] = updated
 	s.replaceChannel(c, updated)
