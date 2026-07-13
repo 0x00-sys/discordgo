@@ -1012,17 +1012,18 @@ func (s *State) guildScheduledEventAdd(event *GuildScheduledEvent) (*GuildSchedu
 		return nil, ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), guild.GuildScheduledEvents...)
 	for i, cached := range guild.GuildScheduledEvents {
 		if cached != nil && cached.ID == event.ID {
 			updated.GuildScheduledEvents[i] = copyGuildScheduledEvent(event)
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return copyGuildScheduledEvent(cached), nil
 		}
 	}
 
 	updated.GuildScheduledEvents = append(updated.GuildScheduledEvents, copyGuildScheduledEvent(event))
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil, nil
 }
 
@@ -1039,13 +1040,14 @@ func (s *State) guildScheduledEventRemove(guildID, eventID string) (*GuildSchedu
 		return nil, ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), guild.GuildScheduledEvents...)
 	for i, event := range guild.GuildScheduledEvents {
 		if event != nil && event.ID == eventID {
 			copy(updated.GuildScheduledEvents[i:], updated.GuildScheduledEvents[i+1:])
 			updated.GuildScheduledEvents[len(updated.GuildScheduledEvents)-1] = nil
 			updated.GuildScheduledEvents = updated.GuildScheduledEvents[:len(updated.GuildScheduledEvents)-1]
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return copyGuildScheduledEvent(event), nil
 		}
 	}
