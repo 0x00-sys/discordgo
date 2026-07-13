@@ -5138,7 +5138,10 @@ func TestMemberPresenceMutatorsDoNotRaceGuildSnapshot(t *testing.T) {
 
 func TestGuildMembersChunkBatchUpdatesState(t *testing.T) {
 	state := NewState()
-	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
 	}
 
@@ -5175,6 +5178,9 @@ func TestGuildMembersChunkBatchUpdatesState(t *testing.T) {
 	}
 	if len(current.Presences) != 1 {
 		t.Fatalf("current.Presences len = %d, want 1", len(current.Presences))
+	}
+	if &current.Channels[0] != &snapshot.Channels[0] {
+		t.Fatal("GuildMembersChunk copied the unrelated channels backing array")
 	}
 
 	member, err := state.Member("guild", "user-a")
@@ -7264,6 +7270,49 @@ func BenchmarkStateThreadListSyncGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.ThreadListSync(tls); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateGuildMembersChunkGuildSnapshot(b *testing.B) {
+	members := make([]*Member, 1000)
+	presences := make([]*Presence, 1000)
+	for i := range members {
+		id := "user-" + strconv.Itoa(i)
+		members[i] = &Member{GuildID: "guild", User: &User{ID: id}}
+		presences[i] = &Presence{User: &User{ID: id}, Status: StatusOffline}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              members,
+		Presences:            presences,
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	chunk := &GuildMembersChunk{
+		GuildID:   "guild",
+		Members:   []*Member{{User: &User{ID: "user-0", Username: "updated"}}},
+		Presences: []*Presence{{User: &User{ID: "user-0"}, Status: StatusOnline}},
+	}
+	session := &Session{StateEnabled: true}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.OnInterface(session, chunk); err != nil {
 			b.Fatal(err)
 		}
 	}
