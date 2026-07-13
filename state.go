@@ -2188,7 +2188,8 @@ func (s *State) voiceStateUpdate(update *VoiceStateUpdate) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.VoiceStates = append([]*VoiceState(nil), guild.VoiceStates...)
 
 	// Handle Leaving Channel
 	if update.ChannelID == "" {
@@ -2197,7 +2198,7 @@ func (s *State) voiceStateUpdate(update *VoiceStateUpdate) error {
 				copy(updated.VoiceStates[i:], updated.VoiceStates[i+1:])
 				updated.VoiceStates[len(updated.VoiceStates)-1] = nil
 				updated.VoiceStates = updated.VoiceStates[:len(updated.VoiceStates)-1]
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 				return nil
 			}
 		}
@@ -2205,13 +2206,13 @@ func (s *State) voiceStateUpdate(update *VoiceStateUpdate) error {
 		for i, state := range updated.VoiceStates {
 			if state != nil && state.UserID == update.UserID {
 				updated.VoiceStates[i] = update.VoiceState
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 				return nil
 			}
 		}
 
 		updated.VoiceStates = append(updated.VoiceStates, update.VoiceState)
-		s.replaceGuild(guild, updated)
+		s.replaceGuild(guild, &updated)
 	}
 
 	return nil
