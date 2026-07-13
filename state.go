@@ -588,7 +588,9 @@ func (s *State) PresenceRemove(guildID string, presence *Presence) error {
 		}
 
 		if p.User.ID == presence.User.ID {
-			updated.Presences = append(updated.Presences[:i], updated.Presences[i+1:]...)
+			copy(updated.Presences[i:], updated.Presences[i+1:])
+			updated.Presences[len(updated.Presences)-1] = nil
+			updated.Presences = updated.Presences[:len(updated.Presences)-1]
 			s.replaceGuild(guild, updated)
 			return nil
 		}
