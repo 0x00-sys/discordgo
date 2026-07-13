@@ -1880,8 +1880,15 @@ func TestGuildMemberUpdateBeforeUpdateClonesUser(t *testing.T) {
 
 func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 	state := NewState()
-	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	initialGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 	session := &Session{StateEnabled: true}
 
@@ -1910,6 +1917,9 @@ func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 	if len(guild.SoundboardSounds) != 1 || guild.SoundboardSounds[0].Name != "created" {
 		t.Fatalf("cached sounds = %#v, want one created sound", guild.SoundboardSounds)
 	}
+	if &guild.Channels[0] != &initialGuild.Channels[0] {
+		t.Fatal("soundboard create copied the unrelated channels backing array")
+	}
 	if guild.SoundboardSounds[0].User.Username != "creator" ||
 		guild.SoundboardSounds[0].User.AvatarDecorationData.Asset != "created-decoration" {
 		t.Fatalf("cached creator = %#v, want an immutable copy", guild.SoundboardSounds[0].User)
@@ -1936,6 +1946,9 @@ func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 	}
 	if len(beforeUpdateGuild.SoundboardSounds) != 1 {
 		t.Fatalf("len(SoundboardSounds) = %d, want 1 after replacement", len(beforeUpdateGuild.SoundboardSounds))
+	}
+	if &beforeUpdateGuild.Channels[0] != &guild.Channels[0] {
+		t.Fatal("soundboard replacement copied the unrelated channels backing array")
 	}
 	old := beforeUpdateGuild.SoundboardSounds[0]
 	update := &GuildSoundboardSoundUpdate{SoundboardSound: &SoundboardSound{
@@ -1985,6 +1998,9 @@ func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 	if updated.Name != "updated" || updated.User.Username != "new-creator" {
 		t.Fatalf("cached updated sound = %#v, want an immutable copy", updated)
 	}
+	if &beforeDeleteGuild.Channels[0] != &beforeUpdateGuild.Channels[0] {
+		t.Fatal("soundboard update copied the unrelated channels backing array")
+	}
 
 	deleted := &GuildSoundboardSoundDelete{GuildID: "guild", SoundID: "sound"}
 	if err := state.OnInterface(session, deleted); err != nil {
@@ -2014,6 +2030,9 @@ func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 	if len(guild.SoundboardSounds) != 0 {
 		t.Fatalf("len(SoundboardSounds) = %d, want 0 after delete", len(guild.SoundboardSounds))
 	}
+	if &guild.Channels[0] != &beforeDeleteGuild.Channels[0] {
+		t.Fatal("soundboard delete copied the unrelated channels backing array")
+	}
 	for i, sound := range guild.SoundboardSounds[len(guild.SoundboardSounds):cap(guild.SoundboardSounds)] {
 		if sound != nil {
 			t.Fatalf("SoundboardSounds backing array entry %d still retains deleted sound %q", len(guild.SoundboardSounds)+i, sound.SoundID)
@@ -2024,7 +2043,8 @@ func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 func TestStateGuildSoundboardSoundsBulkReplace(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
-		ID: "guild",
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 		SoundboardSounds: []*SoundboardSound{
 			{SoundID: "old", GuildID: "guild", Name: "old"},
 		},
@@ -2075,6 +2095,9 @@ func TestStateGuildSoundboardSoundsBulkReplace(t *testing.T) {
 	}
 	if len(snapshot.SoundboardSounds) != 1 || snapshot.SoundboardSounds[0].Name != "old" {
 		t.Fatalf("old snapshot sounds = %#v, want old", snapshot.SoundboardSounds)
+	}
+	if &current.Channels[0] != &snapshot.Channels[0] {
+		t.Fatal("soundboard bulk update copied the unrelated channels backing array")
 	}
 
 	bulkSnapshot := current
@@ -6968,6 +6991,41 @@ func BenchmarkStateGuildEmojisReplaceSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.OnInterface(session, event); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateSoundboardUpdateGuildSnapshot(b *testing.B) {
+	sounds := make([]*SoundboardSound, 10)
+	for i := range sounds {
+		sounds[i] = &SoundboardSound{SoundID: "sound-" + strconv.Itoa(i), GuildID: "guild"}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     sounds,
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &SoundboardSound{SoundID: "sound-0", GuildID: "guild", Name: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := state.guildSoundboardSoundAdd(update); err != nil {
 			b.Fatal(err)
 		}
 	}
