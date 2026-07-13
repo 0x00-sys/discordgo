@@ -1108,9 +1108,8 @@ func TestListenDoesNotCloseReplacementConnection(t *testing.T) {
 }
 
 func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
-	oldJitter := gatewayHeartbeatInitialJitter
-	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
-	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
 
 	oldConn, _ := newGatewayTestConnection(t)
 	newConn, _ := newGatewayTestConnection(t)
@@ -1648,13 +1647,10 @@ func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 }
 
 func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
-	oldJitter := gatewayHeartbeatInitialJitter
-	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration {
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration {
 		return 50 * time.Millisecond
-	}
-	defer func() {
-		gatewayHeartbeatInitialJitter = oldJitter
-	}()
+	})
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
 
 	heartbeatRead := make(chan struct{}, 1)
 
@@ -1712,9 +1708,8 @@ func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
 }
 
 func TestHeartbeatReconnectsAfterOneMissedAck(t *testing.T) {
-	oldJitter := gatewayHeartbeatInitialJitter
-	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
-	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
 
 	conn, peer := newGatewayTestConnection(t)
 	closeCode := make(chan int, 1)
@@ -1781,9 +1776,8 @@ func TestHeartbeatReconnectsAfterOneMissedAck(t *testing.T) {
 }
 
 func TestHeartbeatContinuesAfterAck(t *testing.T) {
-	oldJitter := gatewayHeartbeatInitialJitter
-	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
-	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
 
 	conn, peer := newGatewayTestConnection(t)
 	listening := make(chan interface{})
@@ -1859,9 +1853,8 @@ func TestHeartbeatContinuesAfterAck(t *testing.T) {
 }
 
 func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
-	oldJitter := gatewayHeartbeatInitialJitter
-	gatewayHeartbeatInitialJitter = func(time.Duration) time.Duration { return 0 }
-	defer func() { gatewayHeartbeatInitialJitter = oldJitter }()
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
 
 	oldConn, _ := newGatewayTestConnection(t)
 	newConn, _ := newGatewayTestConnection(t)
