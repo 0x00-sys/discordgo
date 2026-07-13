@@ -331,10 +331,14 @@ func (s *State) GuildAdd(guild *Guild) error {
 			guild.Channels = g.Channels
 		}
 		if guild.Threads == nil && s.TrackThreads {
-			if s.TrackThreadMembers {
-				guild.Threads = g.Threads
-			} else {
-				guild.Threads = threadsWithoutMembers(g.Threads)
+			guild.Threads = g.Threads
+			if !s.TrackThreadMembers {
+				for _, thread := range guild.Threads {
+					if thread != nil && (thread.Member != nil || thread.Members != nil) {
+						guild.Threads = threadsWithoutMembers(guild.Threads)
+						break
+					}
+				}
 			}
 		}
 		if guild.VoiceStates == nil && s.TrackVoice {
