@@ -1166,15 +1166,17 @@ func (s *State) ChannelAdd(channel *Channel) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
 	if channel.IsThread() {
+		updated.Threads = append([]*Channel(nil), guild.Threads...)
 		updated.Threads = append(updated.Threads, channel)
 	} else {
+		updated.Channels = append([]*Channel(nil), guild.Channels...)
 		updated.Channels = append(updated.Channels, channel)
 	}
 
 	s.channelMap[channel.ID] = channel
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 
 	return nil
 }
@@ -1214,8 +1216,9 @@ func (s *State) ChannelRemove(channel *Channel) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
 	if cached.IsThread() {
+		updated.Threads = append([]*Channel(nil), guild.Threads...)
 		for i, t := range guild.Threads {
 			if t != nil && t.ID == channel.ID {
 				copy(updated.Threads[i:], updated.Threads[i+1:])
@@ -1225,6 +1228,7 @@ func (s *State) ChannelRemove(channel *Channel) error {
 			}
 		}
 	} else {
+		updated.Channels = append([]*Channel(nil), guild.Channels...)
 		for i, c := range guild.Channels {
 			if c != nil && c.ID == channel.ID {
 				copy(updated.Channels[i:], updated.Channels[i+1:])
@@ -1236,7 +1240,7 @@ func (s *State) ChannelRemove(channel *Channel) error {
 	}
 
 	delete(s.channelMap, channel.ID)
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 
 	return nil
 }
