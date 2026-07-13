@@ -1362,6 +1362,39 @@ func TestThreadListSyncHandlesThreadWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestThreadListSyncReleasesRemovedThreadReferences(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{
+			{ID: "old-thread-1", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
+			{ID: "old-thread-2", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
+			{ID: "old-thread-3", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	if err := state.ThreadListSync(&ThreadListSync{
+		GuildID: "guild",
+		Threads: []*Channel{
+			{ID: "new-thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
+		},
+	}); err != nil {
+		t.Fatalf("ThreadListSync returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after sync: %v", err)
+	}
+	for i, thread := range guild.Threads[len(guild.Threads):cap(guild.Threads)] {
+		if thread != nil {
+			t.Fatalf("Threads backing array entry %d still retains removed thread %q", len(guild.Threads)+i, thread.ID)
+		}
+	}
+}
+
 func TestPresenceAddSkipsMalformedCachedPresences(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{

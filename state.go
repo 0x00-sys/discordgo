@@ -1300,6 +1300,12 @@ outer:
 			}
 		}
 	}
+	if len(updated.Threads) < len(guild.Threads) {
+		threadSlots := updated.Threads[:len(guild.Threads)]
+		for i := len(updated.Threads); i < len(threadSlots); i++ {
+			threadSlots[i] = nil
+		}
+	}
 
 	s.replaceGuild(guild, updated)
 	return nil
