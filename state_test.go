@@ -1523,7 +1523,8 @@ func TestPresenceReadUsesStateLock(t *testing.T) {
 func TestPresenceAddReplacesCachedPointer(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
-		ID: "guild",
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 		Presences: []*Presence{
 			{
 				User:         &User{ID: "user", Username: "old", Avatar: "avatar"},
@@ -1533,6 +1534,10 @@ func TestPresenceAddReplacesCachedPointer(t *testing.T) {
 		},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 
 	oldPresence, err := state.Presence("guild", "user")
@@ -1579,6 +1584,16 @@ func TestPresenceAddReplacesCachedPointer(t *testing.T) {
 	}
 	if updatedPresence.ClientStatus.Mobile != StatusIdle {
 		t.Fatalf("updated mobile status = %q, want %q", updatedPresence.ClientStatus.Mobile, StatusIdle)
+	}
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after update: %v", err)
+	}
+	if &updatedGuild.Presences[0] == &oldGuild.Presences[0] {
+		t.Fatal("PresenceAdd reused the presences backing array")
+	}
+	if &updatedGuild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("PresenceAdd copied the unrelated channels backing array")
 	}
 }
 
@@ -1645,13 +1660,18 @@ func TestPresenceUpdateRequiresUserForMemberTracking(t *testing.T) {
 func TestPresenceRemoveReleasesRemovedPresenceReference(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
-		ID: "guild",
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 		Presences: []*Presence{
 			{User: &User{ID: "keep"}},
 			{User: &User{ID: "remove"}},
 		},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 
 	if err := state.PresenceRemove("guild", &Presence{User: &User{ID: "remove"}}); err != nil {
@@ -1661,6 +1681,12 @@ func TestPresenceRemoveReleasesRemovedPresenceReference(t *testing.T) {
 	guild, err := state.Guild("guild")
 	if err != nil {
 		t.Fatalf("Guild returned error: %v", err)
+	}
+	if &guild.Presences[0] == &oldGuild.Presences[0] {
+		t.Fatal("PresenceRemove reused the presences backing array")
+	}
+	if &guild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("PresenceRemove copied the unrelated channels backing array")
 	}
 	for i, presence := range guild.Presences[len(guild.Presences):cap(guild.Presences)] {
 		if presence != nil {
@@ -6660,6 +6686,41 @@ func BenchmarkStateGuildScheduledEventUserCountSnapshot(b *testing.B) {
 			delta = -1
 		}
 		if err := state.updateGuildScheduledEventUserCount("guild", "event-0", delta); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStatePresenceUpdateGuildSnapshot(b *testing.B) {
+	presences := make([]*Presence, 1000)
+	for i := range presences {
+		presences[i] = &Presence{User: &User{ID: "user-" + strconv.Itoa(i)}, Status: StatusOnline}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            presences,
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &Presence{User: &User{ID: "user-0"}, Status: StatusIdle}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.PresenceAdd("guild", update); err != nil {
 			b.Fatal(err)
 		}
 	}

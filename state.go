@@ -477,11 +477,12 @@ func (s *State) presenceAdd(guildID string, presence *Presence) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
-	if err := presenceAddToGuild(updated, presence); err != nil {
+	updated := *guild
+	updated.Presences = append([]*Presence(nil), guild.Presences...)
+	if err := presenceAddToGuild(&updated, presence); err != nil {
 		return err
 	}
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
@@ -581,7 +582,8 @@ func (s *State) PresenceRemove(guildID string, presence *Presence) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.Presences = append([]*Presence(nil), guild.Presences...)
 	for i, p := range updated.Presences {
 		if p == nil || p.User == nil {
 			continue
@@ -591,7 +593,7 @@ func (s *State) PresenceRemove(guildID string, presence *Presence) error {
 			copy(updated.Presences[i:], updated.Presences[i+1:])
 			updated.Presences[len(updated.Presences)-1] = nil
 			updated.Presences = updated.Presences[:len(updated.Presences)-1]
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return nil
 		}
 	}
