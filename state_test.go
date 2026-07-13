@@ -5242,6 +5242,7 @@ func TestGuildEmojisStickersUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
 		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 		Emojis:   []*Emoji{{ID: "emoji-old"}},
 		Stickers: []*Sticker{{ID: "sticker-old"}},
 	}); err != nil {
@@ -5259,6 +5260,16 @@ func TestGuildEmojisStickersUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	afterEmojis, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after emoji update: %v", err)
+	}
+	if &afterEmojis.Channels[0] != &snapshot.Channels[0] {
+		t.Fatal("GuildEmojisUpdate copied the unrelated channels backing array")
+	}
+	if &afterEmojis.Stickers[0] != &snapshot.Stickers[0] {
+		t.Fatal("GuildEmojisUpdate copied the unrelated stickers backing array")
 	}
 	err = state.OnInterface(&Session{StateEnabled: true}, &GuildStickersUpdate{
 		GuildID:  "guild",
@@ -5284,6 +5295,12 @@ func TestGuildEmojisStickersUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	}
 	if len(current.Stickers) != 1 || current.Stickers[0].ID != "sticker-new" {
 		t.Fatalf("current.Stickers = %v, want sticker-new", current.Stickers)
+	}
+	if &current.Channels[0] != &afterEmojis.Channels[0] {
+		t.Fatal("GuildStickersUpdate copied the unrelated channels backing array")
+	}
+	if &current.Emojis[0] != &afterEmojis.Emojis[0] {
+		t.Fatal("GuildStickersUpdate copied the unrelated emojis backing array")
 	}
 }
 
@@ -6919,6 +6936,38 @@ func BenchmarkStateEmojiUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.EmojiAdd("guild", update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateGuildEmojisReplaceSnapshot(b *testing.B) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	event := &GuildEmojisUpdate{GuildID: "guild", Emojis: make([]*Emoji, 100)}
+	session := &Session{StateEnabled: true}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.OnInterface(session, event); err != nil {
 			b.Fatal(err)
 		}
 	}

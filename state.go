@@ -2563,9 +2563,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			if !ok {
 				return ErrStateNotFound
 			}
-			updated := copyGuild(guild)
+			updated := *guild
 			updated.Emojis = t.Emojis
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 		}
 	case *GuildStickersUpdate:
 		if s.TrackStickers {
@@ -2578,9 +2578,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			if !ok {
 				return ErrStateNotFound
 			}
-			updated := copyGuild(guild)
+			updated := *guild
 			updated.Stickers = t.Stickers
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 		}
 	case *GuildSoundboardSoundCreate:
 		if t == nil || t.SoundboardSound == nil {
