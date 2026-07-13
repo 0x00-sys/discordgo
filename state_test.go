@@ -2417,8 +2417,15 @@ func TestStateGuildSoundboardSoundsDoNotRaceGuildSnapshot(t *testing.T) {
 
 func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	state := NewState()
-	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	initialGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 	session := &Session{StateEnabled: true}
 
@@ -2444,6 +2451,9 @@ func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	}
 	if len(guild.GuildScheduledEvents) != 1 || guild.GuildScheduledEvents[0].Name != "created" {
 		t.Fatalf("cached events = %#v, want one created event", guild.GuildScheduledEvents)
+	}
+	if &guild.Channels[0] != &initialGuild.Channels[0] {
+		t.Fatal("scheduled event create copied the unrelated channels backing array")
 	}
 	if guild.GuildScheduledEvents[0].RecurrenceRule.ByMonthDay[0] != 12 {
 		t.Fatalf("cached recurrence day = %d, want 12", guild.GuildScheduledEvents[0].RecurrenceRule.ByMonthDay[0])
@@ -2473,6 +2483,9 @@ func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	}
 	if len(beforeUpdateGuild.GuildScheduledEvents) != 1 {
 		t.Fatalf("len(GuildScheduledEvents) = %d, want 1 after replacement", len(beforeUpdateGuild.GuildScheduledEvents))
+	}
+	if &beforeUpdateGuild.Channels[0] != &guild.Channels[0] {
+		t.Fatal("scheduled event replacement copied the unrelated channels backing array")
 	}
 	old := beforeUpdateGuild.GuildScheduledEvents[0]
 	update := &GuildScheduledEventUpdate{GuildScheduledEvent: &GuildScheduledEvent{
@@ -2520,6 +2533,9 @@ func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	if updated.Name != "updated" {
 		t.Fatalf("cached updated event name = %q, want updated", updated.Name)
 	}
+	if &beforeDeleteGuild.Channels[0] != &beforeUpdateGuild.Channels[0] {
+		t.Fatal("scheduled event update copied the unrelated channels backing array")
+	}
 
 	deleted := &GuildScheduledEventDelete{GuildScheduledEvent: &GuildScheduledEvent{ID: "event", GuildID: "guild"}}
 	if err := state.OnInterface(session, deleted); err != nil {
@@ -2542,6 +2558,9 @@ func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	}
 	if len(guild.GuildScheduledEvents) != 0 {
 		t.Fatalf("len(GuildScheduledEvents) = %d, want 0 after delete", len(guild.GuildScheduledEvents))
+	}
+	if &guild.Channels[0] != &beforeDeleteGuild.Channels[0] {
+		t.Fatal("scheduled event delete copied the unrelated channels backing array")
 	}
 	for i, event := range guild.GuildScheduledEvents[len(guild.GuildScheduledEvents):cap(guild.GuildScheduledEvents)] {
 		if event != nil {
@@ -7077,6 +7096,41 @@ func BenchmarkStateStageInstanceUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := state.guildStageInstanceAdd(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateScheduledEventUpdateGuildSnapshot(b *testing.B) {
+	events := make([]*GuildScheduledEvent, 10)
+	for i := range events {
+		events[i] = &GuildScheduledEvent{ID: "event-" + strconv.Itoa(i), GuildID: "guild"}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: events,
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &GuildScheduledEvent{ID: "event-0", GuildID: "guild", Name: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := state.guildScheduledEventAdd(update); err != nil {
 			b.Fatal(err)
 		}
 	}
