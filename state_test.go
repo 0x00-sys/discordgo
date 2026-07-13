@@ -1215,13 +1215,18 @@ func TestGuildMemberRemoveReplacesCachedGuildPointer(t *testing.T) {
 func TestMemberRemoveReleasesRemovedMemberReference(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
-		ID: "guild",
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 		Members: []*Member{
 			{GuildID: "guild", User: &User{ID: "keep"}},
 			{GuildID: "guild", User: &User{ID: "remove"}},
 		},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 
 	if err := state.MemberRemove(&Member{GuildID: "guild", User: &User{ID: "remove"}}); err != nil {
@@ -1231,6 +1236,12 @@ func TestMemberRemoveReleasesRemovedMemberReference(t *testing.T) {
 	guild, err := state.Guild("guild")
 	if err != nil {
 		t.Fatalf("Guild returned error: %v", err)
+	}
+	if &guild.Members[0] == &oldGuild.Members[0] {
+		t.Fatal("MemberRemove reused the members backing array")
+	}
+	if &guild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("MemberRemove copied the unrelated channels backing array")
 	}
 	for i, member := range guild.Members[len(guild.Members):cap(guild.Members)] {
 		if member != nil {
@@ -2675,7 +2686,8 @@ func TestStateGuildScheduledEventCountDoesNotRaceGuildSnapshot(t *testing.T) {
 func TestMemberAddReplacesCachedPointer(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
-		ID: "guild",
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 		Members: []*Member{
 			{
 				GuildID: "guild",
@@ -2684,6 +2696,10 @@ func TestMemberAddReplacesCachedPointer(t *testing.T) {
 		},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
 	}
 
 	oldMember, err := state.Member("guild", "user")
@@ -2725,6 +2741,12 @@ func TestMemberAddReplacesCachedPointer(t *testing.T) {
 	}
 	if guild.Members[0] != updatedMember {
 		t.Fatal("guild member slice does not point at the updated cached member")
+	}
+	if &guild.Members[0] == &oldGuild.Members[0] {
+		t.Fatal("MemberAdd reused the members backing array")
+	}
+	if &guild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("MemberAdd copied the unrelated channels backing array")
 	}
 }
 
@@ -6721,6 +6743,41 @@ func BenchmarkStatePresenceUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.PresenceAdd("guild", update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMemberUpdateGuildSnapshot(b *testing.B) {
+	members := make([]*Member, 1000)
+	for i := range members {
+		members[i] = &Member{GuildID: "guild", User: &User{ID: "user-" + strconv.Itoa(i)}}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              members,
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &Member{GuildID: "guild", User: &User{ID: "user-0", Username: "updated"}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.MemberAdd(update); err != nil {
 			b.Fatal(err)
 		}
 	}
