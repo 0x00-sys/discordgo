@@ -952,7 +952,9 @@ func (s *State) guildSoundboardSoundRemove(guildID, soundID string) (*Soundboard
 		}
 
 		updated := copyGuild(guild)
-		updated.SoundboardSounds = append(updated.SoundboardSounds[:i], updated.SoundboardSounds[i+1:]...)
+		copy(updated.SoundboardSounds[i:], updated.SoundboardSounds[i+1:])
+		updated.SoundboardSounds[len(updated.SoundboardSounds)-1] = nil
+		updated.SoundboardSounds = updated.SoundboardSounds[:len(updated.SoundboardSounds)-1]
 		s.replaceGuild(guild, updated)
 		return copySoundboardSound(sound), nil
 	}
