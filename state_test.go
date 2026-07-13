@@ -3388,6 +3388,56 @@ func TestChannelRemoveReplacesParentGuildPointer(t *testing.T) {
 	}
 }
 
+func TestChannelCollectionMutationsShareUnrelatedGuildSlices(t *testing.T) {
+	for _, channel := range []*Channel{
+		{ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText},
+		{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
+	} {
+		t.Run(channel.ID, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{
+				ID:      "guild",
+				Members: []*Member{{User: &User{ID: "member"}}},
+			}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+			beforeAdd, err := state.Guild("guild")
+			if err != nil {
+				t.Fatalf("Guild returned error: %v", err)
+			}
+
+			if err := state.ChannelAdd(channel); err != nil {
+				t.Fatalf("ChannelAdd returned error: %v", err)
+			}
+			afterAdd, err := state.Guild("guild")
+			if err != nil {
+				t.Fatalf("Guild returned error after ChannelAdd: %v", err)
+			}
+			if &afterAdd.Members[0] != &beforeAdd.Members[0] {
+				t.Fatal("ChannelAdd copied the unrelated members backing array")
+			}
+
+			if err := state.ChannelRemove(channel); err != nil {
+				t.Fatalf("ChannelRemove returned error: %v", err)
+			}
+			afterRemove, err := state.Guild("guild")
+			if err != nil {
+				t.Fatalf("Guild returned error after ChannelRemove: %v", err)
+			}
+			if &afterRemove.Members[0] != &afterAdd.Members[0] {
+				t.Fatal("ChannelRemove copied the unrelated members backing array")
+			}
+			if channel.IsThread() {
+				if len(afterAdd.Threads) != 1 || len(afterRemove.Threads) != 0 {
+					t.Fatalf("thread lengths after add/remove = %d/%d, want 1/0", len(afterAdd.Threads), len(afterRemove.Threads))
+				}
+			} else if len(afterAdd.Channels) != 1 || len(afterRemove.Channels) != 0 {
+				t.Fatalf("channel lengths after add/remove = %d/%d, want 1/0", len(afterAdd.Channels), len(afterRemove.Channels))
+			}
+		})
+	}
+}
+
 func TestChannelRemoveSkipsNilCachedChannels(t *testing.T) {
 	dm := &Channel{ID: "dm", Type: ChannelTypeDM}
 	channel := &Channel{ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText}
@@ -7131,6 +7181,44 @@ func BenchmarkStateScheduledEventUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := state.guildScheduledEventAdd(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateChannelAddRemoveGuildSnapshot(b *testing.B) {
+	channels := make([]*Channel, 100)
+	for i := range channels {
+		channels[i] = &Channel{ID: "channel-" + strconv.Itoa(i), GuildID: "guild", Type: ChannelTypeGuildText}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             channels,
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	channel := channels[0]
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.ChannelRemove(channel); err != nil {
+			b.Fatal(err)
+		}
+		if err := state.ChannelAdd(channel); err != nil {
 			b.Fatal(err)
 		}
 	}
