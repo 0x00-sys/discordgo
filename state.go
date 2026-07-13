@@ -815,7 +815,9 @@ func (s *State) RoleRemove(guildID, roleID string) error {
 			continue
 		}
 		if r.ID == roleID {
-			updated.Roles = append(updated.Roles[:i], updated.Roles[i+1:]...)
+			copy(updated.Roles[i:], updated.Roles[i+1:])
+			updated.Roles[len(updated.Roles)-1] = nil
+			updated.Roles = updated.Roles[:len(updated.Roles)-1]
 			s.replaceGuild(guild, updated)
 			return nil
 		}
