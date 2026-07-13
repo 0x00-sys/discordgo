@@ -641,9 +641,10 @@ func (s *State) memberAdd(member *Member) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
-	memberAddToGuild(members, updated, copyMember(member))
-	s.replaceGuild(guild, updated)
+	updated := *guild
+	updated.Members = append([]*Member(nil), guild.Members...)
+	memberAddToGuild(members, &updated, copyMember(member))
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
@@ -721,7 +722,8 @@ func (s *State) MemberRemove(member *Member) error {
 	}
 	delete(members, member.User.ID)
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.Members = append([]*Member(nil), guild.Members...)
 	for i, m := range updated.Members {
 		if m == nil || m.User == nil {
 			continue
@@ -730,7 +732,7 @@ func (s *State) MemberRemove(member *Member) error {
 			copy(updated.Members[i:], updated.Members[i+1:])
 			updated.Members[len(updated.Members)-1] = nil
 			updated.Members = updated.Members[:len(updated.Members)-1]
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return nil
 		}
 	}
