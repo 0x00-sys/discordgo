@@ -1949,20 +1949,24 @@ func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageRea
 			continue
 		}
 
-		reactions := copyMessageReactionState(message.Reactions)
+		var reactions []*MessageReactions
 		changed := false
 		burst := reaction.Burst || reaction.Type == ReactionTypeBurst
 		me := s.User != nil && reaction.UserID == s.User.ID
 
 		switch kind {
 		case messageReactionAdd:
+			reactions = append([]*MessageReactions(nil), message.Reactions...)
 			found := false
-			for _, cached := range reactions {
+			for i, cached := range reactions {
 				if cached == nil || !reactionEmojiEqual(cached.Emoji, &reaction.Emoji) {
 					continue
 				}
 
 				found = true
+				updatedReaction := *cached
+				cached = &updatedReaction
+				reactions[i] = cached
 				if repairReactionCountDetails(cached, burst, false) {
 					changed = true
 				}
@@ -2004,11 +2008,15 @@ func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageRea
 				changed = true
 			}
 		case messageReactionRemove:
+			reactions = append([]*MessageReactions(nil), message.Reactions...)
 			for i, cached := range reactions {
 				if cached == nil || !reactionEmojiEqual(cached.Emoji, &reaction.Emoji) {
 					continue
 				}
 
+				updatedReaction := *cached
+				cached = &updatedReaction
+				reactions[i] = cached
 				if repairReactionCountDetails(cached, burst, true) {
 					changed = true
 				}
@@ -2049,11 +2057,11 @@ func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageRea
 				break
 			}
 		case messageReactionRemoveAll:
-			if len(reactions) != 0 {
-				reactions = nil
+			if len(message.Reactions) != 0 {
 				changed = true
 			}
 		case messageReactionRemoveEmoji:
+			reactions = append([]*MessageReactions(nil), message.Reactions...)
 			kept := reactions[:0]
 			for _, cached := range reactions {
 				if cached != nil && reactionEmojiEqual(cached.Emoji, &reaction.Emoji) {
@@ -2103,21 +2111,6 @@ func repairReactionCountDetails(reaction *MessageReactions, burst, removing bool
 	reaction.CountDetails.Burst = burstCount
 	reaction.CountDetails.Normal = reaction.Count - burstCount
 	return true
-}
-
-func copyMessageReactionState(reactions []*MessageReactions) []*MessageReactions {
-	copied := make([]*MessageReactions, len(reactions))
-	for i, reaction := range reactions {
-		if reaction == nil {
-			continue
-		}
-
-		reactionCopy := *reaction
-		reactionCopy.Emoji = copyReactionEmoji(reaction.Emoji)
-		reactionCopy.BurstColors = append([]string(nil), reaction.BurstColors...)
-		copied[i] = &reactionCopy
-	}
-	return copied
 }
 
 func copyReactionEmoji(emoji *Emoji) *Emoji {

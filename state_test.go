@@ -6279,6 +6279,75 @@ func TestMessageReactionStateDoesNotMutateSnapshots(t *testing.T) {
 	}
 }
 
+func TestMessageReactionStateSharesUnchangedReactions(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 1
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{
+		ID: "message", ChannelID: "channel",
+		Reactions: []*MessageReactions{
+			{Count: 1, CountDetails: MessageReactionCountDetails{Normal: 1}, Emoji: &Emoji{ID: "keep"}},
+			{Count: 2, CountDetails: MessageReactionCountDetails{Normal: 2}, Emoji: &Emoji{ID: "target"}},
+		},
+	}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+	reaction := &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message",
+		Emoji: Emoji{ID: "target"}, Type: ReactionTypeNormal,
+	}
+
+	beforeAdd, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if err := state.messageReactionUpdate(reaction, messageReactionAdd); err != nil {
+		t.Fatalf("messageReactionUpdate(add) returned error: %v", err)
+	}
+	afterAdd, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error after add: %v", err)
+	}
+	if afterAdd.Reactions[0] != beforeAdd.Reactions[0] {
+		t.Fatal("reaction add copied an unchanged reaction")
+	}
+	if afterAdd.Reactions[1] == beforeAdd.Reactions[1] || beforeAdd.Reactions[1].Count != 2 || afterAdd.Reactions[1].Count != 3 {
+		t.Fatal("reaction add did not copy only the changed reaction")
+	}
+
+	if err := state.messageReactionUpdate(reaction, messageReactionRemove); err != nil {
+		t.Fatalf("messageReactionUpdate(remove) returned error: %v", err)
+	}
+	afterRemove, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error after remove: %v", err)
+	}
+	if afterRemove.Reactions[0] != afterAdd.Reactions[0] {
+		t.Fatal("reaction remove copied an unchanged reaction")
+	}
+	if afterRemove.Reactions[1] == afterAdd.Reactions[1] || afterAdd.Reactions[1].Count != 3 || afterRemove.Reactions[1].Count != 2 {
+		t.Fatal("reaction remove did not copy only the changed reaction")
+	}
+
+	if err := state.messageReactionUpdate(&MessageReaction{
+		ChannelID: "channel", MessageID: "message", Emoji: Emoji{ID: "target"},
+	}, messageReactionRemoveEmoji); err != nil {
+		t.Fatalf("messageReactionUpdate(remove emoji) returned error: %v", err)
+	}
+	afterRemoveEmoji, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error after remove emoji: %v", err)
+	}
+	if len(afterRemoveEmoji.Reactions) != 1 || afterRemoveEmoji.Reactions[0] != afterRemove.Reactions[0] {
+		t.Fatal("reaction emoji removal copied the unchanged reaction")
+	}
+}
+
 func TestMessageReactionRemovalReleasesRemovedReference(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -7313,6 +7382,45 @@ func BenchmarkStateGuildMembersChunkGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.OnInterface(session, chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateMessageReactionUpdateSnapshot(b *testing.B) {
+	reactions := make([]*MessageReactions, 20)
+	for i := range reactions {
+		reactions[i] = &MessageReactions{
+			Count:        1,
+			CountDetails: MessageReactionCountDetails{Normal: 1},
+			Emoji: &Emoji{
+				ID:    "emoji-" + strconv.Itoa(i),
+				Roles: []string{"role-a", "role-b"},
+				User:  &User{ID: "creator"},
+			},
+			BurstColors: []string{"#ff0000", "#00ff00"},
+		}
+	}
+	state := NewState()
+	state.MaxMessageCount = 1
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	if err := state.MessageAdd(&Message{ID: "message", ChannelID: "channel", Reactions: reactions}); err != nil {
+		b.Fatal(err)
+	}
+	update := &MessageReaction{
+		UserID: "user", ChannelID: "channel", MessageID: "message",
+		Emoji: Emoji{ID: "emoji-0"}, Type: ReactionTypeNormal,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.messageReactionUpdate(update, messageReactionAdd); err != nil {
 			b.Fatal(err)
 		}
 	}
