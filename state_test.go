@@ -4345,7 +4345,8 @@ func TestThreadListSyncRespectsThreadMemberTracking(t *testing.T) {
 func TestThreadListSyncReplacesParentGuildPointer(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
-		ID: "guild",
+		ID:      "guild",
+		Members: []*Member{{User: &User{ID: "member"}}},
 		Threads: []*Channel{
 			{
 				ID:       "old-thread",
@@ -4391,6 +4392,9 @@ func TestThreadListSyncReplacesParentGuildPointer(t *testing.T) {
 	}
 	if updatedGuild == oldGuild {
 		t.Fatal("ThreadListSync reused the previously cached parent guild pointer")
+	}
+	if &updatedGuild.Members[0] != &oldGuild.Members[0] {
+		t.Fatal("ThreadListSync copied the unrelated members backing array")
 	}
 	if len(oldGuild.Threads) != 1 {
 		t.Fatalf("len(oldGuild.Threads) = %d, want 1", len(oldGuild.Threads))
@@ -7219,6 +7223,47 @@ func BenchmarkStateChannelAddRemoveGuildSnapshot(b *testing.B) {
 			b.Fatal(err)
 		}
 		if err := state.ChannelAdd(channel); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateThreadListSyncGuildSnapshot(b *testing.B) {
+	threads := make([]*Channel, 10)
+	for i := range threads {
+		threads[i] = &Channel{
+			ID:             "thread-" + strconv.Itoa(i),
+			GuildID:        "guild",
+			ParentID:       "parent",
+			Type:           ChannelTypeGuildPublicThread,
+			ThreadMetadata: &ThreadMetadata{},
+		}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              threads,
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	tls := &ThreadListSync{GuildID: "guild", Threads: threads}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.ThreadListSync(tls); err != nil {
 			b.Fatal(err)
 		}
 	}

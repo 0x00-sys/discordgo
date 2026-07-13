@@ -1288,7 +1288,8 @@ func (s *State) ThreadListSync(tls *ThreadListSync) error {
 	// This algorithm filters out archived or
 	// threads which are children of channels in channelIDs
 	// and then it adds all synced threads to guild threads and cache
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.Threads = append([]*Channel(nil), guild.Threads...)
 	updated.Threads = updated.Threads[:0]
 outer:
 	for _, t := range guild.Threads {
@@ -1327,7 +1328,7 @@ outer:
 				copied := *c
 				copied.Member = m
 				s.channelMap[m.ID] = &copied
-				replaceThreadInGuild(updated, c, &copied)
+				replaceThreadInGuild(&updated, c, &copied)
 			}
 		}
 	}
@@ -1338,7 +1339,7 @@ outer:
 		}
 	}
 
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
