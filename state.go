@@ -871,17 +871,18 @@ func (s *State) guildSoundboardSoundAdd(sound *SoundboardSound) (*SoundboardSoun
 		return nil, nil
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.SoundboardSounds = append([]*SoundboardSound(nil), guild.SoundboardSounds...)
 	for i, cached := range guild.SoundboardSounds {
 		if cached != nil && cached.SoundID == sound.SoundID {
 			updated.SoundboardSounds[i] = copySoundboardSound(sound)
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return copySoundboardSound(cached), nil
 		}
 	}
 
 	updated.SoundboardSounds = append(updated.SoundboardSounds, copySoundboardSound(sound))
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil, nil
 }
 
@@ -957,11 +958,12 @@ func (s *State) guildSoundboardSoundRemove(guildID, soundID string) (*Soundboard
 			continue
 		}
 
-		updated := copyGuild(guild)
+		updated := *guild
+		updated.SoundboardSounds = append([]*SoundboardSound(nil), guild.SoundboardSounds...)
 		copy(updated.SoundboardSounds[i:], updated.SoundboardSounds[i+1:])
 		updated.SoundboardSounds[len(updated.SoundboardSounds)-1] = nil
 		updated.SoundboardSounds = updated.SoundboardSounds[:len(updated.SoundboardSounds)-1]
-		s.replaceGuild(guild, updated)
+		s.replaceGuild(guild, &updated)
 		return copySoundboardSound(sound), nil
 	}
 
@@ -989,9 +991,9 @@ func (s *State) guildSoundboardSoundsReplace(guildID string, sounds []*Soundboar
 		return nil
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
 	updated.SoundboardSounds = copied
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
