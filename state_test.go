@@ -937,6 +937,10 @@ func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
 	}
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
 
 	event := &GuildDelete{Guild: &Guild{
 		ID:          "guild",
@@ -952,6 +956,18 @@ func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
 	}
 	if !guild.Unavailable {
 		t.Fatal("guild unavailable flag was not set")
+	}
+	if guild == oldGuild {
+		t.Fatal("unavailable delete reused the previously cached guild pointer")
+	}
+	if &guild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("unavailable delete copied the unrelated channels backing array")
+	}
+	if &guild.Threads[0] != &oldGuild.Threads[0] {
+		t.Fatal("unavailable delete copied the unrelated threads backing array")
+	}
+	if &guild.Members[0] != &oldGuild.Members[0] {
+		t.Fatal("unavailable delete copied the unrelated members backing array")
 	}
 	if event.BeforeDelete == nil {
 		t.Fatal("BeforeDelete was not populated")
@@ -6565,6 +6581,38 @@ func BenchmarkStateGuildMemberCountSnapshot(b *testing.B) {
 		err := state.updateGuildMemberCount("guild", delta)
 		state.Unlock()
 		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateGuildUnavailableSnapshot(b *testing.B) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	event := &GuildDelete{Guild: &Guild{ID: "guild", Unavailable: true}}
+	session := &Session{StateEnabled: true}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.OnInterface(session, event); err != nil {
 			b.Fatal(err)
 		}
 	}

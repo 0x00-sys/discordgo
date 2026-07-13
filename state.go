@@ -2388,9 +2388,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			// the guild as unavailable.
 			s.Lock()
 			if guild, ok := s.guildMap[t.ID]; ok {
-				updated := copyGuild(guild)
+				updated := *guild
 				updated.Unavailable = true
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 				s.Unlock()
 			} else {
 				s.Unlock()
