@@ -536,7 +536,7 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 		}
 	case http.StatusUnauthorized:
 		if strings.Index(s.Token, "Bot ") != 0 {
-			s.log(LogInformational, ErrUnauthorized.Error())
+			s.log(LogInformational, "%s", ErrUnauthorized)
 			err = ErrUnauthorized
 		}
 		fallthrough

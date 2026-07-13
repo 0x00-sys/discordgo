@@ -621,7 +621,11 @@ const maxGatewayHeartbeatIntervalMsec = time.Duration(1<<63-1) / time.Millisecon
 // compatibility.
 const FailedHeartbeatAcks time.Duration = time.Millisecond
 
-var gatewayHeartbeatInitialJitter = randomGatewayHeartbeatInitialJitter
+var gatewayHeartbeatInitialJitter atomic.Value
+
+func init() {
+	gatewayHeartbeatInitialJitter.Store(randomGatewayHeartbeatInitialJitter)
+}
 
 // HeartbeatLatency returns the latency between heartbeat acknowledgement and heartbeat send.
 func (s *Session) HeartbeatLatency() time.Duration {
@@ -703,7 +707,8 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 }
 
 func waitForInitialHeartbeat(listening <-chan interface{}, heartbeatInterval time.Duration) bool {
-	delay := gatewayHeartbeatInitialJitter(heartbeatInterval)
+	jitter := gatewayHeartbeatInitialJitter.Load().(func(time.Duration) time.Duration)
+	delay := jitter(heartbeatInterval)
 	if delay <= 0 {
 		return true
 	}

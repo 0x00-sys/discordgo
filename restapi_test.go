@@ -419,7 +419,7 @@ func TestUserChannelCreate(t *testing.T) {
 
 	_, err := dg.UserChannelCreate(envAdmin)
 	if err != nil {
-		t.Errorf(err.Error())
+		t.Error(err)
 	}
 
 	// TODO make sure the channel was added
@@ -432,7 +432,7 @@ func TestUserGuilds(t *testing.T) {
 
 	_, err := dg.UserGuilds(10, "", "", false)
 	if err != nil {
-		t.Errorf(err.Error())
+		t.Error(err)
 	}
 }
 
