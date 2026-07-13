@@ -2019,7 +2019,9 @@ func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageRea
 				}
 
 				if cached.Count == 0 {
-					reactions = append(reactions[:i], reactions[i+1:]...)
+					copy(reactions[i:], reactions[i+1:])
+					reactions[len(reactions)-1] = nil
+					reactions = reactions[:len(reactions)-1]
 				}
 				changed = true
 				break
@@ -2037,6 +2039,9 @@ func (s *State) messageReactionUpdate(reaction *MessageReaction, kind messageRea
 					continue
 				}
 				kept = append(kept, cached)
+			}
+			for i := len(kept); i < len(reactions); i++ {
+				reactions[i] = nil
 			}
 			reactions = kept
 		}
