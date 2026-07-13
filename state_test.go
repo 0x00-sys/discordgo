@@ -3195,6 +3195,21 @@ func TestChannelRemoveSkipsNilCachedChannels(t *testing.T) {
 	if len(guild.Threads) != 1 || guild.Threads[0] != nil {
 		t.Fatalf("Threads = %#v, want one nil entry", guild.Threads)
 	}
+
+	for _, tt := range []struct {
+		name     string
+		channels []*Channel
+	}{
+		{name: "private channels", channels: state.PrivateChannels},
+		{name: "guild channels", channels: guild.Channels},
+		{name: "guild threads", channels: guild.Threads},
+	} {
+		for i, channel := range tt.channels[len(tt.channels):cap(tt.channels)] {
+			if channel != nil {
+				t.Fatalf("%s backing array entry %d still retains removed channel %q", tt.name, len(tt.channels)+i, channel.ID)
+			}
+		}
+	}
 }
 
 func TestChannelAddDoesNotRaceReturnedGuildChannels(t *testing.T) {

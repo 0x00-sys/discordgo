@@ -1172,7 +1172,9 @@ func (s *State) ChannelRemove(channel *Channel) error {
 	if cached.Type == ChannelTypeDM || cached.Type == ChannelTypeGroupDM {
 		for i, c := range s.PrivateChannels {
 			if c != nil && c.ID == channel.ID {
-				s.PrivateChannels = append(s.PrivateChannels[:i], s.PrivateChannels[i+1:]...)
+				copy(s.PrivateChannels[i:], s.PrivateChannels[i+1:])
+				s.PrivateChannels[len(s.PrivateChannels)-1] = nil
+				s.PrivateChannels = s.PrivateChannels[:len(s.PrivateChannels)-1]
 				break
 			}
 		}
@@ -1189,14 +1191,18 @@ func (s *State) ChannelRemove(channel *Channel) error {
 	if cached.IsThread() {
 		for i, t := range guild.Threads {
 			if t != nil && t.ID == channel.ID {
-				updated.Threads = append(updated.Threads[:i], updated.Threads[i+1:]...)
+				copy(updated.Threads[i:], updated.Threads[i+1:])
+				updated.Threads[len(updated.Threads)-1] = nil
+				updated.Threads = updated.Threads[:len(updated.Threads)-1]
 				break
 			}
 		}
 	} else {
 		for i, c := range guild.Channels {
 			if c != nil && c.ID == channel.ID {
-				updated.Channels = append(updated.Channels[:i], updated.Channels[i+1:]...)
+				copy(updated.Channels[i:], updated.Channels[i+1:])
+				updated.Channels[len(updated.Channels)-1] = nil
+				updated.Channels = updated.Channels[:len(updated.Channels)-1]
 				break
 			}
 		}
