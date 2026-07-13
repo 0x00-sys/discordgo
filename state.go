@@ -1350,7 +1350,8 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 	if !ok {
 		return ErrStateNotFound
 	}
-	updated := copyChannel(thread)
+	updated := *thread
+	updated.Members = append([]*ThreadMember(nil), thread.Members...)
 
 	if len(tmu.RemovedMembers) > 0 {
 		removedMembers := make(map[string]struct{}, len(tmu.RemovedMembers))
@@ -1393,8 +1394,8 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 		}
 	}
 	updated.MemberCount = tmu.MemberCount
-	s.channelMap[tmu.ID] = updated
-	s.replaceChannel(thread, updated)
+	s.channelMap[tmu.ID] = &updated
+	s.replaceChannel(thread, &updated)
 
 	return nil
 }
