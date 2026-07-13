@@ -1019,14 +1019,29 @@ func TestGuildAddReplacesCachedPointer(t *testing.T) {
 		Roles: []*Role{
 			{ID: "role", Name: "old-role"},
 		},
+		Emojis: []*Emoji{
+			{ID: "emoji", Name: "old-emoji"},
+		},
+		Stickers: []*Sticker{
+			{ID: "sticker", Name: "old-sticker"},
+		},
 		Channels: []*Channel{
 			{ID: "channel", GuildID: "guild"},
+		},
+		Threads: []*Channel{
+			{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread},
 		},
 		Members: []*Member{
 			{
 				GuildID: "guild",
 				User:    &User{ID: "user"},
 			},
+		},
+		Presences: []*Presence{
+			{User: &User{ID: "user"}},
+		},
+		VoiceStates: []*VoiceState{
+			{GuildID: "guild", UserID: "user"},
 		},
 		GuildScheduledEvents: []*GuildScheduledEvent{
 			{ID: "event", GuildID: "guild", Name: "old-event"},
@@ -1081,6 +1096,36 @@ func TestGuildAddReplacesCachedPointer(t *testing.T) {
 	}
 	if len(updatedGuild.SoundboardSounds) != 1 || updatedGuild.SoundboardSounds[0].Name != "old-sound" {
 		t.Fatalf("updated guild soundboard sounds = %#v, want preserved old-sound", updatedGuild.SoundboardSounds)
+	}
+	if len(updatedGuild.Roles) != len(oldGuild.Roles) || &updatedGuild.Roles[0] != &oldGuild.Roles[0] {
+		t.Fatal("GuildAdd copied the preserved roles backing array")
+	}
+	if len(updatedGuild.Emojis) != len(oldGuild.Emojis) || &updatedGuild.Emojis[0] != &oldGuild.Emojis[0] {
+		t.Fatal("GuildAdd copied the preserved emojis backing array")
+	}
+	if len(updatedGuild.Stickers) != len(oldGuild.Stickers) || &updatedGuild.Stickers[0] != &oldGuild.Stickers[0] {
+		t.Fatal("GuildAdd copied the preserved stickers backing array")
+	}
+	if len(updatedGuild.Members) != len(oldGuild.Members) || &updatedGuild.Members[0] != &oldGuild.Members[0] {
+		t.Fatal("GuildAdd copied the preserved members backing array")
+	}
+	if len(updatedGuild.Presences) != len(oldGuild.Presences) || &updatedGuild.Presences[0] != &oldGuild.Presences[0] {
+		t.Fatal("GuildAdd copied the preserved presences backing array")
+	}
+	if len(updatedGuild.Channels) != len(oldGuild.Channels) || &updatedGuild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("GuildAdd copied the preserved channels backing array")
+	}
+	if len(updatedGuild.Threads) != len(oldGuild.Threads) || &updatedGuild.Threads[0] != &oldGuild.Threads[0] {
+		t.Fatal("GuildAdd copied the preserved threads backing array")
+	}
+	if len(updatedGuild.VoiceStates) != len(oldGuild.VoiceStates) || &updatedGuild.VoiceStates[0] != &oldGuild.VoiceStates[0] {
+		t.Fatal("GuildAdd copied the preserved voice states backing array")
+	}
+	if len(updatedGuild.GuildScheduledEvents) != len(oldGuild.GuildScheduledEvents) || &updatedGuild.GuildScheduledEvents[0] != &oldGuild.GuildScheduledEvents[0] {
+		t.Fatal("GuildAdd copied the preserved scheduled events backing array")
+	}
+	if len(updatedGuild.SoundboardSounds) != len(oldGuild.SoundboardSounds) || &updatedGuild.SoundboardSounds[0] != &oldGuild.SoundboardSounds[0] {
+		t.Fatal("GuildAdd copied the preserved soundboard sounds backing array")
 	}
 
 	if err := state.RoleAdd("guild", &Role{ID: "role", Name: "new-role"}); err != nil {
@@ -6874,6 +6919,34 @@ func BenchmarkStateGuildMemberCountSnapshot(b *testing.B) {
 		err := state.updateGuildMemberCount("guild", delta)
 		state.Unlock()
 		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateGuildUpdatePreservedSlices(b *testing.B) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 20),
+		SoundboardSounds:     make([]*SoundboardSound, 20),
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &Guild{ID: "guild", Name: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.GuildAdd(update); err != nil {
 			b.Fatal(err)
 		}
 	}

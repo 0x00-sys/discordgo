@@ -313,38 +313,38 @@ func (s *State) GuildAdd(guild *Guild) error {
 			guild.MemberCount = g.MemberCount
 		}
 		if guild.Roles == nil && s.TrackRoles {
-			guild.Roles = append([]*Role(nil), g.Roles...)
+			guild.Roles = g.Roles
 		}
 		if guild.Emojis == nil && s.TrackEmojis {
-			guild.Emojis = append([]*Emoji(nil), g.Emojis...)
+			guild.Emojis = g.Emojis
 		}
 		if guild.Stickers == nil && s.TrackStickers {
-			guild.Stickers = append([]*Sticker(nil), g.Stickers...)
+			guild.Stickers = g.Stickers
 		}
 		if guild.Members == nil && s.TrackMembers {
-			guild.Members = append([]*Member(nil), g.Members...)
+			guild.Members = g.Members
 		}
 		if guild.Presences == nil && s.TrackPresences {
-			guild.Presences = append([]*Presence(nil), g.Presences...)
+			guild.Presences = g.Presences
 		}
 		if guild.Channels == nil && s.TrackChannels {
-			guild.Channels = append([]*Channel(nil), g.Channels...)
+			guild.Channels = g.Channels
 		}
 		if guild.Threads == nil && s.TrackThreads {
 			if s.TrackThreadMembers {
-				guild.Threads = append([]*Channel(nil), g.Threads...)
+				guild.Threads = g.Threads
 			} else {
 				guild.Threads = threadsWithoutMembers(g.Threads)
 			}
 		}
 		if guild.VoiceStates == nil && s.TrackVoice {
-			guild.VoiceStates = append([]*VoiceState(nil), g.VoiceStates...)
+			guild.VoiceStates = g.VoiceStates
 		}
 		if guild.GuildScheduledEvents == nil {
-			guild.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), g.GuildScheduledEvents...)
+			guild.GuildScheduledEvents = g.GuildScheduledEvents
 		}
 		if guild.SoundboardSounds == nil {
-			guild.SoundboardSounds = append([]*SoundboardSound(nil), g.SoundboardSounds...)
+			guild.SoundboardSounds = g.SoundboardSounds
 		}
 		for _, c := range guild.Channels {
 			if c != nil {
