@@ -306,6 +306,11 @@ func TestStateStageInstanceLifecycle(t *testing.T) {
 	if len(guild.StageInstances) != 0 {
 		t.Fatalf("StageInstances after delete = %#v", guild.StageInstances)
 	}
+	for i, instance := range guild.StageInstances[len(guild.StageInstances):cap(guild.StageInstances)] {
+		if instance != nil {
+			t.Fatalf("StageInstances backing array entry %d still retains deleted instance %q", len(guild.StageInstances)+i, instance.ID)
+		}
+	}
 }
 
 func TestStateRejectsMalformedStageInstanceEvents(t *testing.T) {
