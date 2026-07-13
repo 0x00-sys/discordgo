@@ -173,34 +173,6 @@ func copyPresence(presence *Presence) *Presence {
 	return &presenceCopy
 }
 
-func copyChannel(channel *Channel) *Channel {
-	channelCopy := *channel
-	channelCopy.Recipients = append([]*User(nil), channel.Recipients...)
-	channelCopy.Messages = append([]*Message(nil), channel.Messages...)
-	channelCopy.PermissionOverwrites = append([]*PermissionOverwrite(nil), channel.PermissionOverwrites...)
-	channelCopy.Members = append([]*ThreadMember(nil), channel.Members...)
-	channelCopy.AvailableTags = append([]ForumTag(nil), channel.AvailableTags...)
-	channelCopy.AppliedTags = append([]string(nil), channel.AppliedTags...)
-	return &channelCopy
-}
-
-func copyGuild(guild *Guild) *Guild {
-	guildCopy := *guild
-	guildCopy.Roles = append([]*Role(nil), guild.Roles...)
-	guildCopy.Emojis = append([]*Emoji(nil), guild.Emojis...)
-	guildCopy.Stickers = append([]*Sticker(nil), guild.Stickers...)
-	guildCopy.Members = append([]*Member(nil), guild.Members...)
-	guildCopy.Presences = append([]*Presence(nil), guild.Presences...)
-	guildCopy.Channels = append([]*Channel(nil), guild.Channels...)
-	guildCopy.Threads = append([]*Channel(nil), guild.Threads...)
-	guildCopy.VoiceStates = append([]*VoiceState(nil), guild.VoiceStates...)
-	guildCopy.Features = append([]GuildFeature(nil), guild.Features...)
-	guildCopy.StageInstances = append([]*StageInstance(nil), guild.StageInstances...)
-	guildCopy.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), guild.GuildScheduledEvents...)
-	guildCopy.SoundboardSounds = append([]*SoundboardSound(nil), guild.SoundboardSounds...)
-	return &guildCopy
-}
-
 func copySoundboardSound(sound *SoundboardSound) *SoundboardSound {
 	soundCopy := *sound
 	if sound.User != nil {
@@ -2502,12 +2474,13 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			guild, gok := s.guildMap[t.GuildID]
 			members, mok := s.memberMap[t.GuildID]
 			if gok && mok {
-				updated := copyGuild(guild)
+				updated := *guild
+				updated.Members = append([]*Member(nil), guild.Members...)
 				for i := range t.Members {
 					t.Members[i].GuildID = t.GuildID
-					memberAddToGuild(members, updated, copyMember(t.Members[i]))
+					memberAddToGuild(members, &updated, copyMember(t.Members[i]))
 				}
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 			} else {
 				err = ErrStateNotFound
 			}
@@ -2518,13 +2491,14 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			s.Lock()
 			guild, ok := s.guildMap[t.GuildID]
 			if ok {
-				updated := copyGuild(guild)
+				updated := *guild
+				updated.Presences = append([]*Presence(nil), guild.Presences...)
 				for _, p := range t.Presences {
-					if perr := presenceAddToGuild(updated, p); perr != nil {
+					if perr := presenceAddToGuild(&updated, p); perr != nil {
 						err = perr
 					}
 				}
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 			} else {
 				err = ErrStateNotFound
 			}
