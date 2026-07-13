@@ -1957,6 +1957,11 @@ func TestStateGuildSoundboardSoundLifecycle(t *testing.T) {
 	if len(guild.SoundboardSounds) != 0 {
 		t.Fatalf("len(SoundboardSounds) = %d, want 0 after delete", len(guild.SoundboardSounds))
 	}
+	for i, sound := range guild.SoundboardSounds[len(guild.SoundboardSounds):cap(guild.SoundboardSounds)] {
+		if sound != nil {
+			t.Fatalf("SoundboardSounds backing array entry %d still retains deleted sound %q", len(guild.SoundboardSounds)+i, sound.SoundID)
+		}
+	}
 }
 
 func TestStateGuildSoundboardSoundsBulkReplace(t *testing.T) {
