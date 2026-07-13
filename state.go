@@ -1490,9 +1490,10 @@ func (s *State) EmojiAdd(guildID string, emoji *Emoji) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
-	emojiAddToGuild(updated, emoji)
-	s.replaceGuild(guild, updated)
+	updated := *guild
+	updated.Emojis = append([]*Emoji(nil), guild.Emojis...)
+	emojiAddToGuild(&updated, emoji)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
@@ -1531,11 +1532,12 @@ func (s *State) EmojisAdd(guildID string, emojis []*Emoji) error {
 	}
 
 	// Copy the guild once for the whole batch.
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.Emojis = append([]*Emoji(nil), guild.Emojis...)
 	for _, e := range emojis {
-		emojiAddToGuild(updated, e)
+		emojiAddToGuild(&updated, e)
 	}
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
