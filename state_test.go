@@ -4281,9 +4281,11 @@ func TestThreadMembersUpdateReplacesCachedThreadPointer(t *testing.T) {
 		ID: "guild",
 		Threads: []*Channel{
 			{
-				ID:      "thread",
-				GuildID: "guild",
-				Type:    ChannelTypeGuildPublicThread,
+				ID:                   "thread",
+				GuildID:              "guild",
+				Type:                 ChannelTypeGuildPublicThread,
+				Messages:             []*Message{{ID: "message"}},
+				PermissionOverwrites: []*PermissionOverwrite{{ID: "overwrite"}},
 				Members: []*ThreadMember{
 					{ID: "thread", UserID: "remove"},
 					{ID: "thread", UserID: "keep"},
@@ -4316,6 +4318,15 @@ func TestThreadMembersUpdateReplacesCachedThreadPointer(t *testing.T) {
 	}
 	if updatedThread == oldThread {
 		t.Fatal("ThreadMembersUpdate reused the previously cached thread pointer")
+	}
+	if &updatedThread.Members[0] == &oldThread.Members[0] {
+		t.Fatal("ThreadMembersUpdate reused the thread members backing array")
+	}
+	if &updatedThread.Messages[0] != &oldThread.Messages[0] {
+		t.Fatal("ThreadMembersUpdate copied the unrelated messages backing array")
+	}
+	if &updatedThread.PermissionOverwrites[0] != &oldThread.PermissionOverwrites[0] {
+		t.Fatal("ThreadMembersUpdate copied the unrelated permission overwrites backing array")
 	}
 	if len(oldThread.Members) != 2 {
 		t.Fatalf("len(oldThread.Members) = %d, want 2", len(oldThread.Members))
@@ -6469,6 +6480,52 @@ func assertMessageReactionMissing(t *testing.T, state *State, emoji Emoji) {
 	for _, reaction := range message.Reactions {
 		if reaction != nil && reactionEmojiEqual(reaction.Emoji, &emoji) {
 			t.Fatalf("reaction for emoji %#v is still cached", emoji)
+		}
+	}
+}
+
+func BenchmarkStateThreadMembersUpdateSnapshot(b *testing.B) {
+	threadMembers := make([]*ThreadMember, 100)
+	for i := range threadMembers {
+		threadMembers[i] = &ThreadMember{ID: "thread", UserID: "member-" + strconv.Itoa(i)}
+	}
+	thread := &Channel{
+		ID:                   "thread",
+		GuildID:              "guild",
+		Type:                 ChannelTypeGuildPublicThread,
+		Recipients:           make([]*User, 10),
+		Messages:             make([]*Message, 100),
+		PermissionOverwrites: make([]*PermissionOverwrite, 10),
+		Members:              threadMembers,
+		AvailableTags:        make([]ForumTag, 10),
+		AppliedTags:          make([]string, 10),
+		MemberCount:          len(threadMembers),
+	}
+
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild", Threads: []*Channel{thread}}); err != nil {
+		b.Fatal(err)
+	}
+	updates := make([]*ThreadMembersUpdate, len(threadMembers)+1)
+	for i := range updates {
+		removed := "member-" + strconv.Itoa(i)
+		added := "member-" + strconv.Itoa((i+len(threadMembers))%len(updates))
+		updates[i] = &ThreadMembersUpdate{
+			ID:             "thread",
+			GuildID:        "guild",
+			MemberCount:    len(threadMembers),
+			RemovedMembers: []string{removed},
+			AddedMembers: []AddedThreadMember{{
+				ThreadMember: &ThreadMember{ID: "thread", UserID: added},
+			}},
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.ThreadMembersUpdate(updates[i%len(updates)]); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
