@@ -6532,14 +6532,19 @@ func BenchmarkStateMessageAddGuildSnapshot(b *testing.B) {
 
 func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 	state := NewState()
-	state.MaxMessageCount = 1
+	state.MaxMessageCount = 2
 	if err := state.GuildAdd(&Guild{
 		ID: "guild",
 		Members: []*Member{{
 			GuildID: "guild",
 			User:    &User{ID: "member"},
 		}},
-		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+		Channels: []*Channel{{
+			ID:                   "channel",
+			GuildID:              "guild",
+			Messages:             []*Message{{ID: "seed", ChannelID: "channel"}},
+			PermissionOverwrites: []*PermissionOverwrite{{ID: "role"}},
+		}},
 		Threads: []*Channel{{
 			ID:      "thread",
 			GuildID: "guild",
@@ -6566,8 +6571,14 @@ func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 	if &beforeMessage.Members[0] != &afterMessage.Members[0] {
 		t.Fatal("MessageAdd copied the unrelated guild member backing array")
 	}
-	if len(beforeMessage.Channels[0].Messages) != 0 || len(afterMessage.Channels[0].Messages) != 1 {
-		t.Fatalf("message snapshots = (%d, %d), want (0, 1)", len(beforeMessage.Channels[0].Messages), len(afterMessage.Channels[0].Messages))
+	if &beforeMessage.Channels[0].Messages[0] == &afterMessage.Channels[0].Messages[0] {
+		t.Fatal("MessageAdd reused the channel message backing array")
+	}
+	if &beforeMessage.Channels[0].PermissionOverwrites[0] != &afterMessage.Channels[0].PermissionOverwrites[0] {
+		t.Fatal("MessageAdd copied the unrelated permission overwrite backing array")
+	}
+	if len(beforeMessage.Channels[0].Messages) != 1 || len(afterMessage.Channels[0].Messages) != 2 {
+		t.Fatalf("message snapshots = (%d, %d), want (1, 2)", len(beforeMessage.Channels[0].Messages), len(afterMessage.Channels[0].Messages))
 	}
 
 	if err := state.ThreadMemberUpdate(&ThreadMemberUpdate{
