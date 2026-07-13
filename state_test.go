@@ -5272,6 +5272,36 @@ func TestMessageRemoveDoesNotMutateChannelSnapshot(t *testing.T) {
 	}
 }
 
+func TestMessageRemoveReleasesRemovedMessageReference(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	for _, id := range []string{"keep", "remove"} {
+		if err := state.MessageAdd(&Message{ID: id, ChannelID: "channel"}); err != nil {
+			t.Fatalf("MessageAdd returned error: %v", err)
+		}
+	}
+
+	if err := state.MessageRemove(&Message{ID: "remove", ChannelID: "channel"}); err != nil {
+		t.Fatalf("MessageRemove returned error: %v", err)
+	}
+
+	channel, err := state.Channel("channel")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	for i, message := range channel.Messages[len(channel.Messages):cap(channel.Messages)] {
+		if message != nil {
+			t.Fatalf("Messages backing array entry %d still retains removed message %q", len(channel.Messages)+i, message.ID)
+		}
+	}
+}
+
 func TestMessageAddKeepsMaxMessageCount(t *testing.T) {
 	state := NewState()
 	state.MaxMessageCount = 2

@@ -1807,7 +1807,9 @@ func (s *State) messageRemoveByID(channelID, messageID string) error {
 			continue
 		}
 		if m.ID == messageID {
-			updated.Messages = append(updated.Messages[:i], updated.Messages[i+1:]...)
+			copy(updated.Messages[i:], updated.Messages[i+1:])
+			updated.Messages[len(updated.Messages)-1] = nil
+			updated.Messages = updated.Messages[:len(updated.Messages)-1]
 			s.channelMap[updated.ID] = updated
 			s.replaceChannel(c, updated)
 			return nil
