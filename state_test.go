@@ -3506,6 +3506,11 @@ func TestRoleRemoveReplacesParentGuildPointer(t *testing.T) {
 	if updatedGuild.Roles[0].ID != "guild" {
 		t.Fatalf("remaining role ID = %q, want guild", updatedGuild.Roles[0].ID)
 	}
+	for i, role := range updatedGuild.Roles[len(updatedGuild.Roles):cap(updatedGuild.Roles)] {
+		if role != nil {
+			t.Fatalf("Roles backing array entry %d still retains removed role %q", len(updatedGuild.Roles)+i, role.ID)
+		}
+	}
 }
 
 func TestRoleUpdateDoesNotRaceReturnedGuildPermissions(t *testing.T) {
