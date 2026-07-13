@@ -3,6 +3,7 @@ package discordgo
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -159,6 +160,39 @@ func TestMessageUpdateMergeCacheMiss(t *testing.T) {
 	update.Content = "mutated"
 	if got.Content != "partial" {
 		t.Fatalf("cached content = %q after event mutation, want partial", got.Content)
+	}
+}
+
+func BenchmarkMessageUpdateMergeCacheMiss(b *testing.B) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	updates := make([]*MessageUpdate, state.MaxMessageCount+1)
+	for i := range updates {
+		updates[i] = &MessageUpdate{Message: &Message{
+			ID:        "message-" + strconv.Itoa(i),
+			ChannelID: "channel",
+		}}
+	}
+	for i := 0; i < state.MaxMessageCount; i++ {
+		if err := state.MessageAdd(updates[i].Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	i := state.MaxMessageCount
+	b.ReportAllocs()
+	b.ResetTimer()
+	for ; i < b.N+state.MaxMessageCount; i++ {
+		update := updates[i%len(updates)]
+		if err := state.messageUpdate(update); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

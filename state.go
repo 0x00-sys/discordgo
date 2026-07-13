@@ -1759,10 +1759,6 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 	if err != nil {
 		return err
 	}
-	fields := update.fields
-	if fields == nil {
-		fields = legacyMessageUpdateFields(message)
-	}
 
 	s.Lock()
 	defer s.Unlock()
@@ -1780,6 +1776,10 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 
 		before := *cached
 		update.BeforeUpdate = &before
+		fields := update.fields
+		if fields == nil {
+			fields = legacyMessageUpdateFields(message)
+		}
 		updated.Messages[i] = mergeMessageUpdate(cached, message, fields)
 		s.channelMap[updated.ID] = updated
 		s.replaceChannel(c, updated)
