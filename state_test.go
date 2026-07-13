@@ -2447,6 +2447,11 @@ func TestStateGuildScheduledEventLifecycle(t *testing.T) {
 	if len(guild.GuildScheduledEvents) != 0 {
 		t.Fatalf("len(GuildScheduledEvents) = %d, want 0 after delete", len(guild.GuildScheduledEvents))
 	}
+	for i, event := range guild.GuildScheduledEvents[len(guild.GuildScheduledEvents):cap(guild.GuildScheduledEvents)] {
+		if event != nil {
+			t.Fatalf("GuildScheduledEvents backing array entry %d still retains deleted event %q", len(guild.GuildScheduledEvents)+i, event.ID)
+		}
+	}
 }
 
 func TestStateGuildScheduledEventUserCount(t *testing.T) {
