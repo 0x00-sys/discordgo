@@ -1187,6 +1187,33 @@ func TestGuildMemberRemoveReplacesCachedGuildPointer(t *testing.T) {
 	}
 }
 
+func TestMemberRemoveReleasesRemovedMemberReference(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "keep"}},
+			{GuildID: "guild", User: &User{ID: "remove"}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	if err := state.MemberRemove(&Member{GuildID: "guild", User: &User{ID: "remove"}}); err != nil {
+		t.Fatalf("MemberRemove returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	for i, member := range guild.Members[len(guild.Members):cap(guild.Members)] {
+		if member != nil {
+			t.Fatalf("Members backing array entry %d still retains removed member %q", len(guild.Members)+i, member.User.ID)
+		}
+	}
+}
+
 func TestGuildMemberAddDoesNotRaceReturnedGuildPointer(t *testing.T) {
 	state := NewState()
 	state.TrackMembers = false

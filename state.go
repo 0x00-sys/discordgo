@@ -723,7 +723,9 @@ func (s *State) MemberRemove(member *Member) error {
 			continue
 		}
 		if m.User.ID == member.User.ID {
-			updated.Members = append(updated.Members[:i], updated.Members[i+1:]...)
+			copy(updated.Members[i:], updated.Members[i+1:])
+			updated.Members[len(updated.Members)-1] = nil
+			updated.Members = updated.Members[:len(updated.Members)-1]
 			s.replaceGuild(guild, updated)
 			return nil
 		}
