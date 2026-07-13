@@ -4959,6 +4959,73 @@ func TestThreadMemberTrackingFlagKeepsThread(t *testing.T) {
 	}
 }
 
+func TestGuildAddReusesFilteredThreads(t *testing.T) {
+	state := NewState()
+	state.TrackThreadMembers = false
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{{
+			ID:      "thread",
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+			Member:  &ThreadMember{ID: "thread", UserID: "user"},
+			Members: []*ThreadMember{{ID: "thread", UserID: "user"}},
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	oldGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if err := state.GuildAdd(&Guild{ID: "guild", Name: "updated"}); err != nil {
+		t.Fatalf("GuildAdd update returned error: %v", err)
+	}
+	updatedGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after update: %v", err)
+	}
+	if len(updatedGuild.Threads) != 1 || &updatedGuild.Threads[0] != &oldGuild.Threads[0] {
+		t.Fatal("GuildAdd copied threads that were already filtered")
+	}
+	if updatedGuild.Threads[0].Member != nil || updatedGuild.Threads[0].Members != nil {
+		t.Fatalf("updated thread retained member data: %#v", updatedGuild.Threads[0])
+	}
+
+	toggled := NewState()
+	if err := toggled.GuildAdd(&Guild{
+		ID: "guild",
+		Threads: []*Channel{{
+			ID:      "thread",
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+			Member:  &ThreadMember{ID: "thread", UserID: "user"},
+			Members: []*ThreadMember{},
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd before toggle returned error: %v", err)
+	}
+	toggleSnapshot, err := toggled.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild before toggle returned error: %v", err)
+	}
+	toggled.TrackThreadMembers = false
+	if err := toggled.GuildAdd(&Guild{ID: "guild", Name: "updated"}); err != nil {
+		t.Fatalf("GuildAdd after toggle returned error: %v", err)
+	}
+	toggledGuild, err := toggled.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild after toggle returned error: %v", err)
+	}
+	if len(toggledGuild.Threads) != 1 || toggledGuild.Threads[0].Member != nil || toggledGuild.Threads[0].Members != nil {
+		t.Fatalf("threads retained member data after tracking was disabled: %#v", toggledGuild.Threads)
+	}
+	if len(toggleSnapshot.Threads) != 1 || toggleSnapshot.Threads[0].Member == nil || toggleSnapshot.Threads[0].Members == nil {
+		t.Fatalf("GuildAdd mutated the pre-toggle snapshot: %#v", toggleSnapshot.Threads)
+	}
+}
+
 func TestMemberAddDoesNotMutateGuildSnapshot(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
@@ -6939,6 +7006,32 @@ func BenchmarkStateGuildUpdatePreservedSlices(b *testing.B) {
 		GuildScheduledEvents: make([]*GuildScheduledEvent, 20),
 		SoundboardSounds:     make([]*SoundboardSound, 20),
 	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &Guild{ID: "guild", Name: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.GuildAdd(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateGuildUpdateFilteredThreads(b *testing.B) {
+	threads := make([]*Channel, 20)
+	for i := range threads {
+		threads[i] = &Channel{
+			ID:      "thread-" + strconv.Itoa(i),
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+			Member:  &ThreadMember{ID: "thread-" + strconv.Itoa(i), UserID: "user"},
+		}
+	}
+	state := NewState()
+	state.TrackThreadMembers = false
+	if err := state.GuildAdd(&Guild{ID: "guild", Threads: threads}); err != nil {
 		b.Fatal(err)
 	}
 	update := &Guild{ID: "guild", Name: "updated"}
