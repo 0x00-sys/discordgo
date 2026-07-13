@@ -5079,7 +5079,10 @@ func TestGuildMembersChunkBatchUpdatesState(t *testing.T) {
 
 func TestVoiceStateUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	state := NewState()
-	if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
 	}
 
@@ -5106,6 +5109,9 @@ func TestVoiceStateUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	if len(current.VoiceStates) != 1 {
 		t.Fatalf("current.VoiceStates len = %d, want 1", len(current.VoiceStates))
 	}
+	if &current.Channels[0] != &snapshot.Channels[0] {
+		t.Fatal("voice state join copied the unrelated channels backing array")
+	}
 
 	joined := current
 	leave := &VoiceStateUpdate{
@@ -5124,6 +5130,9 @@ func TestVoiceStateUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	}
 	if len(current.VoiceStates) != 0 {
 		t.Fatalf("current.VoiceStates len = %d, want 0 after leave", len(current.VoiceStates))
+	}
+	if &current.Channels[0] != &joined.Channels[0] {
+		t.Fatal("voice state leave copied the unrelated channels backing array")
 	}
 	for i, voiceState := range current.VoiceStates[len(current.VoiceStates):cap(current.VoiceStates)] {
 		if voiceState != nil {
@@ -6826,6 +6835,45 @@ func BenchmarkStateRoleUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.RoleAdd("guild", update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateVoiceUpdateGuildSnapshot(b *testing.B) {
+	voiceStates := make([]*VoiceState, 500)
+	for i := range voiceStates {
+		voiceStates[i] = &VoiceState{GuildID: "guild", ChannelID: "channel", UserID: "user-" + strconv.Itoa(i)}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                make([]*Role, 100),
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          voiceStates,
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &VoiceStateUpdate{VoiceState: &VoiceState{
+		GuildID:   "guild",
+		ChannelID: "channel-2",
+		UserID:    "user-0",
+	}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.voiceStateUpdate(update); err != nil {
 			b.Fatal(err)
 		}
 	}
