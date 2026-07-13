@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/gorilla/websocket"
 )
@@ -5407,6 +5408,60 @@ func TestMessageAddKeepsMaxMessageCount(t *testing.T) {
 	}
 	if current.Messages[0].ID != "message-1" || current.Messages[1].ID != "message-2" {
 		t.Fatalf("kept messages = %q, %q; want message-1, message-2", current.Messages[0].ID, current.Messages[1].ID)
+	}
+}
+
+func TestMessageCacheEvictionReleasesOldestMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		add  func(*State) error
+	}{
+		{
+			name: "message create",
+			add: func(state *State) error {
+				return state.MessageAdd(&Message{ID: "replacement", ChannelID: "channel"})
+			},
+		},
+		{
+			name: "uncached message update",
+			add: func(state *State) error {
+				return state.messageUpdate(&MessageUpdate{Message: &Message{ID: "replacement", ChannelID: "channel"}})
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := NewState()
+			state.MaxMessageCount = 1
+			if err := state.GuildAdd(&Guild{
+				ID:       "guild",
+				Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+			}); err != nil {
+				t.Fatalf("GuildAdd returned error: %v", err)
+			}
+
+			evicted := &Message{ID: "evicted", ChannelID: "channel"}
+			if err := state.MessageAdd(evicted); err != nil {
+				t.Fatalf("MessageAdd returned error: %v", err)
+			}
+
+			if err := test.add(state); err != nil {
+				t.Fatalf("adding replacement returned error: %v", err)
+			}
+
+			current, err := state.Channel("channel")
+			if err != nil {
+				t.Fatalf("Channel returned error: %v", err)
+			}
+			discardedSlot := unsafe.Add(
+				unsafe.Pointer(unsafe.SliceData(current.Messages)),
+				-int(unsafe.Sizeof(current.Messages[0])),
+			)
+			if retained := *(**Message)(discardedSlot); retained != nil {
+				t.Fatalf("discarded backing array slot still retains message %q", retained.ID)
+			}
+		})
 	}
 }
 
