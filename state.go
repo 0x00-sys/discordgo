@@ -1089,17 +1089,19 @@ func (s *State) replaceChannel(oldChannel, newChannel *Channel) {
 		}
 		for i, channel := range guild.Channels {
 			if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
-				updated := copyGuild(guild)
+				updated := *guild
+				updated.Channels = append([]*Channel(nil), guild.Channels...)
 				updated.Channels[i] = newChannel
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 				return
 			}
 		}
 		for i, thread := range guild.Threads {
 			if thread == oldChannel || (thread != nil && thread.ID == newChannel.ID) {
-				updated := copyGuild(guild)
+				updated := *guild
+				updated.Threads = append([]*Channel(nil), guild.Threads...)
 				updated.Threads[i] = newChannel
-				s.replaceGuild(guild, updated)
+				s.replaceGuild(guild, &updated)
 				return
 			}
 		}
