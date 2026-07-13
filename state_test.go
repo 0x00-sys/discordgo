@@ -3546,6 +3546,12 @@ func TestRoleUpdateKeepsReturnedGuildPermissionSnapshot(t *testing.T) {
 	if updatedGuild == oldGuild {
 		t.Fatal("RoleAdd reused the previously cached parent guild pointer")
 	}
+	if &updatedGuild.Roles[0] == &oldGuild.Roles[0] {
+		t.Fatal("RoleAdd reused the roles backing array")
+	}
+	if &updatedGuild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("RoleAdd copied the unrelated channels backing array")
+	}
 	if permissions := memberPermissions(oldGuild, channel, "user", []string{"staff"}); permissions&PermissionManageChannels != 0 {
 		t.Fatalf("old permissions after RoleAdd = %d, want no ManageChannels", permissions)
 	}
@@ -3568,6 +3574,7 @@ func TestRoleRemoveReplacesParentGuildPointer(t *testing.T) {
 				Permissions: PermissionManageChannels,
 			},
 		},
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
 	}); err != nil {
 		t.Fatalf("GuildAdd returned error: %v", err)
 	}
@@ -3588,6 +3595,12 @@ func TestRoleRemoveReplacesParentGuildPointer(t *testing.T) {
 	}
 	if updatedGuild == oldGuild {
 		t.Fatal("RoleRemove reused the previously cached parent guild pointer")
+	}
+	if &updatedGuild.Roles[0] == &oldGuild.Roles[0] {
+		t.Fatal("RoleRemove reused the roles backing array")
+	}
+	if &updatedGuild.Channels[0] != &oldGuild.Channels[0] {
+		t.Fatal("RoleRemove copied the unrelated channels backing array")
 	}
 	if len(oldGuild.Roles) != 2 {
 		t.Fatalf("len(oldGuild.Roles) = %d, want 2", len(oldGuild.Roles))
@@ -6778,6 +6791,41 @@ func BenchmarkStateMemberUpdateGuildSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := state.MemberAdd(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateRoleUpdateGuildSnapshot(b *testing.B) {
+	roles := make([]*Role, 100)
+	for i := range roles {
+		roles[i] = &Role{ID: "role-" + strconv.Itoa(i)}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:                   "guild",
+		Roles:                roles,
+		Emojis:               make([]*Emoji, 100),
+		Stickers:             make([]*Sticker, 100),
+		Members:              make([]*Member, 1000),
+		Presences:            make([]*Presence, 1000),
+		Channels:             make([]*Channel, 100),
+		Threads:              make([]*Channel, 50),
+		VoiceStates:          make([]*VoiceState, 500),
+		Features:             make([]GuildFeature, 10),
+		StageInstances:       make([]*StageInstance, 10),
+		GuildScheduledEvents: make([]*GuildScheduledEvent, 10),
+		SoundboardSounds:     make([]*SoundboardSound, 10),
+		MemberCount:          1000,
+	}); err != nil {
+		b.Fatal(err)
+	}
+	update := &Role{ID: "role-0", Name: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.RoleAdd("guild", update); err != nil {
 			b.Fatal(err)
 		}
 	}

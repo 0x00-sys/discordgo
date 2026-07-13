@@ -782,20 +782,21 @@ func (s *State) RoleAdd(guildID string, role *Role) error {
 
 	roleCopy := *role
 	role = &roleCopy
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.Roles = append([]*Role(nil), guild.Roles...)
 	for i, r := range guild.Roles {
 		if r == nil {
 			continue
 		}
 		if r.ID == role.ID {
 			updated.Roles[i] = role
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return nil
 		}
 	}
 
 	updated.Roles = append(updated.Roles, role)
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
@@ -813,7 +814,8 @@ func (s *State) RoleRemove(guildID, roleID string) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
+	updated.Roles = append([]*Role(nil), guild.Roles...)
 	for i, r := range guild.Roles {
 		if r == nil {
 			continue
@@ -822,7 +824,7 @@ func (s *State) RoleRemove(guildID, roleID string) error {
 			copy(updated.Roles[i:], updated.Roles[i+1:])
 			updated.Roles[len(updated.Roles)-1] = nil
 			updated.Roles = updated.Roles[:len(updated.Roles)-1]
-			s.replaceGuild(guild, updated)
+			s.replaceGuild(guild, &updated)
 			return nil
 		}
 	}
