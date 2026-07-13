@@ -152,14 +152,30 @@ func (s *Session) removeEventHandlerInstance(t string, ehi *eventHandlerInstance
 	handlers := s.handlers[t]
 	for i := range handlers {
 		if handlers[i] == ehi {
-			s.handlers[t] = append(handlers[:i], handlers[i+1:]...)
+			copy(handlers[i:], handlers[i+1:])
+			handlers[len(handlers)-1] = nil
+			handlers = handlers[:len(handlers)-1]
+			if len(handlers) == 0 {
+				delete(s.handlers, t)
+			} else {
+				s.handlers[t] = handlers
+			}
+			break
 		}
 	}
 
 	onceHandlers := s.onceHandlers[t]
 	for i := range onceHandlers {
 		if onceHandlers[i] == ehi {
-			s.onceHandlers[t] = append(onceHandlers[:i], onceHandlers[i+1:]...)
+			copy(onceHandlers[i:], onceHandlers[i+1:])
+			onceHandlers[len(onceHandlers)-1] = nil
+			onceHandlers = onceHandlers[:len(onceHandlers)-1]
+			if len(onceHandlers) == 0 {
+				delete(s.onceHandlers, t)
+			} else {
+				s.onceHandlers[t] = onceHandlers
+			}
+			break
 		}
 	}
 }
