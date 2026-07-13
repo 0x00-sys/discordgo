@@ -206,6 +206,35 @@ func TestRemoveHandler(t *testing.T) {
 	}
 }
 
+func TestRemoveHandlerReleasesReferences(t *testing.T) {
+	testHandler := func(*Session, *MessageCreate) {}
+	d := Session{}
+
+	removeFirst := d.AddHandler(testHandler)
+	removeMiddle := d.AddHandler(testHandler)
+	removeLast := d.AddHandler(testHandler)
+	removeMiddle()
+
+	handlers := d.handlers[messageCreateEventType]
+	for i, handler := range handlers[len(handlers):cap(handlers)] {
+		if handler != nil {
+			t.Fatalf("handlers backing array entry %d still retains a removed handler", len(handlers)+i)
+		}
+	}
+
+	removeFirst()
+	removeLast()
+	if _, ok := d.handlers[messageCreateEventType]; ok {
+		t.Fatal("handlers map still retains the empty handler slice")
+	}
+
+	removeOnce := d.AddHandlerOnce(testHandler)
+	removeOnce()
+	if _, ok := d.onceHandlers[messageCreateEventType]; ok {
+		t.Fatal("onceHandlers map still retains the empty handler slice")
+	}
+}
+
 func TestAddHandlerOnceConcurrentDispatch(t *testing.T) {
 	handlerCalled := int32(0)
 	handler := func(s *Session, event *RateLimit) {
