@@ -5021,6 +5021,13 @@ func TestGuildAddReusesFilteredThreads(t *testing.T) {
 	if len(toggledGuild.Threads) != 1 || toggledGuild.Threads[0].Member != nil || toggledGuild.Threads[0].Members != nil {
 		t.Fatalf("threads retained member data after tracking was disabled: %#v", toggledGuild.Threads)
 	}
+	cachedThread, err := toggled.Channel("thread")
+	if err != nil {
+		t.Fatalf("Channel after toggle returned error: %v", err)
+	}
+	if cachedThread != toggledGuild.Threads[0] {
+		t.Fatal("channel map was not updated to the filtered thread")
+	}
 	if len(toggleSnapshot.Threads) != 1 || toggleSnapshot.Threads[0].Member == nil || toggleSnapshot.Threads[0].Members == nil {
 		t.Fatalf("GuildAdd mutated the pre-toggle snapshot: %#v", toggleSnapshot.Threads)
 	}
@@ -7032,6 +7039,34 @@ func BenchmarkStateGuildUpdateFilteredThreads(b *testing.B) {
 	state := NewState()
 	state.TrackThreadMembers = false
 	if err := state.GuildAdd(&Guild{ID: "guild", Threads: threads}); err != nil {
+		b.Fatal(err)
+	}
+	update := &Guild{ID: "guild", Name: "updated"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := state.GuildAdd(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStateGuildUpdatePreservedChannelMap(b *testing.B) {
+	channels := make([]*Channel, 100)
+	for i := range channels {
+		channels[i] = &Channel{ID: "channel-" + strconv.Itoa(i), GuildID: "guild"}
+	}
+	threads := make([]*Channel, 50)
+	for i := range threads {
+		threads[i] = &Channel{
+			ID:      "thread-" + strconv.Itoa(i),
+			GuildID: "guild",
+			Type:    ChannelTypeGuildPublicThread,
+		}
+	}
+	state := NewState()
+	if err := state.GuildAdd(&Guild{ID: "guild", Channels: channels, Threads: threads}); err != nil {
 		b.Fatal(err)
 	}
 	update := &Guild{ID: "guild", Name: "updated"}

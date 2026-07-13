@@ -336,6 +336,11 @@ func (s *State) GuildAdd(guild *Guild) error {
 				for _, thread := range guild.Threads {
 					if thread != nil && (thread.Member != nil || thread.Members != nil) {
 						guild.Threads = threadsWithoutMembers(guild.Threads)
+						for _, filtered := range guild.Threads {
+							if filtered != nil {
+								s.channelMap[filtered.ID] = filtered
+							}
+						}
 						break
 					}
 				}
@@ -349,16 +354,6 @@ func (s *State) GuildAdd(guild *Guild) error {
 		}
 		if guild.SoundboardSounds == nil {
 			guild.SoundboardSounds = g.SoundboardSounds
-		}
-		for _, c := range guild.Channels {
-			if c != nil {
-				s.channelMap[c.ID] = c
-			}
-		}
-		for _, t := range guild.Threads {
-			if t != nil {
-				s.channelMap[t.ID] = t
-			}
 		}
 		if !s.TrackChannels {
 			for _, c := range g.Channels {
