@@ -1617,6 +1617,33 @@ func TestPresenceUpdateRequiresUserForMemberTracking(t *testing.T) {
 	}
 }
 
+func TestPresenceRemoveReleasesRemovedPresenceReference(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Presences: []*Presence{
+			{User: &User{ID: "keep"}},
+			{User: &User{ID: "remove"}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	if err := state.PresenceRemove("guild", &Presence{User: &User{ID: "remove"}}); err != nil {
+		t.Fatalf("PresenceRemove returned error: %v", err)
+	}
+
+	guild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	for i, presence := range guild.Presences[len(guild.Presences):cap(guild.Presences)] {
+		if presence != nil {
+			t.Fatalf("Presences backing array entry %d still retains removed presence %q", len(guild.Presences)+i, presence.User.ID)
+		}
+	}
+}
+
 func TestUserChannelPermissionsUsesStateLock(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
