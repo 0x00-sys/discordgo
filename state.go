@@ -286,9 +286,9 @@ func (s *State) updateGuildMemberCount(guildID string, delta int) error {
 		return ErrStateNotFound
 	}
 
-	updated := copyGuild(guild)
+	updated := *guild
 	updated.MemberCount += delta
-	s.replaceGuild(guild, updated)
+	s.replaceGuild(guild, &updated)
 	return nil
 }
 
