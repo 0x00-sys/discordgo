@@ -1032,7 +1032,9 @@ func (s *State) guildScheduledEventRemove(guildID, eventID string) (*GuildSchedu
 	updated := copyGuild(guild)
 	for i, event := range guild.GuildScheduledEvents {
 		if event != nil && event.ID == eventID {
-			updated.GuildScheduledEvents = append(updated.GuildScheduledEvents[:i], updated.GuildScheduledEvents[i+1:]...)
+			copy(updated.GuildScheduledEvents[i:], updated.GuildScheduledEvents[i+1:])
+			updated.GuildScheduledEvents[len(updated.GuildScheduledEvents)-1] = nil
+			updated.GuildScheduledEvents = updated.GuildScheduledEvents[:len(updated.GuildScheduledEvents)-1]
 			s.replaceGuild(guild, updated)
 			return copyGuildScheduledEvent(event), nil
 		}
