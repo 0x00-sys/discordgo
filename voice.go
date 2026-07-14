@@ -314,15 +314,10 @@ func (v *VoiceConnection) Close() {
 	if v.wsConn != nil {
 		v.log(LogInformational, "sending close frame")
 
-		// To cleanly close a connection, a client should send a close
-		// frame and wait for the server to close the connection.
 		err := writeWebsocketCloseFrame(v.wsConn, websocket.CloseNormalClosure)
 		if err != nil {
 			v.log(LogError, "error closing websocket, %s", err)
 		}
-
-		// TODO: Wait for Discord to actually close the connection.
-		time.Sleep(1 * time.Second)
 
 		v.log(LogInformational, "closing websocket")
 		err = v.wsConn.Close()
