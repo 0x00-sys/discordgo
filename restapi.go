@@ -535,9 +535,10 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 			err = &RateLimitError{rateLimit}
 		}
 	case http.StatusUnauthorized:
-		if strings.Index(s.Token, "Bot ") != 0 {
+		if strings.Index(s.Token, "Bot ") != 0 && strings.Index(s.Token, "Bearer ") != 0 {
 			s.log(LogInformational, "%s", ErrUnauthorized)
 			err = ErrUnauthorized
+			break
 		}
 		fallthrough
 	default: // Error condition
