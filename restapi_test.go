@@ -5208,6 +5208,45 @@ func TestRedactedHeaderValues(t *testing.T) {
 	}
 }
 
+func TestRequestUnauthorizedErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		token    string
+		wantErr  error
+		wantREST bool
+	}{
+		{name: "unprefixed token", token: "expired", wantErr: ErrUnauthorized},
+		{name: "bearer token", token: "Bearer expired", wantREST: true},
+		{name: "bot token", token: "Bot expired", wantREST: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New(tt.token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Status:     "401 Unauthorized",
+					Body:       io.NopCloser(strings.NewReader(`{"code":0,"message":"401: Unauthorized"}`)),
+					Request:    r,
+				}, nil
+			})
+
+			_, err = session.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("RequestWithBucketID() error = %T %[1]v, want %v", err, tt.wantErr)
+			}
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) {
+					t.Fatalf("RequestWithBucketID() error = %T %[1]v, want *RESTError", err)
+				}
+			}
+		})
+	}
+}
+
 func TestNewRestErrorRedactsRequestSecrets(t *testing.T) {
 	req, err := http.NewRequest("POST", EndpointWebhookToken("webhook", "secret-token"), bytes.NewBufferString("secret request body"))
 	if err != nil {
