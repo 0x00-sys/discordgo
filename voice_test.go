@@ -805,6 +805,76 @@ func TestVoiceCloseWithLockedWSMutex(t *testing.T) {
 	}, done)
 }
 
+func TestVoiceCloseDoesNotSleepAfterCloseFrame(t *testing.T) {
+	closeCodes := make(chan int, 1)
+	server := newCloseCodeTestServer(t, closeCodes)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		close:    make(chan struct{}),
+		wsConn:   conn,
+	}
+
+	start := time.Now()
+	voice.Close()
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Close() took %v, want under 500ms", elapsed)
+	}
+
+	select {
+	case code := <-closeCodes:
+		if code != websocket.CloseNormalClosure {
+			t.Fatalf("close code = %d, want %d", code, websocket.CloseNormalClosure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive websocket close frame")
+	}
+}
+
+func BenchmarkVoiceClose(b *testing.B) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		for {
+			if _, _, err = conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		if err != nil {
+			b.Fatalf("Dial() error = %v", err)
+		}
+		voice := &VoiceConnection{
+			LogLevel: -1,
+			close:    make(chan struct{}),
+			wsConn:   conn,
+		}
+		b.StartTimer()
+
+		voice.Close()
+	}
+}
+
 func TestVoiceReconnectStopsWhenUnregistered(t *testing.T) {
 	v := &VoiceConnection{
 		GuildID:   "guild",
