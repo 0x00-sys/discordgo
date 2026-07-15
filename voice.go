@@ -1095,6 +1095,12 @@ func (v *VoiceConnection) udpOpen() (err error) {
 		v.log(LogWarning, "error connecting to udp addr %s, %s", addr.String(), err)
 		return
 	}
+	defer func() {
+		if err != nil {
+			_ = v.udpConn.Close()
+			v.udpConn = nil
+		}
+	}()
 
 	// Create a 74 byte array to store the packet data
 	sb := make([]byte, 74)

@@ -689,9 +689,10 @@ func TestUDPOpenReadTimeout(t *testing.T) {
 
 	addr := server.LocalAddr().(*net.UDPAddr)
 	v := &VoiceConnection{
-		wsConn:   &websocket.Conn{},
-		close:    make(chan struct{}),
-		endpoint: "127.0.0.1",
+		wsConn:         &websocket.Conn{},
+		close:          make(chan struct{}),
+		endpoint:       "127.0.0.1",
+		encryptionMode: voiceModeAES256GCMRTPSize,
 		op2: voiceOP2{
 			IP:   "127.0.0.1",
 			Port: addr.Port,
@@ -711,6 +712,9 @@ func TestUDPOpenReadTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("udpOpen took too long to return: %s", elapsed)
+	}
+	if v.udpConn != nil {
+		t.Fatal("udpOpen retained its UDP connection after discovery failed")
 	}
 
 	lockAcquired := make(chan struct{})
