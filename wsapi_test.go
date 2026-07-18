@@ -612,6 +612,52 @@ func TestSessionCloseWithLockedWSMutex(t *testing.T) {
 	}, done)
 }
 
+func TestSessionCloseDisconnectsVoiceConnections(t *testing.T) {
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+
+	closeChan := make(chan struct{})
+	session := &Session{LogLevel: -1, VoiceConnections: make(map[string]*VoiceConnection), sequence: new(int64)}
+	voice := &VoiceConnection{
+		GuildID:  "guild",
+		LogLevel: -1,
+		session:  session,
+		close:    closeChan,
+		udpConn:  udpConn,
+		OpusSend: make(chan []byte),
+		OpusRecv: make(chan *Packet),
+	}
+	defer voice.Close()
+	session.VoiceConnections[voice.GuildID] = voice
+
+	if err = session.Close(); err != nil {
+		t.Fatalf("Session.Close() error = %v", err)
+	}
+
+	select {
+	case <-closeChan:
+	default:
+		t.Fatal("Session.Close did not stop voice goroutines")
+	}
+	voice.RLock()
+	udpConn = voice.udpConn
+	disconnecting := voice.disconnecting
+	opusSend := voice.OpusSend
+	opusRecv := voice.OpusRecv
+	voice.RUnlock()
+	if udpConn != nil || !disconnecting || opusSend != nil || opusRecv != nil {
+		t.Fatalf("voice teardown = udp %v, disconnecting %t, opus send %v, opus recv %v", udpConn, disconnecting, opusSend, opusRecv)
+	}
+	session.RLock()
+	_, registered := session.VoiceConnections[voice.GuildID]
+	session.RUnlock()
+	if registered {
+		t.Fatal("Session.Close left voice connection registered")
+	}
+}
+
 func TestCloseWithCodeDoesNotSleepAfterCloseFrame(t *testing.T) {
 	closeCodes := make(chan int, 1)
 	server := newCloseCodeTestServer(t, closeCodes)
