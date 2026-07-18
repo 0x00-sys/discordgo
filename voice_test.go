@@ -1538,6 +1538,59 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 	}
 }
 
+func TestVoiceHeartbeatStopsAfterConnectionReplacement(t *testing.T) {
+	heartbeats := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err = conn.ReadMessage(); err != nil {
+				return
+			}
+			select {
+			case heartbeats <- struct{}{}:
+			default:
+			}
+		}
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	closeChan := make(chan struct{})
+	defer close(closeChan)
+	voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
+	done := make(chan struct{})
+	go func() {
+		voice.wsHeartbeat(conn, closeChan, 10)
+		close(done)
+	}()
+
+	select {
+	case <-heartbeats:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial heartbeat")
+	}
+	voice.Lock()
+	voice.wsConn = &websocket.Conn{}
+	voice.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("heartbeat did not stop after websocket replacement")
+	}
+}
+
 func TestVoiceHeartbeatIncludesUnsetSequence(t *testing.T) {
 	vc := &VoiceConnection{}
 	payload, err := json.Marshal(voiceHeartbeatOp{Op: 3, Data: voiceHeartbeatData{Timestamp: 1, SequenceAck: vc.voiceSequenceAck()}})
