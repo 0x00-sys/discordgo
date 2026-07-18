@@ -192,17 +192,25 @@ func (s *Session) Open() error {
 
 	var err error
 
-	// Prevent Open or other major Session functions from
-	// being called while Open is still running.
 	s.Lock()
-	defer s.Unlock()
 
 	s.ensureReconnectCancelLocked()
 
-	// If the websock is already open, bail out here.
-	if s.wsConn != nil {
+	// If the websocket is already open or another Open is still connecting,
+	// bail out here.
+	if s.wsConn != nil || s.gatewayOpen != nil {
+		s.Unlock()
 		return ErrWSAlreadyOpen
 	}
+	gatewayOpen := make(chan struct{})
+	s.gatewayOpen = gatewayOpen
+	reconnectCancel := s.reconnectCancel
+	defer func() {
+		if s.gatewayOpen == gatewayOpen {
+			s.gatewayOpen = nil
+		}
+		s.Unlock()
+	}()
 
 	sequence := atomic.LoadInt64(s.sequence)
 	resuming := s.sessionID != "" || sequence != 0
@@ -230,14 +238,30 @@ func (s *Session) Open() error {
 	s.log(LogInformational, "connecting to gateway %s", gateway)
 	header := http.Header{}
 	header.Add("accept-encoding", "zlib")
-	s.wsConn, _, err = s.Dialer.Dial(gateway, header)
+	dialer := s.Dialer
+	s.Unlock()
+	wsConn, _, err := dialer.Dial(gateway, header)
+	s.Lock()
+	if s.gatewayOpen != gatewayOpen || reconnectCanceled(reconnectCancel) {
+		if wsConn != nil {
+			wsConn.Close()
+		}
+		if err == nil {
+			err = ErrWSNotFound
+		}
+		return err
+	}
 	if err != nil {
 		s.log(LogError, "error connecting to gateway %s, %s", s.gateway, err)
 		s.gateway = "" // clear cached gateway
-		s.wsConn = nil // Just to be safe.
 		return err
 	}
-	wsConn := s.wsConn
+	if s.wsConn != nil {
+		wsConn.Close()
+		err = ErrWSAlreadyOpen
+		return err
+	}
+	s.wsConn = wsConn
 	s.gatewaySendRateLimiter.reset(wsConn)
 
 	wsConn.SetCloseHandler(func(code int, text string) error {
@@ -263,7 +287,15 @@ func (s *Session) Open() error {
 
 	// The first response from Discord should be an Op 10 (Hello) Packet.
 	// When processed by onEvent the heartbeat goroutine will be started.
+	s.Unlock()
 	mt, m, err := s.readGatewayHello(wsConn)
+	s.Lock()
+	if s.gatewayOpen != gatewayOpen || s.wsConn != wsConn {
+		if err == nil {
+			err = ErrWSNotFound
+		}
+		return err
+	}
 	if err != nil {
 		if shouldStartNewGatewaySessionOnClose(err) {
 			s.resetGatewayResumeStateLocked()
@@ -1701,6 +1733,7 @@ func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, 
 		s.Unlock()
 		return false, nil
 	}
+	s.gatewayOpen = nil
 
 	if cancelReconnect {
 		s.cancelReconnectLocked()

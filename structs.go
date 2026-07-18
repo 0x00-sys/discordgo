@@ -129,6 +129,8 @@ type Session struct {
 
 	// The websocket connection.
 	wsConn *websocket.Conn
+	// Identifies the Open call currently connecting to the gateway.
+	gatewayOpen chan struct{}
 
 	// When nil, the session is not listening.
 	listening chan interface{}

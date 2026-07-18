@@ -2281,6 +2281,122 @@ func TestOpenAfterCloseCanDial(t *testing.T) {
 	}
 }
 
+func TestOpenDialDoesNotBlockClose(t *testing.T) {
+	ready := []byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","resume_gateway_url":"wss://resume.gateway","user":{"id":"user"},"guilds":[]}}`)
+	server := newGatewayOpenTestServer(t, ready)
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{}, 1)
+	defer func() {
+		select {
+		case releaseDial <- struct{}{}:
+		default:
+		}
+	}()
+	session.gateway = "ws" + strings.TrimPrefix(server.URL, "http")
+	session.Dialer = &websocket.Dialer{NetDial: func(network, address string) (net.Conn, error) {
+		close(dialStarted)
+		<-releaseDial
+		return net.Dial(network, address)
+	}}
+
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- session.Open()
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Open did not start dialing")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- session.Close()
+	}()
+
+	select {
+	case err = <-closeDone:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Close blocked behind a stalled gateway dial")
+	}
+
+	releaseDial <- struct{}{}
+	select {
+	case err = <-openDone:
+		if err == nil {
+			t.Fatal("Open returned nil after Close canceled its stalled dial")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Open did not return after its canceled dial completed")
+	}
+}
+
+func TestOpenHelloDoesNotBlockClose(t *testing.T) {
+	connected := make(chan struct{})
+	unblockServer := make(chan struct{})
+	defer close(unblockServer)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(connected)
+		<-unblockServer
+	}))
+	defer server.Close()
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+	session.gateway = "ws" + strings.TrimPrefix(server.URL, "http")
+
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- session.Open()
+	}()
+
+	select {
+	case <-connected:
+	case <-time.After(time.Second):
+		t.Fatal("Open did not connect to gateway")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- session.Close()
+	}()
+
+	select {
+	case err = <-closeDone:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Close blocked behind a stalled gateway Hello")
+	}
+
+	select {
+	case err = <-openDone:
+		if err == nil {
+			t.Fatal("Open returned nil after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Open did not return after Close")
+	}
+}
+
 func newGatewayOpenTestServer(t *testing.T, startupPackets ...[]byte) *httptest.Server {
 	return newGatewayOpenTestServerWithHello(t, []byte(`{"op":10,"d":{"heartbeat_interval":1000}}`), startupPackets...)
 }
