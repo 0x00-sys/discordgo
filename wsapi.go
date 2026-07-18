@@ -1530,6 +1530,21 @@ func (s *Session) reconnectVoiceConnections() {
 	}
 }
 
+func (s *Session) disconnectVoiceConnections() {
+	s.RLock()
+	voiceConnections := make([]*VoiceConnection, 0, len(s.VoiceConnections))
+	for _, voice := range s.VoiceConnections {
+		if voice != nil {
+			voiceConnections = append(voiceConnections, voice)
+		}
+	}
+	s.RUnlock()
+
+	for _, voice := range voiceConnections {
+		_ = voice.Disconnect()
+	}
+}
+
 func (s *Session) reconnect() {
 
 	s.log(LogInformational, "called")
@@ -1649,15 +1664,13 @@ func (s *Session) cancelReconnectLocked() {
 	}
 }
 
-// Close closes a websocket and stops all listening/heartbeat goroutines.
-// TODO: Add support for Voice WS/UDP
+// Close closes the gateway and voice connections and stops their goroutines.
 func (s *Session) Close() error {
 	return s.CloseWithCode(websocket.CloseNormalClosure)
 }
 
-// CloseWithCode closes a websocket using the provided closeCode and stops all
-// listening/heartbeat goroutines.
-// TODO: Add support for Voice WS/UDP connections
+// CloseWithCode closes the gateway and voice connections using the provided
+// gateway closeCode and stops their goroutines.
 func (s *Session) CloseWithCode(closeCode int) (err error) {
 	return s.closeWithCode(closeCode, true)
 }
@@ -1698,9 +1711,6 @@ func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, 
 		s.listening = nil
 	}
 
-	// TODO: Close all active Voice Connections too
-	// this should force stop any reconnecting voice channels too
-
 	if s.wsConn != nil {
 		s.gatewaySendRateLimiter.stop(s.wsConn)
 
@@ -1722,6 +1732,9 @@ func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, 
 	}
 
 	s.Unlock()
+	if cancelReconnect {
+		s.disconnectVoiceConnections()
+	}
 
 	s.log(LogInformational, "emit disconnect event")
 	s.handleEvent(disconnectEventType, &Disconnect{})
