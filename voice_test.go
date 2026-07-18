@@ -748,6 +748,47 @@ func TestVoiceClose4022DoesNotReconnect(t *testing.T) {
 	}
 }
 
+func TestVoiceClose4022DoesNotRemoveReplacement(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade returned error: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		if err = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4022, "")); err != nil {
+			t.Errorf("WriteMessage returned error: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{VoiceConnections: make(map[string]*VoiceConnection)}
+	stale := &VoiceConnection{
+		GuildID:  "guild",
+		LogLevel: -1,
+		close:    make(chan struct{}),
+		session:  session,
+		wsConn:   conn,
+	}
+	replacement := &VoiceConnection{GuildID: stale.GuildID}
+	session.VoiceConnections[stale.GuildID] = replacement
+
+	stale.wsListen(conn, stale.close)
+
+	if got := session.VoiceConnections[stale.GuildID]; got != replacement {
+		t.Fatalf("VoiceConnections[%q] = %p, want replacement %p", stale.GuildID, got, replacement)
+	}
+}
+
 func TestUDPOpenReadTimeout(t *testing.T) {
 	oldTimeout := voiceUDPReadTimeout
 	voiceUDPReadTimeout = 25 * time.Millisecond
