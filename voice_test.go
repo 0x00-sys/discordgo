@@ -40,6 +40,58 @@ func TestOpusSenderNilAEAD(t *testing.T) {
 	v.opusSender(udpConn, make(chan struct{}), opus, 48000, 960)
 }
 
+func TestOpusSenderWriteErrorStartsRecovery(t *testing.T) {
+	udpConn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9})
+	if err != nil {
+		t.Fatalf("net.DialUDP() error = %v", err)
+	}
+	if err = udpConn.Close(); err != nil {
+		t.Fatalf("udpConn.Close() error = %v", err)
+	}
+
+	aead, err := newVoiceAEAD(voiceModeAES256GCMRTPSize, make([]int, 32))
+	if err != nil {
+		t.Fatalf("newVoiceAEAD() error = %v", err)
+	}
+	closeChan := make(chan struct{})
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		Ready:    true,
+		speaking: true,
+		aead:     aead,
+		udpConn:  udpConn,
+		close:    closeChan,
+		op2:      voiceOP2{SSRC: 42},
+	}
+	defer voice.Close()
+	opus := make(chan []byte, 1)
+	opus <- []byte{0x01, 0x02, 0x03}
+	done := make(chan struct{})
+	go func() {
+		voice.opusSender(udpConn, closeChan, opus, 48000, 960)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("opusSender did not return after UDP write error")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		voice.RLock()
+		current := voice.udpConn
+		voice.RUnlock()
+		if current == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("UDP write error did not start voice recovery")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestOpusReceiverCopiesPacketType(t *testing.T) {
 	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
