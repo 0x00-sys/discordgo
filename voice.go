@@ -1385,8 +1385,14 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		_, err = udpConn.Write(sendbuf)
 
 		if err != nil {
-			v.log(LogError, "udp write error, %s", err)
-			v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
+			v.RLock()
+			sameConnection := v.udpConn == udpConn
+			v.RUnlock()
+			if sameConnection {
+				v.log(LogError, "udp write error, %s", err)
+				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
+				go v.reconnectWithResume(false)
+			}
 			return
 		}
 		lastPacketAt = packetAt
