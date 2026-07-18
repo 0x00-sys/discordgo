@@ -214,7 +214,6 @@ func (v *VoiceConnection) installVoiceDAVESessionLocked(session VoiceDAVESession
 
 func (v *VoiceConnection) closeVoiceDAVE() {
 	v.daveMu.Lock()
-	defer v.daveMu.Unlock()
 
 	v.Lock()
 	session := v.dave
@@ -227,6 +226,7 @@ func (v *VoiceConnection) closeVoiceDAVE() {
 	v.daveUsers = nil
 	v.daveSSRCToUserID = nil
 	v.Unlock()
+	v.daveMu.Unlock()
 
 	if session != nil {
 		if err := session.Close(); err != nil {

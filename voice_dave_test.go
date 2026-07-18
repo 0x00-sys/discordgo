@@ -651,6 +651,77 @@ func TestVoiceDAVECloseStopsTransportBeforeBackend(t *testing.T) {
 	}
 }
 
+func TestVoiceDAVEBackendCloseDoesNotBlockFrameTransforms(t *testing.T) {
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseClose) })
+	}
+	defer release()
+	fake := &fakeVoiceDAVESession{
+		maxVersion: 1,
+		ready:      true,
+		closeHook: func() {
+			close(closeStarted)
+			<-releaseClose
+		},
+	}
+	voice := &VoiceConnection{LogLevel: -1}
+	installFakeDAVE(voice, fake, 1)
+	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
+
+	closeDone := make(chan struct{})
+	go func() {
+		voice.closeVoiceDAVE()
+		close(closeDone)
+	}()
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("closeVoiceDAVE did not reach the backend")
+	}
+
+	type frameResult struct {
+		frame []byte
+		err   error
+	}
+	encryptDone := make(chan frameResult, 1)
+	decryptDone := make(chan frameResult, 1)
+	go func() {
+		frame, err := voice.encryptDAVEFrame(42, []byte{1})
+		encryptDone <- frameResult{frame: frame, err: err}
+	}()
+	go func() {
+		frame, err := voice.decryptDAVEFrame(55, []byte{0xd1, 2})
+		decryptDone <- frameResult{frame: frame, err: err}
+	}()
+
+	select {
+	case result := <-encryptDone:
+		if result.err != nil || !reflect.DeepEqual(result.frame, []byte{1}) {
+			t.Fatalf("encrypt during backend close = %v, %v", result.frame, result.err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("encrypt blocked behind the DAVE backend Close")
+	}
+	select {
+	case result := <-decryptDone:
+		if result.err != nil || !reflect.DeepEqual(result.frame, []byte{0xd1, 2}) {
+			t.Fatalf("decrypt during backend close = %v, %v", result.frame, result.err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("decrypt blocked behind the DAVE backend Close")
+	}
+
+	release()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("closeVoiceDAVE did not finish")
+	}
+}
+
 func TestVoiceDAVELifecycleSerializesOpenAndClose(t *testing.T) {
 	closeStarted := make(chan struct{})
 	releaseClose := make(chan struct{})
