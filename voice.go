@@ -618,7 +618,9 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 				v.log(LogInformational, "disconnect due to %d manual disconnection", closeErr.Code)
 
 				v.session.Lock()
-				delete(v.session.VoiceConnections, v.GuildID)
+				if v.session.VoiceConnections[v.GuildID] == v {
+					delete(v.session.VoiceConnections, v.GuildID)
+				}
 				v.session.Unlock()
 
 				v.Close()
