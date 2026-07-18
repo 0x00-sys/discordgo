@@ -702,6 +702,87 @@ func TestRoleHelpersHandleNilRoles(t *testing.T) {
 	}
 }
 
+func TestStateReadHelpersHandleNilEntries(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Roles: []*Role{
+			nil,
+			{ID: "guild"},
+			{ID: "colored", Color: 0x123456, Position: 1},
+		},
+		Emojis: []*Emoji{
+			nil,
+			{ID: "emoji"},
+		},
+		VoiceStates: []*VoiceState{
+			nil,
+			{GuildID: "guild", UserID: "user"},
+		},
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "user"}, Roles: []string{"colored"}},
+		},
+		Channels: []*Channel{
+			{
+				ID:      "channel",
+				GuildID: "guild",
+				Messages: []*Message{
+					nil,
+					{ID: "message", ChannelID: "channel"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		check func(*testing.T)
+	}{
+		{name: "emoji", check: func(t *testing.T) {
+			emoji, err := state.Emoji("guild", "emoji")
+			if err != nil || emoji.ID != "emoji" {
+				t.Fatalf("Emoji = %#v, %v; want emoji", emoji, err)
+			}
+		}},
+		{name: "voice state", check: func(t *testing.T) {
+			voiceState, err := state.VoiceState("guild", "user")
+			if err != nil || voiceState.UserID != "user" {
+				t.Fatalf("VoiceState = %#v, %v; want user", voiceState, err)
+			}
+		}},
+		{name: "message", check: func(t *testing.T) {
+			message, err := state.Message("channel", "message")
+			if err != nil || message.ID != "message" {
+				t.Fatalf("Message = %#v, %v; want message", message, err)
+			}
+		}},
+		{name: "user color", check: func(t *testing.T) {
+			if color := state.UserColor("user", "channel"); color != 0x123456 {
+				t.Fatalf("UserColor = %d, want %d", color, 0x123456)
+			}
+		}},
+		{name: "message color", check: func(t *testing.T) {
+			message := &Message{ChannelID: "channel", Member: &Member{Roles: []string{"colored"}}}
+			if color := state.MessageColor(message); color != 0x123456 {
+				t.Fatalf("MessageColor = %d, want %d", color, 0x123456)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("state read helper panicked: %v", r)
+				}
+			}()
+			tt.check(t)
+		})
+	}
+}
+
 func TestStateOnInterfaceRejectsNilGuildEvents(t *testing.T) {
 	tests := []struct {
 		name  string

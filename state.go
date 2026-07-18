@@ -1443,7 +1443,7 @@ func (s *State) Emoji(guildID, emojiID string) (*Emoji, error) {
 	defer s.RUnlock()
 
 	for _, e := range guild.Emojis {
-		if e.ID == emojiID {
+		if e != nil && e.ID == emojiID {
 			return e, nil
 		}
 	}
@@ -2210,7 +2210,7 @@ func (s *State) VoiceState(guildID, userID string) (*VoiceState, error) {
 	}
 
 	for _, state := range guild.VoiceStates {
-		if state.UserID == userID {
+		if state != nil && state.UserID == userID {
 			return state, nil
 		}
 	}
@@ -2233,7 +2233,7 @@ func (s *State) Message(channelID, messageID string) (*Message, error) {
 	defer s.RUnlock()
 
 	for _, m := range c.Messages {
-		if m.ID == messageID {
+		if m != nil && m.ID == messageID {
 			return m, nil
 		}
 	}
@@ -3019,7 +3019,12 @@ func (s *State) MessageColor(message *Message) int {
 }
 
 func firstRoleColorColor(guild *Guild, memberRoles []string) int {
-	roles := append(Roles(nil), guild.Roles...)
+	roles := make(Roles, 0, len(guild.Roles))
+	for _, role := range guild.Roles {
+		if role != nil {
+			roles = append(roles, role)
+		}
+	}
 	sort.Sort(roles)
 
 	for _, role := range roles {
