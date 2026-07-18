@@ -40,6 +40,80 @@ func TestOpusSenderNilAEAD(t *testing.T) {
 	v.opusSender(udpConn, make(chan struct{}), opus, 48000, 960)
 }
 
+func TestOpusReceiverCopiesPacketType(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	sender, err := net.DialUDP("udp4", nil, receiver.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		receiver.Close()
+		t.Fatalf("net.DialUDP() error = %v", err)
+	}
+	defer sender.Close()
+
+	aead, err := newVoiceAEAD(voiceModeAES256GCMRTPSize, make([]int, 32))
+	if err != nil {
+		receiver.Close()
+		t.Fatalf("newVoiceAEAD() error = %v", err)
+	}
+	voice := &VoiceConnection{LogLevel: -1, aead: aead}
+	closeChan := make(chan struct{})
+	packets := make(chan *Packet, 2)
+	done := make(chan struct{})
+	go func() {
+		voice.opusReceiver(receiver, closeChan, packets)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		close(closeChan)
+		receiver.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("opusReceiver did not stop")
+		}
+	})
+
+	sendPacket := func(payloadType byte, sequence uint16) {
+		t.Helper()
+		header := make([]byte, 12)
+		header[0] = 0x80
+		header[1] = payloadType
+		binary.BigEndian.PutUint16(header[2:4], sequence)
+		binary.BigEndian.PutUint32(header[8:12], 42)
+		nonce := make([]byte, aead.NonceSize())
+		setVoiceNonce(nonce, uint32(sequence))
+		ciphertext := aead.Seal(nil, nonce, []byte{0xf8, 0xff, 0xfe}, header)
+		packet := append(append(header, ciphertext...), nonce[:4]...)
+		if _, err := sender.Write(packet); err != nil {
+			t.Fatalf("sender.Write() error = %v", err)
+		}
+	}
+	receivePacket := func() *Packet {
+		t.Helper()
+		select {
+		case packet := <-packets:
+			return packet
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for voice packet")
+			return nil
+		}
+	}
+
+	sendPacket(0x78, 1)
+	first := receivePacket()
+	sendPacket(0x79, 2)
+	second := receivePacket()
+
+	if !bytes.Equal(first.Type, []byte{0x80, 0x78}) {
+		t.Fatalf("first packet Type = %x after second read, want 8078", first.Type)
+	}
+	if !bytes.Equal(second.Type, []byte{0x80, 0x79}) {
+		t.Fatalf("second packet Type = %x, want 8079", second.Type)
+	}
+}
+
 func TestInterpolateVoiceTimestamp(t *testing.T) {
 	const (
 		frameDuration = 20 * time.Millisecond

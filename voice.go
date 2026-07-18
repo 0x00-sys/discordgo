@@ -1468,7 +1468,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 
 		// build a audio packet struct
 		p := Packet{}
-		p.Type = recvbuf[0:2]
+		p.Type = append([]byte(nil), recvbuf[0:2]...)
 		p.Sequence = binary.BigEndian.Uint16(recvbuf[2:4])
 		p.Timestamp = binary.BigEndian.Uint32(recvbuf[4:8])
 		p.SSRC = binary.BigEndian.Uint32(recvbuf[8:12])
