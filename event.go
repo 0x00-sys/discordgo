@@ -296,9 +296,9 @@ func (s *Session) onInterface(i interface{}) {
 			setGuildIds(t.Guild)
 		}
 	case *VoiceServerUpdate:
-		go s.onVoiceServerUpdate(t)
+		go s.callEventHandler(&eventHandlerInstance{voiceServerUpdateEventHandler((*Session).onVoiceServerUpdate)}, t)
 	case *VoiceStateUpdate:
-		go s.onVoiceStateUpdate(t)
+		go s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdate)}, t)
 	}
 	err := s.State.OnInterface(s, i)
 	if err != nil {

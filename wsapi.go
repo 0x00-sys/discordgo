@@ -1378,13 +1378,22 @@ func (s *Session) onVoiceStateUpdate(st *VoiceStateUpdate) {
 	// Check if we have a voice connection to update
 	s.RLock()
 	voice, exists := s.VoiceConnections[st.GuildID]
+	state := s.State
 	s.RUnlock()
-	if !exists {
+	if !exists || voice == nil || state == nil {
 		return
 	}
 
 	// We only care about events that are about us.
-	if s.State.User.ID != st.UserID {
+	state.RLock()
+	user := state.User
+	if user == nil {
+		state.RUnlock()
+		return
+	}
+	userID := user.ID
+	state.RUnlock()
+	if userID != st.UserID {
 		return
 	}
 
@@ -1402,6 +1411,9 @@ func (s *Session) onVoiceStateUpdate(st *VoiceStateUpdate) {
 // to a voice channel.  In that case, need to re-establish connection to
 // the new region endpoint.
 func (s *Session) onVoiceServerUpdate(st *VoiceServerUpdate) {
+	if st == nil {
+		return
+	}
 
 	s.log(LogInformational, "called")
 
@@ -1410,7 +1422,7 @@ func (s *Session) onVoiceServerUpdate(st *VoiceServerUpdate) {
 	s.RUnlock()
 
 	// If no VoiceConnection exists, just skip this
-	if !exists {
+	if !exists || voice == nil {
 		return
 	}
 
