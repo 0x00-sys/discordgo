@@ -200,6 +200,57 @@ func TestOnVoiceStateUpdateHandlesMalformedEvent(t *testing.T) {
 	}
 }
 
+func TestVoiceEventHandlersHandleIncompleteState(t *testing.T) {
+	t.Run("nil server update", func(t *testing.T) {
+		new(Session).onVoiceServerUpdate(nil)
+	})
+
+	t.Run("nil voice connection", func(t *testing.T) {
+		s := &Session{VoiceConnections: map[string]*VoiceConnection{"guild": nil}}
+		s.onVoiceServerUpdate(&VoiceServerUpdate{GuildID: "guild"})
+	})
+
+	t.Run("state update before READY", func(t *testing.T) {
+		s := &Session{
+			State:            NewState(),
+			VoiceConnections: map[string]*VoiceConnection{"guild": {}},
+		}
+		s.onVoiceStateUpdate(&VoiceStateUpdate{VoiceState: &VoiceState{
+			GuildID:   "guild",
+			ChannelID: "channel",
+			UserID:    "user",
+		}})
+	})
+}
+
+func TestInternalVoiceEventPanicIsRecovered(t *testing.T) {
+	oldLogger := Logger
+	defer func() { Logger = oldLogger }()
+
+	panicLogged := make(chan struct{}, 1)
+	Logger = func(msgL, caller int, format string, a ...interface{}) {
+		if strings.Contains(fmt.Sprintf(format, a...), "panic in VOICE_SERVER_UPDATE handler") {
+			panicLogged <- struct{}{}
+		}
+	}
+
+	closed := make(chan struct{})
+	close(closed)
+	s := &Session{
+		State: NewState(),
+		VoiceConnections: map[string]*VoiceConnection{
+			"guild": {LogLevel: -1, close: closed},
+		},
+	}
+	s.onInterface(&VoiceServerUpdate{GuildID: "guild"})
+
+	select {
+	case <-panicLogged:
+	case <-time.After(time.Second):
+		t.Fatal("internal voice event panic was not recovered")
+	}
+}
+
 func TestChannelVoiceJoinManualNilWsConn(t *testing.T) {
 	s := &Session{}
 
