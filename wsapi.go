@@ -39,7 +39,7 @@ var ErrWSNotFound = errors.New("no websocket connection exists")
 // more than the total shard count
 var ErrWSShardBounds = errors.New("ShardID must be less than ShardCount")
 
-const websocketCloseFrameTimeout = time.Second
+const websocketWriteTimeout = time.Second
 
 const (
 	// Discord allows 120 events per connection every minute. Keep five
@@ -165,8 +165,15 @@ func writeWebsocketCloseFrame(conn *websocket.Conn, closeCode int) error {
 	return conn.WriteControl(
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(closeCode, ""),
-		time.Now().Add(websocketCloseFrameTimeout),
+		time.Now().Add(websocketWriteTimeout),
 	)
+}
+
+func writeGatewayJSONWithDeadline(conn *websocket.Conn, data interface{}) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
+		return err
+	}
+	return conn.WriteJSON(data)
 }
 
 type resumePacket struct {
@@ -674,7 +681,7 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			s.LastHeartbeatSent = time.Now().UTC()
 			s.Unlock()
 			s.wsMutex.Lock()
-			err = wsConn.WriteJSON(heartbeatOp{1, sequence})
+			err = writeGatewayJSONWithDeadline(wsConn, heartbeatOp{1, sequence})
 			s.wsMutex.Unlock()
 		}
 		if err != nil || missedAck {
@@ -1023,7 +1030,7 @@ func (s *Session) writeGatewayJSON(wsConn *websocket.Conn, data interface{}) (er
 		return ErrWSNotFound
 	}
 
-	return wsConn.WriteJSON(data)
+	return writeGatewayJSONWithDeadline(wsConn, data)
 }
 
 func (s *Session) requestGuildMembers(data requestGuildMembersData) (err error) {
@@ -1488,7 +1495,7 @@ func (s *Session) identify(wsConn *websocket.Conn) error {
 func (s *Session) writeGatewayStartupPacket(wsConn *websocket.Conn, data interface{}) error {
 	s.Unlock()
 	s.wsMutex.Lock()
-	err := wsConn.WriteJSON(data)
+	err := writeGatewayJSONWithDeadline(wsConn, data)
 	s.wsMutex.Unlock()
 	s.Lock()
 	if err != nil {

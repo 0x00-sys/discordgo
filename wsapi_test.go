@@ -739,6 +739,55 @@ func TestGatewayWriteDoesNotBlockCloseWithLockedWSMutex(t *testing.T) {
 	}
 }
 
+func TestGatewayWriteTimesOutWhenPeerStopsReading(t *testing.T) {
+	unblock := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-unblock
+	}))
+	defer server.Close()
+	defer close(unblock)
+
+	dialer := websocket.Dialer{NetDial: func(network, address string) (net.Conn, error) {
+		conn, err := net.Dial(network, address)
+		if err != nil {
+			return nil, err
+		}
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			if err = tcpConn.SetWriteBuffer(1024); err != nil {
+				conn.Close()
+				return nil, err
+			}
+		}
+		return conn, nil
+	}}
+	conn, _, err := dialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{LogLevel: -1, wsConn: conn}
+	done := make(chan error, 1)
+	go func() {
+		done <- session.GatewayWriteStruct(strings.Repeat("x", 8<<20))
+	}()
+
+	select {
+	case err = <-done:
+		if err == nil {
+			t.Fatal("GatewayWriteStruct() error = nil, want write timeout")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("GatewayWriteStruct did not time out when peer stopped reading")
+	}
+}
+
 func TestOpenSendsHeartbeatsBeforeReady(t *testing.T) {
 	heartbeatRead := make(chan struct{}, 1)
 	server := newGatewayOpenAfterHeartbeatTestServer(t, heartbeatRead)
