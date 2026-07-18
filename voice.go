@@ -1012,6 +1012,13 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 	ticker := time.NewTicker(i * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		v.RLock()
+		current := v.wsConn == wsConn && v.close == close
+		v.RUnlock()
+		if !current {
+			return
+		}
+
 		v.log(LogDebug, "sending heartbeat packet")
 		sequenceAck := v.voiceSequenceAck()
 		v.wsMutex.Lock()
