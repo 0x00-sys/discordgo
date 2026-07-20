@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2278,6 +2279,74 @@ func TestOpenAfterCloseCanDial(t *testing.T) {
 
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Fatalf("dial attempts = %d, want 1", got)
+	}
+}
+
+func TestOpenGatewayLookupDoesNotBlockClose(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("error creating session: %v", err)
+	}
+
+	lookupStarted := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	session.Client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		close(lookupStarted)
+		<-releaseLookup
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"url":"ws://discord.invalid/gateway"}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	var dialAttempts int32
+	session.Dialer = &websocket.Dialer{NetDial: func(string, string) (net.Conn, error) {
+		atomic.AddInt32(&dialAttempts, 1)
+		return nil, errors.New("unexpected dial")
+	}}
+
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- session.Open()
+	}()
+
+	select {
+	case <-lookupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Open did not start the gateway lookup")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- session.Close()
+	}()
+
+	select {
+	case err = <-closeDone:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(releaseLookup)
+		<-closeDone
+		<-openDone
+		t.Fatal("Close blocked behind a stalled gateway lookup")
+	}
+
+	close(releaseLookup)
+	select {
+	case err = <-openDone:
+		if !errors.Is(err, ErrWSNotFound) {
+			t.Fatalf("Open returned %v after Close, want %v", err, ErrWSNotFound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Open did not return after the gateway lookup completed")
+	}
+	if got := atomic.LoadInt32(&dialAttempts); got != 0 {
+		t.Fatalf("gateway dial attempts = %d, want 0", got)
 	}
 }
 

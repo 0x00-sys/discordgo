@@ -222,13 +222,22 @@ func (s *Session) Open() error {
 		gateway = s.resumeGatewayURL
 	} else {
 		if s.gateway == "" {
-			s.gateway, err = s.Gateway()
+			s.Unlock()
+			gateway, err = s.Gateway()
+			s.Lock()
+			if s.gatewayOpen != gatewayOpen || reconnectCanceled(reconnectCancel) {
+				if err == nil {
+					err = ErrWSNotFound
+				}
+				return err
+			}
 			if err != nil {
 				return err
 			}
+			s.gateway = gateway
+		} else {
+			gateway = s.gateway
 		}
-
-		gateway = s.gateway
 	}
 
 	// Add the version and encoding to the URL
