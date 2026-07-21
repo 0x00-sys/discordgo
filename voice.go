@@ -1041,6 +1041,13 @@ func setVoiceNonce(nonce []byte, counter uint32) {
 	binary.BigEndian.PutUint32(nonce[:4], counter)
 }
 
+func encryptVoicePacket(aead cipher.AEAD, nonce, opus, header []byte) []byte {
+	packet := make([]byte, len(header), len(header)+len(opus)+aead.Overhead()+4)
+	copy(packet, header)
+	packet = aead.Seal(packet, nonce, opus, header)
+	return append(packet, nonce[:4]...)
+}
+
 func redactedVoiceData(data []byte) string {
 	var v interface{}
 	if err := json.Unmarshal(data, &v); err != nil {
@@ -1477,9 +1484,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		}
 		setVoiceNonce(nonce, nonceCounter)
 
-		sendbuf := aead.Seal(nil, nonce, recvbuf, udpHeader)
-		sendbuf = append(sendbuf, nonce[:4]...) // 4 byte nonce to ciphertext appended
-		sendbuf = append(udpHeader, sendbuf...) // final
+		sendbuf := encryptVoicePacket(aead, nonce, recvbuf, udpHeader)
 
 		_, err = udpConn.Write(sendbuf)
 
