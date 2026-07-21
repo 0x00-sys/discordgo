@@ -1714,28 +1714,39 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 			wait = 600
 		}
 
-		if !v.isSessionVoiceConnection() {
+		v.RLock()
+		session := v.session
+		guildID := v.GuildID
+		channelID := v.ChannelID
+		mute := v.mute
+		deaf := v.deaf
+		v.RUnlock()
+		if session == nil {
 			return
 		}
 
-		v.session.RLock()
-		dataReady := v.session.DataReady
-		wsConn := v.session.wsConn
-		v.session.RUnlock()
+		session.RLock()
+		current := session.VoiceConnections[guildID] == v
+		dataReady := session.DataReady
+		wsConn := session.wsConn
+		session.RUnlock()
+		if !current {
+			return
+		}
 		if !dataReady || wsConn == nil {
-			v.log(LogInformational, "cannot reconnect to channel %s with unready session", v.ChannelID)
+			v.log(LogInformational, "cannot reconnect to channel %s with unready session", channelID)
 			continue
 		}
 
-		v.log(LogInformational, "trying to reconnect to channel %s", v.ChannelID)
+		v.log(LogInformational, "trying to reconnect to channel %s", channelID)
 
-		_, err := v.session.ChannelVoiceJoin(v.GuildID, v.ChannelID, v.mute, v.deaf)
+		_, err := session.ChannelVoiceJoin(guildID, channelID, mute, deaf)
 		if err == nil {
-			v.log(LogInformational, "successfully reconnected to channel %s", v.ChannelID)
+			v.log(LogInformational, "successfully reconnected to channel %s", channelID)
 			return
 		}
 
-		v.log(LogInformational, "error reconnecting to channel %s, %s", v.ChannelID, err)
+		v.log(LogInformational, "error reconnecting to channel %s, %s", channelID, err)
 
 		// if the reconnect above didn't work lets just send a disconnect
 		// packet to reset things.
