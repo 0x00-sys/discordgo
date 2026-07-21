@@ -167,6 +167,9 @@ func (v *VoiceConnection) SpeakingFlags(flags VoiceSpeakingFlags) (err error) {
 
 	v.Lock()
 	defer v.Unlock()
+	if v.wsConn != wsConn {
+		return ErrWSNotFound
+	}
 	if err != nil {
 		v.speaking = false
 		v.log(LogError, "Speaking() write json error, %s", err)
