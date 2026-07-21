@@ -1327,7 +1327,9 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 
 	defer func() {
 		v.Lock()
-		v.Ready = false
+		if v.udpConn == udpConn && v.close == close {
+			v.Ready = false
+		}
 		v.Unlock()
 	}()
 
