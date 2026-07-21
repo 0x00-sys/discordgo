@@ -955,6 +955,10 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			v.log(LogError, "OP8 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
+		if hello.HeartbeatInterval <= 0 || hello.HeartbeatInterval > maxGatewayHeartbeatIntervalMsec {
+			v.log(LogError, "invalid voice heartbeat interval %d", hello.HeartbeatInterval)
+			return
+		}
 
 		v.RLock()
 		wsConn := v.wsConn
@@ -1116,7 +1120,7 @@ type voiceHeartbeatData struct {
 // disconnect the websocket connection after a few seconds.
 func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struct{}, i time.Duration) {
 
-	if close == nil || wsConn == nil || i <= 0 {
+	if close == nil || wsConn == nil || i <= 0 || i > maxGatewayHeartbeatIntervalMsec {
 		return
 	}
 
