@@ -105,6 +105,7 @@ func (r *gatewaySendRateLimiter) stop(connection *websocket.Conn) {
 
 	if r.connection == connection {
 		r.cancelLocked()
+		r.connection = nil
 	}
 }
 
@@ -112,6 +113,11 @@ func (r *gatewaySendRateLimiter) acquire(connection *websocket.Conn) bool {
 	for {
 		r.mu.Lock()
 		if r.connection == nil {
+			// A non-nil cancel marks a stopped limiter; reset re-arms it.
+			if r.cancel != nil {
+				r.mu.Unlock()
+				return false
+			}
 			r.connection = connection
 			r.cancel = make(chan struct{})
 			r.resetAt = r.timeNow().Add(gatewaySendRateLimitWindow)

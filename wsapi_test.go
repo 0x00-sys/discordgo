@@ -1585,6 +1585,18 @@ func TestGatewayRateLimitWaitStopsOnClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("rate limited write did not return after close")
 	}
+	if session.gatewaySendRateLimiter.connection != nil {
+		t.Fatal("gateway send limiter retained the closed websocket")
+	}
+	if session.gatewaySendRateLimiter.acquire(conn) {
+		t.Fatal("stale gateway write rearmed the stopped limiter")
+	}
+
+	replacement := &websocket.Conn{}
+	session.gatewaySendRateLimiter.reset(replacement)
+	if !session.gatewaySendRateLimiter.acquire(replacement) {
+		t.Fatal("reset did not rearm the limiter for a replacement connection")
+	}
 }
 
 func TestGatewayStartupAndHeartbeatBypassSendRateLimit(t *testing.T) {
