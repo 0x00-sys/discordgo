@@ -1397,6 +1397,37 @@ func TestGuildMemberRemoveReplacesCachedGuildPointer(t *testing.T) {
 	}
 }
 
+func TestGuildMemberRemoveClearsTrackedPresence(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:          "guild",
+		MemberCount: 2,
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "keep"}},
+			{GuildID: "guild", User: &User{ID: "remove"}},
+		},
+		Presences: []*Presence{
+			{User: &User{ID: "keep"}},
+			{User: &User{ID: "remove"}, Activities: []*Activity{{Name: "retained"}}},
+		},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+
+	err := state.OnInterface(&Session{StateEnabled: true}, &GuildMemberRemove{
+		Member: &Member{GuildID: "guild", User: &User{ID: "remove"}},
+	})
+	if err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	if _, err = state.Presence("guild", "remove"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Presence returned error %v, want %v", err, ErrStateNotFound)
+	}
+	if _, err = state.Presence("guild", "keep"); err != nil {
+		t.Fatalf("kept presence returned error: %v", err)
+	}
+}
+
 func TestMemberRemoveReleasesRemovedMemberReference(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
