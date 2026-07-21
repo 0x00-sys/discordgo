@@ -274,6 +274,8 @@ func (s *State) GuildAdd(guild *Guild) error {
 	if guild == nil {
 		return ErrStateInvalidData
 	}
+	replaceChannels := guild.Channels != nil
+	replaceThreads := guild.Threads != nil
 
 	s.Lock()
 	defer s.Unlock()
@@ -354,6 +356,30 @@ func (s *State) GuildAdd(guild *Guild) error {
 		}
 		if guild.SoundboardSounds == nil {
 			guild.SoundboardSounds = g.SoundboardSounds
+		}
+		if replaceChannels {
+			for _, c := range g.Channels {
+				if c != nil {
+					delete(s.channelMap, c.ID)
+				}
+			}
+			for _, c := range guild.Channels {
+				if c != nil {
+					s.channelMap[c.ID] = c
+				}
+			}
+		}
+		if replaceThreads {
+			for _, t := range g.Threads {
+				if t != nil {
+					delete(s.channelMap, t.ID)
+				}
+			}
+			for _, t := range guild.Threads {
+				if t != nil {
+					s.channelMap[t.ID] = t
+				}
+			}
 		}
 		if !s.TrackChannels {
 			for _, c := range g.Channels {
