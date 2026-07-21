@@ -40,6 +40,51 @@ func TestOpusSenderNilAEAD(t *testing.T) {
 	v.opusSender(udpConn, make(chan struct{}), opus, 48000, 960)
 }
 
+func TestOpusSenderOnlyClearsCurrentGenerationReady(t *testing.T) {
+	oldUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	defer oldUDP.Close()
+	replacementUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	defer replacementUDP.Close()
+
+	oldClose := make(chan struct{})
+	close(oldClose)
+	replacementClose := make(chan struct{})
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		Ready:    true,
+		udpConn:  replacementUDP,
+		close:    replacementClose,
+	}
+	voice.opusSender(oldUDP, oldClose, make(chan []byte), 48000, 960)
+	voice.RLock()
+	ready := voice.Ready
+	voice.RUnlock()
+	if !ready {
+		t.Fatal("stale opus sender cleared the replacement transport's Ready state")
+	}
+
+	currentClose := make(chan struct{})
+	close(currentClose)
+	voice.Lock()
+	voice.Ready = true
+	voice.udpConn = oldUDP
+	voice.close = currentClose
+	voice.Unlock()
+	voice.opusSender(oldUDP, currentClose, make(chan []byte), 48000, 960)
+	voice.RLock()
+	ready = voice.Ready
+	voice.RUnlock()
+	if ready {
+		t.Fatal("current opus sender did not clear its transport's Ready state")
+	}
+}
+
 func TestOpusSenderWriteErrorStartsRecovery(t *testing.T) {
 	udpConn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9})
 	if err != nil {
