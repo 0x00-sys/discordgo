@@ -2456,7 +2456,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		if t == nil || t.Member == nil || t.Member.GuildID == "" {
 			return ErrStateInvalidData
 		}
-		if s.TrackMembers && t.Member.User == nil {
+		if (s.TrackMembers || s.TrackPresences) && (t.Member.User == nil || t.Member.User.ID == "") {
 			return ErrStateInvalidData
 		}
 
@@ -2477,6 +2477,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			}
 
 			err = s.MemberRemove(t.Member)
+		}
+		if s.TrackPresences {
+			presenceErr := s.PresenceRemove(t.Member.GuildID, &Presence{User: t.Member.User})
+			if presenceErr != nil && !errors.Is(presenceErr, ErrStateNotFound) && err == nil {
+				err = presenceErr
+			}
 		}
 	case *GuildMembersChunk:
 		if (s.TrackMembers || s.TrackPresences) && t == nil {
