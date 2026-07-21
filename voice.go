@@ -785,7 +785,9 @@ func (v *VoiceConnection) voiceSequenceAck() int64 {
 // wsListen() function.
 func (v *VoiceConnection) onEvent(message []byte) {
 
-	v.log(LogDebug, "received: %s", redactedVoiceData(message))
+	if v.LogLevel >= LogDebug {
+		v.log(LogDebug, "received: %s", redactedVoiceData(message))
+	}
 
 	var e Event
 	if err := json.Unmarshal(message, &e); err != nil {
@@ -960,7 +962,9 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		// TODO monitor a chan/bool to verify this was successful
 
 	default:
-		v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, redactedVoiceData(e.RawData))
+		if v.LogLevel >= LogDebug {
+			v.log(LogDebug, "unknown voice operation, %d, %s", e.Operation, redactedVoiceData(e.RawData))
+		}
 	}
 
 	return
