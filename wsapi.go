@@ -41,6 +41,36 @@ var ErrWSShardBounds = errors.New("ShardID must be less than ShardCount")
 
 const websocketWriteTimeout = time.Second
 
+type gatewayZlibReader interface {
+	io.ReadCloser
+	zlib.Resetter
+}
+
+var gatewayZlibReaderPool sync.Pool
+
+func acquireGatewayZlibReader(reader io.Reader) (gatewayZlibReader, error) {
+	if pooled := gatewayZlibReaderPool.Get(); pooled != nil {
+		z := pooled.(gatewayZlibReader)
+		if err := z.Reset(reader, nil); err != nil {
+			gatewayZlibReaderPool.Put(z)
+			return nil, err
+		}
+		return z, nil
+	}
+
+	z, err := zlib.NewReader(reader)
+	if err != nil {
+		return nil, err
+	}
+	return z.(gatewayZlibReader), nil
+}
+
+func releaseGatewayZlibReader(z gatewayZlibReader) error {
+	err := z.Close()
+	gatewayZlibReaderPool.Put(z)
+	return err
+}
+
 const (
 	// Discord allows 120 events per connection every minute. Keep five
 	// slots available for Heartbeat, Identify, and Resume payloads.
@@ -547,11 +577,11 @@ func peekGatewayEvent(messageType int, message []byte) (*Event, error) {
 	reader = bytes.NewBuffer(message)
 
 	if messageType == websocket.BinaryMessage {
-		z, err := zlib.NewReader(reader)
+		z, err := acquireGatewayZlibReader(reader)
 		if err != nil {
 			return nil, err
 		}
-		defer z.Close()
+		defer releaseGatewayZlibReader(z)
 
 		reader = z
 	}
@@ -1097,14 +1127,14 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	// If this is a compressed message, uncompress it.
 	if messageType == websocket.BinaryMessage {
 
-		z, err2 := zlib.NewReader(reader)
+		z, err2 := acquireGatewayZlibReader(reader)
 		if err2 != nil {
 			s.log(LogError, "error uncompressing websocket message, %s", err)
 			return nil, err2
 		}
 
 		defer func() {
-			err3 := z.Close()
+			err3 := releaseGatewayZlibReader(z)
 			if err3 != nil {
 				s.log(LogWarning, "error closing zlib, %s", err)
 			}
