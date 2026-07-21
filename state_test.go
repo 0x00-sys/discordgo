@@ -305,6 +305,17 @@ func TestStateStageInstanceLifecycle(t *testing.T) {
 	if &beforeDeleteGuild.Channels[0] != &guild.Channels[0] {
 		t.Fatal("stage instance update copied the unrelated channels backing array")
 	}
+	cachedInstance := beforeDeleteGuild.StageInstances[0]
+	if err = state.OnInterface(session, &GuildUpdate{Guild: &Guild{ID: "guild", Name: "updated"}}); err != nil {
+		t.Fatalf("guild update returned error: %v", err)
+	}
+	beforeDeleteGuild, err = state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error after guild update: %v", err)
+	}
+	if len(beforeDeleteGuild.StageInstances) != 1 || beforeDeleteGuild.StageInstances[0] != cachedInstance {
+		t.Fatalf("StageInstances after guild update = %#v, want preserved instance", beforeDeleteGuild.StageInstances)
+	}
 
 	deleted := &StageInstanceEventDelete{StageInstance: &StageInstance{ID: "stage", GuildID: "guild"}}
 	if err = state.OnInterface(session, deleted); err != nil {
