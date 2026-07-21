@@ -1935,6 +1935,8 @@ type activatedWriteBlockingConn struct {
 	entered     chan struct{}
 	release     chan struct{}
 	closed      chan struct{}
+	writeErr    error
+	deadlines   chan time.Time
 	enteredOnce sync.Once
 	closedOnce  sync.Once
 }
@@ -1943,6 +1945,9 @@ func (c *activatedWriteBlockingConn) Write(p []byte) (int, error) {
 	select {
 	case <-c.active:
 		c.enteredOnce.Do(func() { close(c.entered) })
+		if c.writeErr != nil {
+			return 0, c.writeErr
+		}
 		select {
 		case <-c.release:
 		case <-c.closed:
@@ -1953,11 +1958,68 @@ func (c *activatedWriteBlockingConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+func (c *activatedWriteBlockingConn) SetWriteDeadline(deadline time.Time) error {
+	if c.deadlines != nil {
+		select {
+		case c.deadlines <- deadline:
+		default:
+		}
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
 func (c *activatedWriteBlockingConn) Close() error {
 	if c.closed != nil {
 		c.closedOnce.Do(func() { close(c.closed) })
 	}
 	return c.Conn.Close()
+}
+
+func newVoiceHeartbeatWriteTestConnection(t *testing.T, writeErr error) (*VoiceConnection, *activatedWriteBlockingConn, *websocket.Conn) {
+	t.Helper()
+
+	active := make(chan struct{})
+	release := make(chan struct{})
+	if writeErr == nil {
+		close(release)
+	}
+	server := newVoiceOpenTestServer(t, func() { close(active) })
+	transport := &activatedWriteBlockingConn{
+		active:    active,
+		entered:   make(chan struct{}),
+		release:   release,
+		closed:    make(chan struct{}),
+		writeErr:  writeErr,
+		deadlines: make(chan time.Time, 2),
+	}
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		NetDial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			transport.Conn = conn
+			return transport, nil
+		},
+	}
+	conn, _, err := dialer.Dial("wss://"+strings.TrimPrefix(server.URL, "https://"), nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	for len(transport.deadlines) > 0 {
+		<-transport.deadlines
+	}
+	voice := &VoiceConnection{LogLevel: -1, close: make(chan struct{}), wsConn: conn}
+	t.Cleanup(func() {
+		select {
+		case <-voice.close:
+		default:
+			close(voice.close)
+		}
+		_ = conn.Close()
+	})
+	return voice, transport, conn
 }
 
 func TestVoiceOpenIdentifyDoesNotBlockClose(t *testing.T) {
@@ -2221,6 +2283,65 @@ func TestVoiceHeartbeatStopsAfterConnectionReplacement(t *testing.T) {
 	case <-done:
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("heartbeat did not stop after websocket replacement")
+	}
+}
+
+func TestVoiceHeartbeatWriteFailureClosesConnection(t *testing.T) {
+	voice, transport, conn := newVoiceHeartbeatWriteTestConnection(t, errors.New("heartbeat write failed"))
+	voice.wsHeartbeat(conn, voice.close, 1)
+
+	select {
+	case deadline := <-transport.deadlines:
+		if deadline.IsZero() {
+			t.Error("heartbeat write had no deadline")
+		}
+	default:
+		t.Error("heartbeat write had no deadline")
+	}
+	select {
+	case <-transport.closed:
+	default:
+		t.Error("heartbeat write failure left the websocket transport open")
+	}
+}
+
+func TestVoiceHeartbeatClearsWriteDeadline(t *testing.T) {
+	voice, transport, conn := newVoiceHeartbeatWriteTestConnection(t, nil)
+	done := make(chan struct{})
+	go func() {
+		voice.wsHeartbeat(conn, voice.close, 1000)
+		close(done)
+	}()
+
+	select {
+	case deadline := <-transport.deadlines:
+		if deadline.IsZero() {
+			t.Fatal("heartbeat write had no deadline")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for heartbeat write deadline")
+	}
+	select {
+	case <-transport.closed:
+		t.Fatal("successful heartbeat closed the websocket transport")
+	default:
+	}
+	close(voice.close)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not stop after lifecycle close")
+	}
+	if err := voice.Speaking(false); err != nil {
+		t.Fatalf("Speaking() error = %v", err)
+	}
+	select {
+	case deadline := <-transport.deadlines:
+		if !deadline.IsZero() {
+			t.Fatalf("heartbeat deadline remained on the next voice write: %v", deadline)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the next voice write")
 	}
 }
 

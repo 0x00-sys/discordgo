@@ -1134,12 +1134,19 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 		v.log(LogDebug, "sending heartbeat packet")
 		sequenceAck := v.voiceSequenceAck()
 		v.wsMutex.Lock()
-		err = wsConn.WriteJSON(voiceHeartbeatOp{3, voiceHeartbeatData{
-			Timestamp:   time.Now().UnixNano() / int64(time.Millisecond),
-			SequenceAck: sequenceAck,
-		}})
+		err = wsConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+		if err == nil {
+			err = wsConn.WriteJSON(voiceHeartbeatOp{3, voiceHeartbeatData{
+				Timestamp:   time.Now().UnixNano() / int64(time.Millisecond),
+				SequenceAck: sequenceAck,
+			}})
+		}
+		if err == nil {
+			err = wsConn.SetWriteDeadline(time.Time{})
+		}
 		v.wsMutex.Unlock()
 		if err != nil {
+			_ = wsConn.Close()
 			v.log(LogError, "error sending heartbeat to voice endpoint %s, %s", v.endpoint, err)
 			return
 		}
