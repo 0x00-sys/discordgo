@@ -4824,13 +4824,19 @@ func TestRequestWithLockedBucketDoesNotRetryPostServerError(t *testing.T) {
 	}
 
 	attempts := 0
+	bodyClosed := make(chan struct{})
+	body := &closeNotifyReadCloser{
+		reader:   strings.NewReader(`server error`),
+		closed:   bodyClosed,
+		retained: make([]byte, 8<<20),
+	}
 	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		attempts++
 		return &http.Response{
 			StatusCode: http.StatusInternalServerError,
 			Status:     "500 Internal Server Error",
 			Header:     http.Header{},
-			Body:       io.NopCloser(strings.NewReader(`server error`)),
+			Body:       body,
 			Request:    r,
 		}, nil
 	})
@@ -4847,6 +4853,14 @@ func TestRequestWithLockedBucketDoesNotRetryPostServerError(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	select {
+	case <-bodyClosed:
+	default:
+		t.Fatal("response body was not closed before returning RESTError")
+	}
+	if restErr.Response.Body != http.NoBody {
+		t.Fatalf("RESTError retained consumed response body %T", restErr.Response.Body)
 	}
 }
 
@@ -5433,8 +5447,9 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 type closeNotifyReadCloser struct {
-	reader *strings.Reader
-	closed chan struct{}
+	reader   *strings.Reader
+	closed   chan struct{}
+	retained []byte
 }
 
 func (r *closeNotifyReadCloser) Read(p []byte) (int, error) {

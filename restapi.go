@@ -131,6 +131,7 @@ func redactedResponse(resp *http.Response, req *http.Request) *http.Response {
 
 	redacted := new(http.Response)
 	*redacted = *resp
+	redacted.Body = http.NoBody
 	redacted.Request = req
 	return redacted
 }
