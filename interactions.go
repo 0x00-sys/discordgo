@@ -419,7 +419,7 @@ func (d ApplicationCommandInteractionData) GetOption(name string) (option *Appli
 
 // ApplicationCommandInteractionDataResolved contains resolved data of command execution.
 // Partial Member objects are missing user, deaf and mute fields.
-// Partial Channel objects only have id, name, type and permissions fields.
+// Partial Channel objects include only the fields documented for resolved interaction data.
 type ApplicationCommandInteractionDataResolved struct {
 	Users       map[string]*User              `json:"users"`
 	Members     map[string]*Member            `json:"members"`
