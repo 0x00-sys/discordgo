@@ -689,6 +689,8 @@ type Channel struct {
 
 	// Computed permissions for the invoking user when this channel is resolved in an interaction.
 	Permissions int64 `json:"permissions,omitempty,string"`
+	// Computed permissions for the bot when this channel is resolved in an interaction.
+	AppPermissions int64 `json:"app_permissions,omitempty,string"`
 
 	// Number of messages ever sent in a thread, including deleted messages.
 	TotalMessageSent int `json:"total_message_sent"`

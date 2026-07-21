@@ -146,6 +146,57 @@ func TestApplicationCommandResolvedMembersLinkUsers(t *testing.T) {
 	}
 }
 
+func TestInteractionResolvedChannelAppPermissions(t *testing.T) {
+	data := []byte(`{
+		"id": "100",
+		"application_id": "200",
+		"type": 2,
+		"app_permissions": "1",
+		"data": {
+			"id": "300",
+			"name": "inspect",
+			"type": 1,
+			"resolved": {
+				"channels": {
+					"400": {
+						"id": "400",
+						"name": "target",
+						"type": 0,
+						"permissions": "2",
+						"app_permissions": "4"
+					}
+				}
+			}
+		}
+	}`)
+
+	var interaction Interaction
+	if err := json.Unmarshal(data, &interaction); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if interaction.AppPermissions != 1 {
+		t.Fatalf("interaction AppPermissions = %d, want 1", interaction.AppPermissions)
+	}
+
+	command, ok := interaction.Data.(ApplicationCommandInteractionData)
+	if !ok {
+		t.Fatalf("interaction Data = %T, want ApplicationCommandInteractionData", interaction.Data)
+	}
+	if command.Resolved == nil {
+		t.Fatal("interaction resolved data was not set")
+	}
+	channel := command.Resolved.Channels["400"]
+	if channel == nil {
+		t.Fatal("resolved channel was not set")
+	}
+	if channel.Permissions != 2 {
+		t.Fatalf("resolved channel Permissions = %d, want 2", channel.Permissions)
+	}
+	if channel.AppPermissions != 4 {
+		t.Fatalf("resolved channel AppPermissions = %d, want 4", channel.AppPermissions)
+	}
+}
+
 func TestApplicationCommandOptionMaxValueJSON(t *testing.T) {
 	tests := []struct {
 		name    string
