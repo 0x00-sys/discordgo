@@ -629,8 +629,11 @@ func TestVoiceAEADVectors(t *testing.T) {
 			}
 			nonce := make([]byte, aead.NonceSize())
 			setVoiceNonce(nonce, counter)
-			ciphertext := aead.Seal(nil, nonce, opus, header)
-			payload := append(append([]byte(nil), ciphertext...), nonce[:4]...)
+			packet := encryptVoicePacket(aead, nonce, opus, header)
+			if !bytes.Equal(packet[:len(header)], header) {
+				t.Fatalf("RTP header = %x, want %x", packet[:len(header)], header)
+			}
+			payload := packet[len(header):]
 			if !bytes.Equal(payload[len(payload)-4:], []byte{0x01, 0x02, 0x03, 0x04}) {
 				t.Fatalf("nonce suffix = %x, want 01020304", payload[len(payload)-4:])
 			}
@@ -651,6 +654,28 @@ func TestVoiceAEADVectors(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkEncryptVoicePacket(b *testing.B) {
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		b.Run(mode, func(b *testing.B) {
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
+			if err != nil {
+				b.Fatal(err)
+			}
+			header := []byte{0x80, 0x78, 0, 1, 0, 0, 3, 0, 0, 0, 0, 42}
+			nonce := make([]byte, aead.NonceSize())
+			setVoiceNonce(nonce, 7)
+			opus := bytes.Repeat([]byte{0xf8, 0xff, 0xfe}, 54)
+
+			b.ReportAllocs()
+			for b.Loop() {
+				voicePacketSink = encryptVoicePacket(aead, nonce, opus, header)
+			}
+		})
+	}
+}
+
+var voicePacketSink []byte
 
 func TestUDPOpenSendsSelectedEncryptionMode(t *testing.T) {
 	udpServer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
