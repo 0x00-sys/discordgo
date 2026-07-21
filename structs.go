@@ -2493,10 +2493,13 @@ func (t *TimeStamps) UnmarshalJSON(b []byte) error {
 
 // An Assets struct contains assets and labels used in the rich presence "playing .." Game
 type Assets struct {
-	LargeImageID string `json:"large_image,omitempty"`
-	SmallImageID string `json:"small_image,omitempty"`
-	LargeText    string `json:"large_text,omitempty"`
-	SmallText    string `json:"small_text,omitempty"`
+	LargeImageID     string `json:"large_image,omitempty"`
+	SmallImageID     string `json:"small_image,omitempty"`
+	LargeText        string `json:"large_text,omitempty"`
+	SmallText        string `json:"small_text,omitempty"`
+	LargeURL         string `json:"large_url,omitempty"`
+	SmallURL         string `json:"small_url,omitempty"`
+	InviteCoverImage string `json:"invite_cover_image,omitempty"`
 }
 
 // MemberFlags represent flags of a guild member.
@@ -3358,43 +3361,55 @@ type Activity struct {
 	URL           string       `json:"url,omitempty"`
 	CreatedAt     time.Time    `json:"created_at"`
 	ApplicationID string       `json:"application_id,omitempty"`
-	State         string       `json:"state,omitempty"`
-	Details       string       `json:"details,omitempty"`
-	Timestamps    TimeStamps   `json:"timestamps,omitempty"`
-	Emoji         Emoji        `json:"emoji,omitempty"`
-	Party         Party        `json:"party,omitempty"`
-	Assets        Assets       `json:"assets,omitempty"`
-	Secrets       Secrets      `json:"secrets,omitempty"`
-	Instance      bool         `json:"instance,omitempty"`
-	Flags         int          `json:"flags,omitempty"`
+	// StatusDisplayType controls which field is displayed in the user's status text.
+	StatusDisplayType *ActivityStatusDisplayType `json:"status_display_type,omitempty"`
+	State             string                     `json:"state,omitempty"`
+	StateURL          string                     `json:"state_url,omitempty"`
+	Details           string                     `json:"details,omitempty"`
+	DetailsURL        string                     `json:"details_url,omitempty"`
+	Timestamps        TimeStamps                 `json:"timestamps,omitempty"`
+	Emoji             Emoji                      `json:"emoji,omitempty"`
+	Party             Party                      `json:"party,omitempty"`
+	Assets            Assets                     `json:"assets,omitempty"`
+	Secrets           Secrets                    `json:"secrets,omitempty"`
+	Instance          bool                       `json:"instance,omitempty"`
+	Flags             int                        `json:"flags,omitempty"`
+	// Buttons contains button labels when received over the gateway.
+	Buttons []string `json:"buttons,omitempty"`
 }
 
 // UnmarshalJSON is a custom unmarshaljson to make CreatedAt a time.Time instead of an int
 func (activity *Activity) UnmarshalJSON(b []byte) error {
 	temp := struct {
-		Name          string       `json:"name"`
-		Type          ActivityType `json:"type"`
-		URL           string       `json:"url,omitempty"`
-		CreatedAt     int64        `json:"created_at"`
-		ApplicationID stringNumber `json:"application_id,omitempty"`
-		State         string       `json:"state,omitempty"`
-		Details       string       `json:"details,omitempty"`
-		Timestamps    TimeStamps   `json:"timestamps,omitempty"`
-		Emoji         Emoji        `json:"emoji,omitempty"`
-		Party         Party        `json:"party,omitempty"`
-		Assets        Assets       `json:"assets,omitempty"`
-		Secrets       Secrets      `json:"secrets,omitempty"`
-		Instance      bool         `json:"instance,omitempty"`
-		Flags         int          `json:"flags,omitempty"`
+		Name              string                     `json:"name"`
+		Type              ActivityType               `json:"type"`
+		URL               string                     `json:"url,omitempty"`
+		CreatedAt         int64                      `json:"created_at"`
+		ApplicationID     stringNumber               `json:"application_id,omitempty"`
+		StatusDisplayType *ActivityStatusDisplayType `json:"status_display_type,omitempty"`
+		State             string                     `json:"state,omitempty"`
+		StateURL          string                     `json:"state_url,omitempty"`
+		Details           string                     `json:"details,omitempty"`
+		DetailsURL        string                     `json:"details_url,omitempty"`
+		Timestamps        TimeStamps                 `json:"timestamps,omitempty"`
+		Emoji             Emoji                      `json:"emoji,omitempty"`
+		Party             Party                      `json:"party,omitempty"`
+		Assets            Assets                     `json:"assets,omitempty"`
+		Secrets           Secrets                    `json:"secrets,omitempty"`
+		Instance          bool                       `json:"instance,omitempty"`
+		Flags             int                        `json:"flags,omitempty"`
+		Buttons           []string                   `json:"buttons,omitempty"`
 	}{}
 	err := Unmarshal(b, &temp)
 	if err != nil {
 		return err
 	}
 	activity.ApplicationID = string(temp.ApplicationID)
+	activity.StatusDisplayType = temp.StatusDisplayType
 	activity.CreatedAt = time.Unix(0, temp.CreatedAt*1000000)
 	activity.Assets = temp.Assets
 	activity.Details = temp.Details
+	activity.DetailsURL = temp.DetailsURL
 	activity.Emoji = temp.Emoji
 	activity.Flags = temp.Flags
 	activity.Instance = temp.Instance
@@ -3402,9 +3417,11 @@ func (activity *Activity) UnmarshalJSON(b []byte) error {
 	activity.Party = temp.Party
 	activity.Secrets = temp.Secrets
 	activity.State = temp.State
+	activity.StateURL = temp.StateURL
 	activity.Timestamps = temp.Timestamps
 	activity.Type = temp.Type
 	activity.URL = temp.URL
+	activity.Buttons = temp.Buttons
 	return nil
 }
 
@@ -3452,6 +3469,16 @@ const (
 	ActivityTypeWatching  ActivityType = 3
 	ActivityTypeCustom    ActivityType = 4
 	ActivityTypeCompeting ActivityType = 5
+)
+
+// ActivityStatusDisplayType controls which Activity field is displayed in a user's status text.
+type ActivityStatusDisplayType int
+
+// Valid ActivityStatusDisplayType values.
+const (
+	ActivityStatusDisplayTypeName ActivityStatusDisplayType = iota
+	ActivityStatusDisplayTypeState
+	ActivityStatusDisplayTypeDetails
 )
 
 // Identify is sent during initial handshake with the discord gateway.

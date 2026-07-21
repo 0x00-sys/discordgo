@@ -603,6 +603,63 @@ func TestActivityUnmarshalApplicationID(t *testing.T) {
 	}
 }
 
+func TestActivityUnmarshalRichPresenceFields(t *testing.T) {
+	const createdAt = int64(1511200066000)
+	data := []byte(`{
+		"name":"Rocket League",
+		"type":0,
+		"created_at":1511200066000,
+		"application_id":"379286085710381999",
+		"status_display_type":2,
+		"details":"Ranked Duos",
+		"details_url":"https://example.com/details",
+		"state":"In a Match",
+		"state_url":"https://example.com/state",
+		"buttons":["Join","Website"],
+		"assets":{
+			"large_image":"large-image",
+			"large_text":"DFH Stadium",
+			"large_url":"https://example.com/large",
+			"small_image":"small-image",
+			"small_text":"Silver III",
+			"small_url":"https://example.com/small",
+			"invite_cover_image":"invite-cover"
+		}
+	}`)
+
+	var activity Activity
+	if err := json.Unmarshal(data, &activity); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if activity.ApplicationID != "379286085710381999" {
+		t.Fatalf("ApplicationID = %q", activity.ApplicationID)
+	}
+	if !activity.CreatedAt.Equal(time.UnixMilli(createdAt)) {
+		t.Fatalf("CreatedAt = %v, want %v", activity.CreatedAt, time.UnixMilli(createdAt))
+	}
+	if activity.StatusDisplayType == nil || *activity.StatusDisplayType != ActivityStatusDisplayTypeDetails {
+		t.Fatalf("StatusDisplayType = %v, want %d", activity.StatusDisplayType, ActivityStatusDisplayTypeDetails)
+	}
+	if activity.DetailsURL != "https://example.com/details" {
+		t.Fatalf("DetailsURL = %q", activity.DetailsURL)
+	}
+	if activity.StateURL != "https://example.com/state" {
+		t.Fatalf("StateURL = %q", activity.StateURL)
+	}
+	if len(activity.Buttons) != 2 || activity.Buttons[0] != "Join" || activity.Buttons[1] != "Website" {
+		t.Fatalf("Buttons = %v", activity.Buttons)
+	}
+	if activity.Assets.LargeURL != "https://example.com/large" {
+		t.Fatalf("Assets.LargeURL = %q", activity.Assets.LargeURL)
+	}
+	if activity.Assets.SmallURL != "https://example.com/small" {
+		t.Fatalf("Assets.SmallURL = %q", activity.Assets.SmallURL)
+	}
+	if activity.Assets.InviteCoverImage != "invite-cover" {
+		t.Fatalf("Assets.InviteCoverImage = %q", activity.Assets.InviteCoverImage)
+	}
+}
+
 func TestForumTagUnmarshalID(t *testing.T) {
 	tests := []struct {
 		name string
