@@ -1079,7 +1079,20 @@ func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
 		t.Fatalf("Member returned error after unavailable delete: %v", err)
 	}
 
-	if err := state.OnInterface(&Session{StateEnabled: true}, &GuildCreate{Guild: &Guild{ID: "guild"}}); err != nil {
+	if err := state.OnInterface(&Session{StateEnabled: true}, &GuildCreate{Guild: &Guild{
+		ID: "guild",
+		Channels: []*Channel{
+			{ID: "replacement-channel", GuildID: "guild"},
+		},
+		Threads: []*Channel{
+			{
+				ID:             "replacement-thread",
+				GuildID:        "guild",
+				Type:           ChannelTypeGuildPublicThread,
+				ThreadMetadata: &ThreadMetadata{},
+			},
+		},
+	}}); err != nil {
 		t.Fatalf("GuildCreate returned error: %v", err)
 	}
 	guild, err = state.Guild("guild")
@@ -1088,6 +1101,25 @@ func TestGuildDeleteUnavailableKeepsGuildIndexes(t *testing.T) {
 	}
 	if guild.Unavailable {
 		t.Fatal("guild unavailable flag was not cleared")
+	}
+	for _, id := range []string{"channel", "thread"} {
+		if _, err = state.Channel(id); !errors.Is(err, ErrStateNotFound) {
+			t.Fatalf("Channel(%q) returned error %v, want %v after replacement", id, err, ErrStateNotFound)
+		}
+	}
+	for _, id := range []string{"replacement-channel", "replacement-thread"} {
+		if _, err = state.Channel(id); err != nil {
+			t.Fatalf("Channel(%q) returned error after replacement: %v", id, err)
+		}
+	}
+
+	if err = state.OnInterface(&Session{StateEnabled: true}, &GuildUpdate{Guild: &Guild{ID: "guild", Name: "updated"}}); err != nil {
+		t.Fatalf("GuildUpdate returned error: %v", err)
+	}
+	for _, id := range []string{"replacement-channel", "replacement-thread"} {
+		if _, err = state.Channel(id); err != nil {
+			t.Fatalf("Channel(%q) returned error after partial update: %v", id, err)
+		}
 	}
 }
 
