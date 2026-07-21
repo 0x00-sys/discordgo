@@ -1046,6 +1046,104 @@ func BenchmarkVoiceClose(b *testing.B) {
 	}
 }
 
+func TestVoiceReconnectSnapshotsJoinState(t *testing.T) {
+	joins := make(chan voiceChannelJoinData, 1)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var op voiceChannelJoinOp
+		if err = conn.ReadJSON(&op); err == nil {
+			joins <- op.Data
+		}
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	session := &Session{
+		DataReady:        true,
+		LogLevel:         -1,
+		VoiceConnections: make(map[string]*VoiceConnection),
+		wsConn:           conn,
+	}
+	voice := &VoiceConnection{
+		GuildID:   "guild",
+		ChannelID: "channel-one",
+		LogLevel:  -1,
+		deaf:      true,
+		session:   session,
+	}
+	session.VoiceConnections[voice.GuildID] = voice
+
+	stopMutating := make(chan struct{})
+	mutatorDone := make(chan struct{})
+	go func() {
+		defer close(mutatorDone)
+		second := false
+		for {
+			select {
+			case <-stopMutating:
+				return
+			default:
+			}
+			voice.Lock()
+			voice.session = session
+			voice.GuildID = "guild"
+			if second {
+				voice.ChannelID = "channel-two"
+				voice.mute = true
+				voice.deaf = false
+			} else {
+				voice.ChannelID = "channel-one"
+				voice.mute = false
+				voice.deaf = true
+			}
+			voice.Ready = true
+			voice.Unlock()
+			second = !second
+		}
+	}()
+	defer func() {
+		close(stopMutating)
+		<-mutatorDone
+	}()
+
+	reconnectDone := make(chan struct{})
+	go func() {
+		voice.reconnectWithResume(false)
+		close(reconnectDone)
+	}()
+
+	var join voiceChannelJoinData
+	select {
+	case join = <-joins:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not send a voice join")
+	}
+	if join.ChannelID == nil {
+		t.Fatal("reconnect sent an empty channel ID")
+	}
+	coherentFirst := *join.ChannelID == "channel-one" && !join.SelfMute && join.SelfDeaf
+	coherentSecond := *join.ChannelID == "channel-two" && join.SelfMute && !join.SelfDeaf
+	if !coherentFirst && !coherentSecond {
+		t.Fatalf("reconnect sent mixed join state: %#v", join)
+	}
+	select {
+	case <-reconnectDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not return after joining")
+	}
+}
+
 func TestVoiceReconnectStopsWhenUnregistered(t *testing.T) {
 	v := &VoiceConnection{
 		GuildID:   "guild",
