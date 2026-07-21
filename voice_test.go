@@ -1850,17 +1850,42 @@ func TestVoiceSpeakingHandlersConcurrentDispatch(t *testing.T) {
 }
 
 func TestVoiceHeartbeatIgnoresInvalidInterval(t *testing.T) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		vc := &VoiceConnection{LogLevel: -1}
-		vc.wsHeartbeat(&websocket.Conn{}, make(chan struct{}), 0)
-	}()
+	for name, interval := range map[string]time.Duration{
+		"negative": -1,
+		"overflow": maxGatewayHeartbeatIntervalMsec + 1,
+		"zero":     0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			conn := &websocket.Conn{}
+			closeChan := make(chan struct{})
+			vc := &VoiceConnection{LogLevel: -1, wsConn: conn, close: closeChan}
+			vc.wsHeartbeat(conn, closeChan, interval)
+		})
+	}
+}
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("wsHeartbeat did not return for invalid interval")
+func TestVoiceHeartbeatAcceptsMaximumInterval(t *testing.T) {
+	conn := &websocket.Conn{}
+	closeChan := make(chan struct{})
+	vc := &VoiceConnection{LogLevel: -1, wsConn: &websocket.Conn{}, close: closeChan}
+	// A stale generation returns after safely constructing the maximum ticker,
+	// before it can write through the deliberately inert connection.
+	vc.wsHeartbeat(conn, closeChan, maxGatewayHeartbeatIntervalMsec)
+}
+
+func TestVoiceEventRejectsInvalidHeartbeatInterval(t *testing.T) {
+	oldLogger := Logger
+	defer func() { Logger = oldLogger }()
+
+	var logged string
+	Logger = func(msgL, caller int, format string, a ...interface{}) {
+		logged = fmt.Sprintf(format, a...)
+	}
+
+	vc := &VoiceConnection{LogLevel: LogError}
+	vc.onEvent([]byte(fmt.Sprintf(`{"op":8,"d":{"heartbeat_interval":%d}}`, maxGatewayHeartbeatIntervalMsec+1)))
+	if !strings.Contains(logged, "invalid voice heartbeat interval") {
+		t.Fatalf("onEvent log = %q, want invalid heartbeat interval", logged)
 	}
 }
 
