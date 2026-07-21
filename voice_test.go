@@ -1844,17 +1844,30 @@ type activatedWriteBlockingConn struct {
 	active      <-chan struct{}
 	entered     chan struct{}
 	release     chan struct{}
+	closed      chan struct{}
 	enteredOnce sync.Once
+	closedOnce  sync.Once
 }
 
 func (c *activatedWriteBlockingConn) Write(p []byte) (int, error) {
 	select {
 	case <-c.active:
 		c.enteredOnce.Do(func() { close(c.entered) })
-		<-c.release
+		select {
+		case <-c.release:
+		case <-c.closed:
+			return 0, net.ErrClosed
+		}
 	default:
 	}
 	return c.Conn.Write(p)
+}
+
+func (c *activatedWriteBlockingConn) Close() error {
+	if c.closed != nil {
+		c.closedOnce.Do(func() { close(c.closed) })
+	}
+	return c.Conn.Close()
 }
 
 func TestVoiceOpenIdentifyDoesNotBlockClose(t *testing.T) {
@@ -1882,6 +1895,68 @@ func TestVoiceOpenIdentifyDoesNotBlockClose(t *testing.T) {
 	}
 	voice := newVoiceOpenTestConnection(server, dialer)
 	testVoiceOpenClose(t, voice, blocking.entered, releaseWrite, "Identify write")
+}
+
+func TestVoiceResumeWriteDoesNotOutliveClose(t *testing.T) {
+	blockWrites := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	server := newVoiceOpenTestServer(t, func() { close(blockWrites) })
+	blocking := &activatedWriteBlockingConn{
+		active:  blockWrites,
+		entered: make(chan struct{}),
+		release: releaseWrite,
+		closed:  make(chan struct{}),
+	}
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		NetDial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			blocking.Conn = conn
+			return blocking, nil
+		},
+	}
+	voice := newVoiceOpenTestConnection(server, dialer)
+	voice.close = make(chan struct{})
+
+	released := false
+	defer func() {
+		if !released {
+			close(releaseWrite)
+		}
+	}()
+	resumeDone := make(chan error, 1)
+	go func() { resumeDone <- voice.resumeVoice() }()
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("resume did not reach the websocket write")
+	}
+
+	voice.Close()
+	select {
+	case err := <-resumeDone:
+		if err == nil {
+			t.Fatal("resume unexpectedly succeeded after Close")
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(releaseWrite)
+		released = true
+		select {
+		case <-resumeDone:
+			t.Fatal("Close did not release the blocked voice resume write")
+		case <-time.After(time.Second):
+			t.Fatal("resume did not return after the test released its write")
+		}
+	}
+
+	voice.RLock()
+	defer voice.RUnlock()
+	if voice.wsConn != nil || voice.close != nil {
+		t.Fatal("the canceled voice resume installed websocket state")
+	}
 }
 
 func TestVoiceOpenUsesGatewayV8Identify(t *testing.T) {
