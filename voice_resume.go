@@ -71,6 +71,17 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 		v.Unlock()
 	}()
 
+	writeDone := make(chan struct{})
+	writeWatcherDone := make(chan struct{})
+	go func() {
+		defer close(writeWatcherDone)
+		select {
+		case <-closeChan:
+			_ = conn.Close()
+		case <-writeDone:
+		}
+	}()
+
 	sequenceAck := v.voiceSequenceAck()
 	v.wsMutex.Lock()
 	err = conn.WriteJSON(voiceResumeOp{Op: 7, Data: voiceResumeData{
@@ -80,6 +91,8 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 		SequenceAck: sequenceAck,
 	}})
 	v.wsMutex.Unlock()
+	close(writeDone)
+	<-writeWatcherDone
 	if err != nil {
 		return fmt.Errorf("sending voice resume: %w", err)
 	}
