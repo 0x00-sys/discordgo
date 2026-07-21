@@ -1468,6 +1468,254 @@ func TestVoiceHeartbeatIgnoresInvalidInterval(t *testing.T) {
 	}
 }
 
+func newVoiceOpenTestServer(t *testing.T, beforeUpgradeResponse func()) *httptest.Server {
+	t.Helper()
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if beforeUpgradeResponse != nil {
+			beforeUpgradeResponse()
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err = conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newVoiceOpenTestConnection(server *httptest.Server, dialer *websocket.Dialer) *VoiceConnection {
+	return &VoiceConnection{
+		LogLevel:  -1,
+		GuildID:   "guild",
+		UserID:    "user",
+		ChannelID: "channel",
+		sessionID: "session",
+		token:     "token",
+		endpoint:  strings.TrimPrefix(server.URL, "https://"),
+		session:   &Session{Dialer: dialer},
+	}
+}
+
+func testVoiceOpenClose(t *testing.T, voice *VoiceConnection, blocked, release chan struct{}, operation string) {
+	t.Helper()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+
+	openDone := make(chan error, 1)
+	go func() { openDone <- voice.open() }()
+	select {
+	case <-blocked:
+	case <-time.After(time.Second):
+		t.Fatalf("open did not reach the voice %s", operation)
+	}
+	waiterDone := make(chan error, 1)
+	go func() { waiterDone <- voice.open() }()
+	select {
+	case err := <-waiterDone:
+		t.Fatalf("concurrent open returned before the first attempt completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		voice.Close()
+		close(closeDone)
+	}()
+	closeReturned := false
+	select {
+	case <-closeDone:
+		closeReturned = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	waiterReturned := false
+	var waiterErr error
+	select {
+	case waiterErr = <-waiterDone:
+		waiterReturned = true
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	released = true
+	var openErr error
+	select {
+	case openErr = <-openDone:
+	case <-time.After(time.Second):
+		t.Fatalf("open did not return after the voice %s was released", operation)
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatalf("Close did not return after the voice %s was released", operation)
+	}
+	if !waiterReturned {
+		select {
+		case waiterErr = <-waiterDone:
+		case <-time.After(time.Second):
+			t.Fatal("concurrent open did not return after Close")
+		}
+	}
+
+	if !closeReturned {
+		t.Fatalf("Close blocked behind a stalled voice %s", operation)
+	}
+	if !waiterReturned {
+		t.Fatal("concurrent open remained blocked after Close canceled the active attempt")
+	}
+	if !errors.Is(waiterErr, ErrWSNotFound) {
+		t.Fatalf("concurrent open error = %v, want %v after Close", waiterErr, ErrWSNotFound)
+	}
+	if !errors.Is(openErr, ErrWSNotFound) {
+		t.Fatalf("open error = %v, want %v after Close", openErr, ErrWSNotFound)
+	}
+	voice.RLock()
+	defer voice.RUnlock()
+	if voice.wsConn != nil || voice.close != nil {
+		t.Fatal("the canceled voice open installed websocket state")
+	}
+}
+
+func TestVoiceOpenDialDoesNotBlockClose(t *testing.T) {
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	var dialStartedOnce sync.Once
+
+	server := newVoiceOpenTestServer(t, nil)
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		NetDial: func(network, addr string) (net.Conn, error) {
+			dialStartedOnce.Do(func() { close(dialStarted) })
+			<-releaseDial
+			return net.Dial(network, addr)
+		},
+	}
+	voice := newVoiceOpenTestConnection(server, dialer)
+	testVoiceOpenClose(t, voice, dialStarted, releaseDial, "dial")
+}
+
+func TestConcurrentVoiceOpenRetriesAfterFailedAttempt(t *testing.T) {
+	firstDialStarted := make(chan struct{})
+	releaseFirstDial := make(chan struct{})
+	var dialMu sync.Mutex
+	dialCount := 0
+
+	server := newVoiceOpenTestServer(t, nil)
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		NetDial: func(network, addr string) (net.Conn, error) {
+			dialMu.Lock()
+			dialCount++
+			call := dialCount
+			dialMu.Unlock()
+			if call == 1 {
+				close(firstDialStarted)
+				<-releaseFirstDial
+				return nil, errors.New("first dial failed")
+			}
+			return net.Dial(network, addr)
+		},
+	}
+	voice := newVoiceOpenTestConnection(server, dialer)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- voice.open() }()
+	select {
+	case <-firstDialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first open did not reach the voice dial")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- voice.open() }()
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second open returned before the first attempt completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseFirstDial)
+
+	select {
+	case err := <-firstDone:
+		if err == nil {
+			t.Fatal("first open unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first open did not return after the dial failed")
+	}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second open error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second open did not retry after the first attempt failed")
+	}
+	defer voice.Close()
+
+	dialMu.Lock()
+	gotDialCount := dialCount
+	dialMu.Unlock()
+	if gotDialCount != 2 {
+		t.Fatalf("voice dial count = %d, want 2", gotDialCount)
+	}
+}
+
+type activatedWriteBlockingConn struct {
+	net.Conn
+	active      <-chan struct{}
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+}
+
+func (c *activatedWriteBlockingConn) Write(p []byte) (int, error) {
+	select {
+	case <-c.active:
+		c.enteredOnce.Do(func() { close(c.entered) })
+		<-c.release
+	default:
+	}
+	return c.Conn.Write(p)
+}
+
+func TestVoiceOpenIdentifyDoesNotBlockClose(t *testing.T) {
+	blockWrites := make(chan struct{})
+	releaseWrite := make(chan struct{})
+
+	server := newVoiceOpenTestServer(t, func() {
+		close(blockWrites)
+	})
+	blocking := &activatedWriteBlockingConn{
+		active:  blockWrites,
+		entered: make(chan struct{}),
+		release: releaseWrite,
+	}
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		NetDial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			blocking.Conn = conn
+			return blocking, nil
+		},
+	}
+	voice := newVoiceOpenTestConnection(server, dialer)
+	testVoiceOpenClose(t, voice, blocking.entered, releaseWrite, "Identify write")
+}
+
 func TestVoiceOpenUsesGatewayV8Identify(t *testing.T) {
 	request := make(chan struct {
 		version string

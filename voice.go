@@ -10,6 +10,7 @@
 package discordgo
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
@@ -34,6 +35,7 @@ import (
 type VoiceConnection struct {
 	sync.RWMutex
 	lifecycleMu sync.Mutex
+	opening     *voiceOpenAttempt
 
 	Debug         bool // If true, print extra logging -- DEPRECATED
 	LogLevel      int
@@ -88,6 +90,13 @@ type VoiceConnection struct {
 	op2 voiceOP2
 
 	voiceSpeakingUpdateHandlers []VoiceSpeakingUpdateHandler
+}
+
+type voiceOpenAttempt struct {
+	cancel   context.CancelFunc
+	conn     *websocket.Conn
+	done     chan struct{}
+	canceled chan struct{}
 }
 
 // VoiceSpeakingUpdateHandler type provides a function definition for the
@@ -292,6 +301,11 @@ func (v *VoiceConnection) Close() {
 	v.log(LogInformational, "called")
 
 	v.Lock()
+	attempt := v.opening
+	v.opening = nil
+	if attempt != nil {
+		close(attempt.canceled)
+	}
 
 	v.Ready = false
 	v.speaking = false
@@ -328,6 +342,12 @@ func (v *VoiceConnection) Close() {
 		v.wsConn = nil
 	}
 	v.Unlock()
+	if attempt != nil {
+		attempt.cancel()
+		if attempt.conn != nil {
+			_ = attempt.conn.Close()
+		}
+	}
 
 	// Media goroutines must be stopped before the DAVE session is cleared;
 	// otherwise an in-flight sender could observe protocol version 0 and leak
@@ -438,40 +458,92 @@ func (v *VoiceConnection) waitUntilConnected() error {
 // after VoiceChannelJoin is used and the data VOICE websocket events
 // are captured.
 func (v *VoiceConnection) open() (err error) {
-	v.lifecycleMu.Lock()
-	defer v.lifecycleMu.Unlock()
-
 	v.log(LogInformational, "called")
 
-	v.Lock()
-	// Don't open a websocket if one is already open
-	if v.wsConn != nil {
-		v.log(LogWarning, "refusing to overwrite non-nil websocket")
+	var (
+		attempt *voiceOpenAttempt
+		ctx     context.Context
+		cancel  context.CancelFunc
+	)
+	for {
+		v.lifecycleMu.Lock()
+		v.Lock()
+		if v.wsConn != nil {
+			v.log(LogWarning, "refusing to overwrite non-nil websocket")
+			v.Unlock()
+			v.lifecycleMu.Unlock()
+			return nil
+		}
+		if opening := v.opening; opening != nil {
+			v.Unlock()
+			v.lifecycleMu.Unlock()
+			select {
+			case <-opening.canceled:
+				return ErrWSNotFound
+			case <-opening.done:
+				select {
+				case <-opening.canceled:
+					return ErrWSNotFound
+				default:
+					continue
+				}
+			}
+		}
+		if v.disconnecting {
+			v.Unlock()
+			v.lifecycleMu.Unlock()
+			return ErrWSNotFound
+		}
+		ctx, cancel = context.WithCancel(context.Background())
+		attempt = &voiceOpenAttempt{
+			cancel:   cancel,
+			done:     make(chan struct{}),
+			canceled: make(chan struct{}),
+		}
+		v.opening = attempt
 		v.Unlock()
-		return
+		v.lifecycleMu.Unlock()
+
+		defer cancel()
+		defer func() {
+			v.Lock()
+			if v.opening == attempt {
+				v.opening = nil
+			}
+			close(attempt.done)
+			v.Unlock()
+		}()
+		break
 	}
 
 	// TODO temp? loop to wait for the SessionID
 	i := 0
 	for {
+		v.RLock()
+		if v.opening != attempt || v.disconnecting {
+			v.RUnlock()
+			return ErrWSNotFound
+		}
 		if v.sessionID != "" {
 			break
 		}
 
 		if i > 20 { // only loop for up to 1 second total
-			v.Unlock()
+			v.RUnlock()
 			return fmt.Errorf("did not receive voice Session ID in time")
 		}
-		// Release the lock, so sessionID can be populated upon receiving a VoiceStateUpdate event.
-		v.Unlock()
+		v.RUnlock()
 		time.Sleep(50 * time.Millisecond)
 		i++
-		v.Lock()
 	}
 	session := v.session
 	userID := v.UserID
 	channelID := v.ChannelID
-	v.Unlock()
+	guildID := v.GuildID
+	sessionID := v.sessionID
+	token := v.token
+	endpoint := v.endpoint
+	v.RUnlock()
 	if session == nil {
 		return ErrWSNotFound
 	}
@@ -497,35 +569,45 @@ func (v *VoiceConnection) open() (err error) {
 		}
 		daveSession = nil
 	}
+	defer closeUninstalledDAVE()
 
-	v.Lock()
-	if v.wsConn != nil {
-		v.log(LogWarning, "refusing to overwrite non-nil websocket")
-		v.Unlock()
-		closeUninstalledDAVE()
-		return nil
+	isCurrentLocked := func() bool {
+		return v.opening == attempt && v.wsConn == nil && !v.disconnecting &&
+			v.session == session && v.UserID == userID && v.ChannelID == channelID &&
+			v.GuildID == guildID && v.sessionID == sessionID && v.token == token && v.endpoint == endpoint
 	}
-	if v.disconnecting || v.session != session || v.UserID != userID || v.ChannelID != channelID {
-		v.Unlock()
-		closeUninstalledDAVE()
-		return ErrWSNotFound
+	isCurrent := func() bool {
+		v.RLock()
+		current := isCurrentLocked()
+		v.RUnlock()
+		return current
 	}
 
 	// Connect to VoiceConnection Websocket
-	v.sequence = 0
-	v.sequenceSet = false
-	vg := "wss://" + strings.TrimSuffix(v.endpoint, ":80") + "?v=" + strconv.Itoa(voiceGatewayVersion)
+	vg := "wss://" + strings.TrimSuffix(endpoint, ":80") + "?v=" + strconv.Itoa(voiceGatewayVersion)
 	v.log(LogInformational, "connecting to voice endpoint %s", vg)
-	wsConn, _, err := dialer.Dial(vg, nil)
+	wsConn, _, err := dialer.DialContext(ctx, vg, nil)
 	if err != nil {
-		v.Unlock()
-		closeUninstalledDAVE()
+		if !isCurrent() {
+			return ErrWSNotFound
+		}
 		v.log(LogWarning, "error connecting to voice endpoint %s, %s", vg, err)
 		v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 		return
 	}
-	v.wsConn = wsConn
-	v.installVoiceDAVESessionLocked(daveSession, daveCallbacks, maxDAVEVersion)
+	defer func() {
+		if wsConn != nil {
+			_ = wsConn.Close()
+		}
+	}()
+
+	v.Lock()
+	if !isCurrentLocked() {
+		v.Unlock()
+		return ErrWSNotFound
+	}
+	attempt.conn = wsConn
+	v.Unlock()
 
 	type voiceHandshakeData struct {
 		ServerID               string `json:"server_id"`
@@ -538,24 +620,39 @@ func (v *VoiceConnection) open() (err error) {
 		Op   int                `json:"op"` // Always 0
 		Data voiceHandshakeData `json:"d"`
 	}
-	data := voiceHandshakeOp{0, voiceHandshakeData{v.GuildID, v.UserID, v.sessionID, v.token, maxDAVEVersion}}
+	data := voiceHandshakeOp{0, voiceHandshakeData{guildID, userID, sessionID, token, maxDAVEVersion}}
 
 	v.wsMutex.Lock()
 	err = wsConn.WriteJSON(data)
 	v.wsMutex.Unlock()
 	if err != nil {
-		v.wsConn = nil
-		v.Unlock()
-		_ = wsConn.Close()
-		v.closeVoiceDAVE()
+		if !isCurrent() {
+			return ErrWSNotFound
+		}
 		v.log(LogWarning, "error sending init packet, %s", err)
 		return
 	}
 
+	v.lifecycleMu.Lock()
+	v.Lock()
+	if !isCurrentLocked() {
+		v.Unlock()
+		v.lifecycleMu.Unlock()
+		return ErrWSNotFound
+	}
+	v.sequence = 0
+	v.sequenceSet = false
+	v.wsConn = wsConn
+	v.installVoiceDAVESessionLocked(daveSession, daveCallbacks, maxDAVEVersion)
+	daveSession = nil
 	v.close = make(chan struct{})
 	closeChan := v.close
+	attempt.conn = nil
 	v.Unlock()
-	go v.wsListen(wsConn, closeChan)
+	v.lifecycleMu.Unlock()
+	installedConn := wsConn
+	wsConn = nil
+	go v.wsListen(installedConn, closeChan)
 
 	// add loop/check for Ready bool here?
 	// then return false if not ready?
