@@ -1513,6 +1513,80 @@ func TestVoiceSpeakingPayloadCurrentFlags(t *testing.T) {
 	}
 }
 
+func TestVoiceSpeakingStaleWriteDoesNotChangeReplacementState(t *testing.T) {
+	tests := []struct {
+		name                string
+		failWrite           bool
+		replacementSpeaking bool
+	}{
+		{name: "successful old write", replacementSpeaking: false},
+		{name: "failed old write", failWrite: true, replacementSpeaking: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blockWrites := make(chan struct{})
+			releaseWrite := make(chan struct{})
+			server := newVoiceOpenTestServer(t, func() { close(blockWrites) })
+			transport := &activatedWriteBlockingConn{
+				active:  blockWrites,
+				entered: make(chan struct{}),
+				release: releaseWrite,
+				closed:  make(chan struct{}),
+			}
+			dialer := &websocket.Dialer{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				NetDial: func(network, addr string) (net.Conn, error) {
+					conn, err := net.Dial(network, addr)
+					if err != nil {
+						return nil, err
+					}
+					transport.Conn = conn
+					return transport, nil
+				},
+			}
+			conn, _, err := dialer.Dial("wss://"+strings.TrimPrefix(server.URL, "https://"), nil)
+			if err != nil {
+				t.Fatalf("Dial() error = %v", err)
+			}
+			defer conn.Close()
+
+			voice := &VoiceConnection{LogLevel: -1, wsConn: conn, op2: voiceOP2{SSRC: 42}}
+			done := make(chan error, 1)
+			go func() { done <- voice.SpeakingFlags(VoiceSpeakingFlagMicrophone) }()
+			select {
+			case <-transport.entered:
+			case <-time.After(time.Second):
+				t.Fatal("SpeakingFlags did not reach the websocket write")
+			}
+
+			voice.Lock()
+			voice.wsConn = &websocket.Conn{}
+			voice.speaking = tt.replacementSpeaking
+			voice.Unlock()
+			if tt.failWrite {
+				_ = conn.Close()
+			} else {
+				close(releaseWrite)
+			}
+
+			select {
+			case err = <-done:
+			case <-time.After(time.Second):
+				t.Fatal("SpeakingFlags did not return")
+			}
+			voice.RLock()
+			gotSpeaking := voice.speaking
+			voice.RUnlock()
+			if gotSpeaking != tt.replacementSpeaking {
+				t.Fatalf("replacement speaking = %t, want %t", gotSpeaking, tt.replacementSpeaking)
+			}
+			if !errors.Is(err, ErrWSNotFound) {
+				t.Fatalf("SpeakingFlags() error = %v, want %v", err, ErrWSNotFound)
+			}
+		})
+	}
+}
+
 func TestVoiceSpeakingUpdateCurrentAndLegacyPayloads(t *testing.T) {
 	tests := []struct {
 		name         string
