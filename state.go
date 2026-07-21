@@ -351,6 +351,9 @@ func (s *State) GuildAdd(guild *Guild) error {
 		if guild.VoiceStates == nil && s.TrackVoice {
 			guild.VoiceStates = g.VoiceStates
 		}
+		if guild.StageInstances == nil {
+			guild.StageInstances = g.StageInstances
+		}
 		if guild.GuildScheduledEvents == nil {
 			guild.GuildScheduledEvents = g.GuildScheduledEvents
 		}
