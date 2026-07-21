@@ -137,6 +137,129 @@ func TestOpusSenderWriteErrorStartsRecovery(t *testing.T) {
 	}
 }
 
+func TestUDPKeepAliveWriteErrorStartsRecovery(t *testing.T) {
+	udpConn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9})
+	if err != nil {
+		t.Fatalf("net.DialUDP() error = %v", err)
+	}
+	if err = udpConn.Close(); err != nil {
+		t.Fatalf("udpConn.Close() error = %v", err)
+	}
+
+	closeChan := make(chan struct{})
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		Ready:    true,
+		udpConn:  udpConn,
+		close:    closeChan,
+	}
+	defer voice.Close()
+	done := make(chan struct{})
+	go func() {
+		voice.udpKeepAlive(udpConn, closeChan, time.Hour)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("udpKeepAlive did not return after UDP write error")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		voice.RLock()
+		current := voice.udpConn
+		voice.RUnlock()
+		if current == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("UDP keepalive write error did not start voice recovery")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestUDPKeepAliveWriteErrorSkipsReplacement(t *testing.T) {
+	staleUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	defer staleUDP.Close()
+	replacementUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	defer replacementUDP.Close()
+
+	staleClose := make(chan struct{})
+	voice := &VoiceConnection{
+		LogLevel: -1,
+		Ready:    true,
+		udpConn:  staleUDP,
+		close:    staleClose,
+	}
+	voice.lifecycleMu.Lock()
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		voice.reconnectUDPIfCurrent(staleUDP, staleClose)
+		close(done)
+	}()
+	<-started
+
+	replacementClose := make(chan struct{})
+	voice.Lock()
+	voice.udpConn = replacementUDP
+	voice.close = replacementClose
+	voice.Unlock()
+	voice.lifecycleMu.Unlock()
+	<-done
+
+	voice.RLock()
+	current := voice.udpConn
+	ready := voice.Ready
+	voice.RUnlock()
+	if current != replacementUDP || !ready {
+		t.Fatal("stale UDP keepalive write error disrupted the replacement transport")
+	}
+}
+
+func TestUDPKeepAliveWriteErrorInterruptsReconnect(t *testing.T) {
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+
+	closeChan := make(chan struct{})
+	voice := &VoiceConnection{
+		LogLevel:     -1,
+		Ready:        true,
+		reconnecting: true,
+		udpConn:      udpConn,
+		close:        closeChan,
+	}
+	voice.reconnectUDPIfCurrent(udpConn, closeChan)
+
+	voice.RLock()
+	current := voice.udpConn
+	currentClose := voice.close
+	ready := voice.Ready
+	reconnecting := voice.reconnecting
+	reconnectAgain := voice.reconnectAgain
+	voice.RUnlock()
+	if current != nil || currentClose != nil || ready || !reconnecting || !reconnectAgain {
+		t.Fatal("UDP failure did not interrupt the in-flight resumable reconnect")
+	}
+	if !voice.continueReconnect() {
+		t.Fatal("in-flight reconnect did not consume the queued UDP recovery")
+	}
+	if voice.continueReconnect() {
+		t.Fatal("queued UDP recovery was consumed more than once")
+	}
+}
+
 func TestOpusReceiverCopiesPacketType(t *testing.T) {
 	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

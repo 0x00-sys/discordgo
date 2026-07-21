@@ -37,17 +37,18 @@ type VoiceConnection struct {
 	lifecycleMu sync.Mutex
 	opening     *voiceOpenAttempt
 
-	Debug         bool // If true, print extra logging -- DEPRECATED
-	LogLevel      int
-	Ready         bool // If true, voice is ready to send/receive audio
-	UserID        string
-	GuildID       string
-	ChannelID     string
-	deaf          bool
-	mute          bool
-	speaking      bool
-	reconnecting  bool // If true, voice connection is trying to reconnect
-	disconnecting bool // If true, voice connection is being permanently torn down
+	Debug          bool // If true, print extra logging -- DEPRECATED
+	LogLevel       int
+	Ready          bool // If true, voice is ready to send/receive audio
+	UserID         string
+	GuildID        string
+	ChannelID      string
+	deaf           bool
+	mute           bool
+	speaking       bool
+	reconnecting   bool // If true, voice connection is trying to reconnect
+	reconnectAgain bool // If true, the active reconnect must retry after teardown
+	disconnecting  bool // If true, voice connection is being permanently torn down
 
 	OpusSend chan []byte  // Chan for sending opus audio
 	OpusRecv chan *Packet // Chan for receiving opus audio
@@ -300,6 +301,10 @@ func (v *VoiceConnection) Disconnect() (err error) {
 func (v *VoiceConnection) Close() {
 	v.lifecycleMu.Lock()
 	defer v.lifecycleMu.Unlock()
+	v.closeLocked()
+}
+
+func (v *VoiceConnection) closeLocked() {
 
 	v.log(LogInformational, "called")
 
@@ -1366,7 +1371,13 @@ func (v *VoiceConnection) udpKeepAlive(udpConn *net.UDPConn, close <-chan struct
 
 		_, err = udpConn.Write(packet)
 		if err != nil {
-			v.log(LogError, "write error, %s", err)
+			v.RLock()
+			sameConnection := v.udpConn == udpConn && v.close == close
+			v.RUnlock()
+			if sameConnection {
+				v.log(LogError, "write error, %s", err)
+				go v.reconnectUDPIfCurrent(udpConn, close)
+			}
 			return
 		}
 
@@ -1554,7 +1565,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 			if sameConnection {
 				v.log(LogError, "udp write error, %s", err)
 				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
-				go v.reconnectWithResume(false)
+				go v.reconnectUDPIfCurrent(udpConn, close)
 			}
 			return
 		}
@@ -1626,7 +1637,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 				v.log(LogError, "udp read error, %s, %s", v.endpoint, err)
 				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 
-				go v.reconnectWithResume(false)
+				go v.reconnectUDPIfCurrent(udpConn, close)
 			}
 			return
 		}
@@ -1742,23 +1753,23 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 
 	v.Lock()
 	if v.reconnecting {
+		if !canResume {
+			v.reconnectAgain = true
+		}
 		v.log(LogInformational, "already reconnecting to channel %s, exiting", v.ChannelID)
 		v.Unlock()
 		return
 	}
 	v.reconnecting = true
+	v.reconnectAgain = false
 	v.Unlock()
-
-	defer func() {
-		v.Lock()
-		v.reconnecting = false
-		v.Unlock()
-	}()
 
 	if canResume && v.canResumeVoice() && v.isSessionVoiceConnection() {
 		if err := v.resumeVoice(); err == nil {
 			v.log(LogInformational, "successfully resumed voice websocket")
-			return
+			if !v.continueReconnect() {
+				return
+			}
 		} else {
 			v.log(LogWarning, "could not resume voice websocket, %s", err)
 		}
@@ -1766,6 +1777,55 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 
 	// Close any currently open connections
 	v.Close()
+	v.reconnectAfterCloseUntilStable()
+}
+
+func (v *VoiceConnection) reconnectUDPIfCurrent(udpConn *net.UDPConn, close <-chan struct{}) {
+	v.lifecycleMu.Lock()
+	v.Lock()
+	if v.udpConn != udpConn || v.close != close {
+		v.Unlock()
+		v.lifecycleMu.Unlock()
+		return
+	}
+	if v.reconnecting {
+		v.reconnectAgain = true
+		v.Unlock()
+		v.closeLocked()
+		v.lifecycleMu.Unlock()
+		return
+	}
+	v.reconnecting = true
+	v.reconnectAgain = false
+	v.Unlock()
+	v.closeLocked()
+	v.lifecycleMu.Unlock()
+
+	v.reconnectAfterCloseUntilStable()
+}
+
+func (v *VoiceConnection) reconnectAfterCloseUntilStable() {
+	for {
+		v.reconnectAfterClose()
+		if !v.continueReconnect() {
+			return
+		}
+		v.Close()
+	}
+}
+
+func (v *VoiceConnection) continueReconnect() bool {
+	v.Lock()
+	defer v.Unlock()
+	if v.reconnectAgain {
+		v.reconnectAgain = false
+		return true
+	}
+	v.reconnecting = false
+	return false
+}
+
+func (v *VoiceConnection) reconnectAfterClose() {
 
 	if !v.isSessionVoiceConnection() {
 		return
