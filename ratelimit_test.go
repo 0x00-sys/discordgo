@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func resetSharedUnauthenticatedGlobal(t *testing.T) {
@@ -21,6 +22,18 @@ func resetSharedUnauthenticatedGlobal(t *testing.T) {
 	t.Cleanup(func() {
 		atomic.StoreInt64(sharedUnauthenticatedGlobal, 0)
 	})
+}
+
+func TestRatelimitBucketAtomicAlignment(t *testing.T) {
+	var bucket Bucket
+	for name, offset := range map[string]uintptr{
+		"resetAt":  unsafe.Offsetof(bucket.resetAt),
+		"lastUsed": unsafe.Offsetof(bucket.lastUsed),
+	} {
+		if offset%8 != 0 {
+			t.Errorf("Bucket.%s offset = %d, want 64-bit alignment", name, offset)
+		}
+	}
 }
 
 // This test takes ~2 seconds to run

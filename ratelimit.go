@@ -110,7 +110,7 @@ func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
 		if atomic.LoadInt32(&bucket.activeRequests) != 0 {
 			continue
 		}
-		if reset := atomic.LoadInt64(&bucket.resetAt); reset > nowUnix {
+		if reset := bucket.resetAt.Load(); reset > nowUnix {
 			continue
 		}
 		ttl := rateLimitBucketTTL
@@ -118,7 +118,7 @@ func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
 			ttl = bucket.ttl
 		}
 		expiresBefore := now.Add(-ttl).UnixNano()
-		if atomic.LoadInt64(&bucket.lastUsed) < expiresBefore {
+		if bucket.lastUsed.Load() < expiresBefore {
 			delete(r.buckets, key)
 		}
 	}
@@ -242,8 +242,8 @@ type Bucket struct {
 	lockOnce        sync.Once
 	lockQueue       chan struct{}
 	lastReset       time.Time
-	resetAt         int64
-	lastUsed        int64
+	resetAt         atomic.Int64
+	lastUsed        atomic.Int64
 	activeRequests  int32
 	ttl             time.Duration
 	customRateLimit *customRateLimit
@@ -286,7 +286,7 @@ func (b *Bucket) unlockContext() {
 }
 
 func (b *Bucket) setReset(reset time.Time) {
-	atomic.StoreInt64(&b.resetAt, reset.UnixNano())
+	b.resetAt.Store(reset.UnixNano())
 }
 
 func (b *Bucket) setGlobalReset(reset time.Time) {
@@ -294,7 +294,7 @@ func (b *Bucket) setGlobalReset(reset time.Time) {
 }
 
 func (b *Bucket) touch(now time.Time) {
-	atomic.StoreInt64(&b.lastUsed, now.UnixNano())
+	b.lastUsed.Store(now.UnixNano())
 }
 
 // Release unlocks the bucket and reads the headers to update the buckets ratelimit info
