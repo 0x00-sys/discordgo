@@ -841,7 +841,18 @@ func TestVoiceClose4022DoesNotReconnect(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	transport := &activatedWriteBlockingConn{closed: make(chan struct{})}
+	dialer := &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			transport.Conn = conn
+			return transport, nil
+		},
+	}
+	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)
 	}
@@ -867,6 +878,11 @@ func TestVoiceClose4022DoesNotReconnect(t *testing.T) {
 	}
 	if v.reconnecting {
 		t.Fatal("voice connection started reconnecting")
+	}
+	select {
+	case <-transport.closed:
+	default:
+		t.Fatal("voice listener left the terminal websocket transport open")
 	}
 }
 

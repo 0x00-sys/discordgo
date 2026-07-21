@@ -666,6 +666,7 @@ func (v *VoiceConnection) open() (err error) {
 func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}) {
 
 	v.log(LogInformational, "called")
+	defer wsConn.Close()
 
 	for {
 		messageType, message, err := wsConn.ReadMessage()
