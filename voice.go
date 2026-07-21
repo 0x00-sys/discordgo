@@ -1187,30 +1187,32 @@ var voiceUDPReadTimeout = 5 * time.Second
 // and can be used to send or receive audio.  This should only be called
 // from voice.wsEvent OP2
 func (v *VoiceConnection) udpOpen() (err error) {
+	v.RLock()
+	wsConn := v.wsConn
+	udpAlreadyOpen := v.udpConn != nil
+	closeChan := v.close
+	endpoint := v.endpoint
+	encryptionMode := v.encryptionMode
+	op2 := v.op2
+	v.RUnlock()
 
-	v.Lock()
-	defer v.Unlock()
-
-	if v.wsConn == nil {
+	if wsConn == nil {
 		return fmt.Errorf("nil voice websocket")
 	}
-
-	if v.udpConn != nil {
+	if udpAlreadyOpen {
 		return fmt.Errorf("udp connection already open")
 	}
-
-	if v.close == nil {
+	if closeChan == nil {
 		return fmt.Errorf("nil close channel")
 	}
-
-	if v.endpoint == "" {
+	if endpoint == "" {
 		return fmt.Errorf("empty endpoint")
 	}
-	if v.encryptionMode == "" {
+	if encryptionMode == "" {
 		return fmt.Errorf("empty voice encryption mode")
 	}
 
-	host := v.op2.IP + ":" + strconv.Itoa(v.op2.Port)
+	host := op2.IP + ":" + strconv.Itoa(op2.Port)
 	addr, err := net.ResolveUDPAddr("udp", host)
 	if err != nil {
 		v.log(LogWarning, "error resolving udp host %s, %s", host, err)
@@ -1218,26 +1220,51 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	}
 
 	v.log(LogInformational, "connecting to udp addr %s", addr.String())
-	v.udpConn, err = net.DialUDP("udp", nil, addr)
+	udpConn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		v.log(LogWarning, "error connecting to udp addr %s, %s", addr.String(), err)
 		return
 	}
 	defer func() {
 		if err != nil {
-			_ = v.udpConn.Close()
-			v.udpConn = nil
+			_ = udpConn.Close()
+			v.Lock()
+			if v.udpConn == udpConn {
+				v.udpConn = nil
+			}
+			v.Unlock()
 		}
 	}()
 
+	v.Lock()
+	current := v.wsConn == wsConn &&
+		v.close == closeChan &&
+		v.udpConn == nil &&
+		v.encryptionMode == encryptionMode &&
+		v.op2.IP == op2.IP &&
+		v.op2.Port == op2.Port &&
+		v.op2.SSRC == op2.SSRC
+	if !current {
+		v.Unlock()
+		return ErrWSNotFound
+	}
+	v.udpConn = udpConn
+	v.Unlock()
+
+	isCurrent := func() bool {
+		v.RLock()
+		defer v.RUnlock()
+		return v.wsConn == wsConn && v.udpConn == udpConn && v.close == closeChan
+	}
+
 	// Create a 74 byte array to store the packet data
 	sb := make([]byte, 74)
-	binary.BigEndian.PutUint16(sb, 1)              // Packet type (0x1 is request, 0x2 is response)
-	binary.BigEndian.PutUint16(sb[2:], 70)         // Packet length (excluding type and length fields)
-	binary.BigEndian.PutUint32(sb[4:], v.op2.SSRC) // The SSRC code from the Op 2 VoiceConnection event
+	binary.BigEndian.PutUint16(sb, 1)            // Packet type (0x1 is request, 0x2 is response)
+	binary.BigEndian.PutUint16(sb[2:], 70)       // Packet length (excluding type and length fields)
+	binary.BigEndian.PutUint32(sb[4:], op2.SSRC) // The SSRC code from the Op 2 VoiceConnection event
 
 	// And send that data over the UDP connection to Discord.
-	_, err = v.udpConn.Write(sb)
+	_, err = udpConn.Write(sb)
 	if err != nil {
 		v.log(LogWarning, "udp write error to %s, %s", addr.String(), err)
 		return
@@ -1248,14 +1275,14 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	// of the response.  This should be our public IP and PORT as Discord
 	// saw us.
 	rb := make([]byte, 74)
-	err = v.udpConn.SetReadDeadline(time.Now().Add(voiceUDPReadTimeout))
+	err = udpConn.SetReadDeadline(time.Now().Add(voiceUDPReadTimeout))
 	if err != nil {
 		v.log(LogWarning, "udp read deadline error, %s, %s", addr.String(), err)
 		return
 	}
 
-	rlen, _, err := v.udpConn.ReadFromUDP(rb)
-	if deadlineErr := v.udpConn.SetReadDeadline(time.Time{}); deadlineErr != nil && err == nil {
+	rlen, _, err := udpConn.ReadFromUDP(rb)
+	if deadlineErr := udpConn.SetReadDeadline(time.Time{}); deadlineErr != nil && err == nil {
 		err = deadlineErr
 	}
 	if err != nil {
@@ -1283,18 +1310,31 @@ func (v *VoiceConnection) udpOpen() (err error) {
 	// Take the data from above and send it back to Discord to finalize
 	// the UDP connection handshake.
 
-	data := voiceUDPOp{1, voiceUDPD{"udp", voiceUDPData{ip, port, v.encryptionMode}}}
+	data := voiceUDPOp{1, voiceUDPD{"udp", voiceUDPData{ip, port, encryptionMode}}}
 
+	if !isCurrent() {
+		return ErrWSNotFound
+	}
 	v.wsMutex.Lock()
-	err = v.wsConn.WriteJSON(data)
+	err = wsConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+	if err == nil {
+		err = wsConn.WriteJSON(data)
+	}
+	if err == nil {
+		err = wsConn.SetWriteDeadline(time.Time{})
+	}
 	v.wsMutex.Unlock()
 	if err != nil {
+		_ = wsConn.Close()
 		v.log(LogWarning, "udp write error, %#v, %s", data, err)
 		return
 	}
+	if !isCurrent() {
+		return ErrWSNotFound
+	}
 
 	// start udpKeepAlive
-	go v.udpKeepAlive(v.udpConn, v.close, 5*time.Second)
+	go v.udpKeepAlive(udpConn, closeChan, 5*time.Second)
 	// TODO: find a way to check that it fired off okay
 
 	return

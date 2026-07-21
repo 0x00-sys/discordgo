@@ -677,6 +677,144 @@ func BenchmarkEncryptVoicePacket(b *testing.B) {
 
 var voicePacketSink []byte
 
+func newVoiceUDPDiscoveryTestServer(t *testing.T, release <-chan struct{}) (*net.UDPAddr, <-chan struct{}, <-chan error) {
+	t.Helper()
+
+	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	requestReceived := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 74)
+		n, addr, err := server.ReadFromUDP(buf)
+		if err != nil {
+			result <- err
+			return
+		}
+		if n != len(buf) {
+			result <- fmt.Errorf("discovery request length %d", n)
+			return
+		}
+		close(requestReceived)
+		if release != nil {
+			<-release
+		}
+		response := make([]byte, 74)
+		copy(response[8:], []byte("203.0.113.10"))
+		binary.BigEndian.PutUint16(response[72:], 4242)
+		_, err = server.WriteToUDP(response, addr)
+		result <- err
+	}()
+
+	return server.LocalAddr().(*net.UDPAddr), requestReceived, result
+}
+
+func newUDPOpenTestVoice(wsConn *websocket.Conn, addr *net.UDPAddr) *VoiceConnection {
+	return &VoiceConnection{
+		LogLevel:       -1,
+		close:          make(chan struct{}),
+		endpoint:       "voice.example.com",
+		wsConn:         wsConn,
+		encryptionMode: voiceModeAES256GCMRTPSize,
+		op2: voiceOP2{
+			IP:   addr.IP.String(),
+			Port: addr.Port,
+			SSRC: 1,
+		},
+	}
+}
+
+func TestUDPOpenDiscoveryDoesNotBlockClose(t *testing.T) {
+	releaseDiscovery := make(chan struct{})
+	addr, requestReceived, udpResult := newVoiceUDPDiscoveryTestServer(t, releaseDiscovery)
+	wsConn, _ := newGatewayTestConnection(t)
+	voice := newUDPOpenTestVoice(wsConn, addr)
+
+	openDone := make(chan error, 1)
+	go func() { openDone <- voice.udpOpen() }()
+	select {
+	case <-requestReceived:
+	case <-time.After(time.Second):
+		t.Fatal("udpOpen did not send the discovery request")
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		voice.Close()
+		close(closeDone)
+	}()
+	closeReturned := false
+	select {
+	case <-closeDone:
+		closeReturned = true
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(releaseDiscovery)
+	if err := <-udpResult; err != nil {
+		t.Fatalf("UDP discovery error = %v", err)
+	}
+	select {
+	case <-openDone:
+	case <-time.After(time.Second):
+		t.Fatal("udpOpen did not return after discovery was released")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after discovery was released")
+	}
+	if !closeReturned {
+		t.Fatal("Close blocked behind UDP discovery")
+	}
+}
+
+func TestUDPOpenSelectProtocolWriteDoesNotBlockClose(t *testing.T) {
+	addr, _, udpResult := newVoiceUDPDiscoveryTestServer(t, nil)
+	wsConn, blocking := newTextFrameBlockingWebsocket(t)
+	voice := newUDPOpenTestVoice(wsConn, addr)
+
+	openDone := make(chan error, 1)
+	go func() { openDone <- voice.udpOpen() }()
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("udpOpen did not reach the Select Protocol write")
+	}
+	if err := <-udpResult; err != nil {
+		t.Fatalf("UDP discovery error = %v", err)
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		voice.Close()
+		close(closeDone)
+	}()
+	closeReturned := false
+	select {
+	case <-closeDone:
+		closeReturned = true
+	case <-time.After(websocketWriteTimeout + 500*time.Millisecond):
+	}
+
+	blocking.releaseWrites()
+	select {
+	case <-openDone:
+	case <-time.After(time.Second):
+		t.Fatal("udpOpen did not return after the Select Protocol write was released")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after the Select Protocol write was released")
+	}
+	if !closeReturned {
+		t.Fatal("Close blocked behind the Select Protocol write")
+	}
+}
+
 func TestUDPOpenSendsSelectedEncryptionMode(t *testing.T) {
 	udpServer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
