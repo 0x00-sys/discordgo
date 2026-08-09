@@ -150,6 +150,8 @@ type ApplicationCommandOption struct {
 	MinLength *int `json:"min_length,omitempty"`
 	// Maximum length of string option.
 	MaxLength int `json:"max_length,omitempty"`
+	// File types accepted by an attachment option.
+	FileTypes []string `json:"file_types,omitempty"`
 }
 
 // MarshalJSON ensures a zero maximum value can be sent explicitly.
