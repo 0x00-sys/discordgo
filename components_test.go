@@ -2,8 +2,25 @@ package discordgo
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
+
+func TestFileUploadFileTypesJSON(t *testing.T) {
+	fileTypes := []string{"image", ".pdf"}
+	data, err := json.Marshal(FileUpload{CustomID: "files", FileTypes: fileTypes})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var component FileUpload
+	if err := json.Unmarshal(data, &component); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !slices.Equal(component.FileTypes, fileTypes) {
+		t.Fatalf("FileTypes = %#v, want %#v", component.FileTypes, fileTypes)
+	}
+}
 
 func TestComponentsV2PublicResponseFields(t *testing.T) {
 	raw := []byte(`{

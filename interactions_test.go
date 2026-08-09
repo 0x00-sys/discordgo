@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -194,6 +195,26 @@ func TestInteractionResolvedChannelAppPermissions(t *testing.T) {
 	}
 	if channel.AppPermissions != 4 {
 		t.Fatalf("resolved channel AppPermissions = %d, want 4", channel.AppPermissions)
+	}
+}
+
+func TestApplicationCommandOptionFileTypesJSON(t *testing.T) {
+	fileTypes := []string{"audio", ".pdf"}
+	data, err := json.Marshal(ApplicationCommandOption{
+		Type:      ApplicationCommandOptionAttachment,
+		Name:      "file",
+		FileTypes: fileTypes,
+	})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	var option ApplicationCommandOption
+	if err := json.Unmarshal(data, &option); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !slices.Equal(option.FileTypes, fileTypes) {
+		t.Fatalf("FileTypes = %#v, want %#v", option.FileTypes, fileTypes)
 	}
 }
 
