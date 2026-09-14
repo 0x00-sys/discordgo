@@ -32,6 +32,7 @@ const (
 	Greek        Locale = "el"
 	Hindi        Locale = "hi"
 	Hungarian    Locale = "hu"
+	Indonesian   Locale = "id"
 	Italian      Locale = "it"
 	Japanese     Locale = "ja"
 	Korean       Locale = "ko"
@@ -68,6 +69,7 @@ var Locales = map[Locale]string{
 	Greek:        "Greek",
 	Hindi:        "Hindi",
 	Hungarian:    "Hungarian",
+	Indonesian:   "Indonesian",
 	Italian:      "Italian",
 	Japanese:     "Japanese",
 	Korean:       "Korean",
