@@ -1163,6 +1163,9 @@ func (s *Session) GuildCreate(name string, options ...RequestOption) (st *Guild,
 // guildID   : The ID of a Guild
 // g 		 : A GuildParams struct with the values Name, Region and VerificationLevel defined.
 func (s *Session) GuildEdit(guildID string, g *GuildParams, options ...RequestOption) (st *Guild, err error) {
+	if g == nil {
+		return nil, fmt.Errorf("guild edit data cannot be nil")
+	}
 
 	// Bounds checking for VerificationLevel, interval: [0, 4]
 	if g.VerificationLevel != nil {

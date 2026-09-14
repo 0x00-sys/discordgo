@@ -58,3 +58,18 @@ func TestGuildEditExplicitResets(t *testing.T) {
 		})
 	}
 }
+
+func TestGuildEditNilParams(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("nil guild params must not send a request")
+		return nil, nil
+	})
+	guild, err := session.GuildEdit("guild", nil)
+	if err == nil || guild != nil {
+		t.Fatalf("GuildEdit(nil) = %#v, %v; want nil and error", guild, err)
+	}
+}
