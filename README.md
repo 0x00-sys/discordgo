@@ -1,6 +1,8 @@
-# DiscordGo (maintained fork)
+<p align="center">
+  <img src="docs/img/banner.jpg" width="100%" alt="DiscordGo: Keep your bots online. A Discord-style window shows the fork status: DAVE voice encryption supported, Discord API v10, 79 new API methods, 200+ bug fixes, 284 merged pull requests, drop-in replacement.">
+</p>
 
-<img align="right" alt="DiscordGo logo" src="docs/img/discordgo.svg" width="400">
+# DiscordGo (maintained fork)
 
 This is an actively maintained fork of
 [bwmarrin/discordgo](https://github.com/bwmarrin/discordgo), the
@@ -20,7 +22,7 @@ This fork is not affiliated with or endorsed by the original DiscordGo authors.
 Since the fork started in May 2026:
 
 - **320 commits** across **284 merged pull requests**
-- **About 200 bug fixes** in the gateway, voice, state cache and REST client
+- **200+ bug fixes** in the gateway, voice, state cache and REST client
 - **79 new API methods** (232 → 311 on `Session`), **12 new gateway events**
   and **135 new exported types**
 - **About 30,000 lines of new tests**, run with the race detector
@@ -165,7 +167,11 @@ DiscordGo was created by [Bruce Marriner](https://github.com/bwmarrin) and is
 built on years of work by the [upstream contributors](https://github.com/bwmarrin/discordgo/graphs/contributors).
 Their full commit history is preserved in this repository.
 
-[Chris Rhodes](https://github.com/iopred) - For the DiscordGo logo and tons of PRs.
+[Chris Rhodes](https://github.com/iopred) - For the original DiscordGo logo and tons of PRs.
+
+The Go gopher was designed by [Renée French](https://reneefrench.blogspot.com/)
+and is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The mascot in this fork's banner is based on it.
 
 ## License
 
