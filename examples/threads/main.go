@@ -30,7 +30,7 @@ func main() {
 		fmt.Println("Bot is ready")
 	})
 	s.AddHandler(messageCreate)
-	s.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsAllWithoutPrivileged)
+	s.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsAllWithoutPrivileged | discordgo.IntentsMessageContent)
 
 	err := s.Open()
 	if err != nil {
