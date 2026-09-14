@@ -2365,6 +2365,64 @@ type GuildParams struct {
 
 	// A nil field is omitted, while a non-nil pointer to nil clears the channel.
 	SafetyAlertsChannelID **string `json:"safety_alerts_channel_id,omitempty"`
+
+	// Set flags include zero values without changing the legacy scalar fields.
+	DefaultMessageNotificationsSet bool `json:"-"`
+	ExplicitContentFilterSet       bool `json:"-"`
+	SystemChannelFlagsSet          bool `json:"-"`
+
+	// Null flags send null and take precedence over the corresponding values.
+	AfkChannelIDNull           bool `json:"-"`
+	IconNull                   bool `json:"-"`
+	SplashNull                 bool `json:"-"`
+	DiscoverySplashNull        bool `json:"-"`
+	BannerNull                 bool `json:"-"`
+	SystemChannelIDNull        bool `json:"-"`
+	RulesChannelIDNull         bool `json:"-"`
+	PublicUpdatesChannelIDNull bool `json:"-"`
+	DescriptionNull            bool `json:"-"`
+}
+
+// MarshalJSON preserves explicit zero and null values in guild edits.
+func (p GuildParams) MarshalJSON() ([]byte, error) {
+	type guildParams GuildParams
+	data, err := json.Marshal(guildParams(p))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for _, field := range []struct {
+		name  string
+		set   bool
+		value int64
+	}{
+		{"default_message_notifications", p.DefaultMessageNotificationsSet, int64(p.DefaultMessageNotifications)},
+		{"explicit_content_filter", p.ExplicitContentFilterSet, int64(p.ExplicitContentFilter)},
+		{"system_channel_flags", p.SystemChannelFlagsSet, int64(p.SystemChannelFlags)},
+	} {
+		if field.set {
+			fields[field.name] = json.RawMessage(fmt.Sprintf("%d", field.value))
+		}
+	}
+	for name, clear := range map[string]bool{
+		"afk_channel_id":            p.AfkChannelIDNull,
+		"icon":                      p.IconNull,
+		"splash":                    p.SplashNull,
+		"discovery_splash":          p.DiscoverySplashNull,
+		"banner":                    p.BannerNull,
+		"system_channel_id":         p.SystemChannelIDNull,
+		"rules_channel_id":          p.RulesChannelIDNull,
+		"public_updates_channel_id": p.PublicUpdatesChannelIDNull,
+		"description":               p.DescriptionNull,
+	} {
+		if clear {
+			fields[name] = json.RawMessage("null")
+		}
+	}
+	return json.Marshal(fields)
 }
 
 // A Role stores information about Discord guild member roles.
