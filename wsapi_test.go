@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/gorilla/websocket"
 )
@@ -539,6 +541,46 @@ func TestOpenHandlesHeartbeatAckDuringOpen(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	defer session.Close()
+}
+
+func TestOpenResetsHeartbeatTimingAfterClockAdjustment(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return time.Hour })
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
+	server := newGatewayOpenTestServer(t,
+		[]byte(`{"op":0,"s":1,"t":"READY","d":{"v":10,"session_id":"session","user":{"id":"user"},"guilds":[]}}`),
+	)
+	s, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ShouldReconnectOnError = false
+	defer s.Close()
+	if s.lastHeartbeatAck == s.lastHeartbeatAck.Round(0) || !s.LastHeartbeatAck.Equal(s.lastHeartbeatAck) || s.LastHeartbeatAck.Location() != time.UTC {
+		t.Fatal("New must initialize monotonic ACK time and its public UTC timestamp")
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		// Leave a pending heartbeat from the previous connection, then move
+		// its wall time forwards (equivalent to a backwards clock step).
+		s.Lock()
+		s.lastHeartbeatSent = time.Now()
+		s.LastHeartbeatSent = s.lastHeartbeatSent.UTC()
+		s.Unlock()
+		adjustHeartbeatClock(t, s, -time.Hour)
+		if err := openWithTimeout(t, s); err != nil {
+			t.Fatal(err)
+		}
+		s.RLock()
+		reset := s.lastHeartbeatSent.IsZero() && s.LastHeartbeatSent.IsZero()
+		monotonic := s.lastHeartbeatAck != s.lastHeartbeatAck.Round(0)
+		utc := s.LastHeartbeatAck.Location() == time.UTC && s.LastHeartbeatAck.Equal(s.lastHeartbeatAck)
+		s.RUnlock()
+		if !reset || !monotonic || !utc {
+			t.Fatalf("Open attempt %d: reset=%v monotonic=%v UTC=%v", attempt, reset, monotonic, utc)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestOpenRejectsInvalidHeartbeatInterval(t *testing.T) {
@@ -1280,7 +1322,7 @@ func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
 	}
 
 	session := &Session{
-		LastHeartbeatAck:       time.Now().Add(time.Hour).UTC(),
+		lastHeartbeatAck:       time.Now().Add(time.Hour),
 		LogLevel:               LogError,
 		ShouldReconnectOnError: false,
 		SyncEvents:             true,
@@ -1775,7 +1817,8 @@ func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 	})
 
 	session := &Session{
-		LastHeartbeatAck: time.Now().Add(time.Hour).UTC(),
+		lastHeartbeatAck: time.Now().Add(time.Hour),
+		wsConn:           conn,
 		sequence:         new(int64),
 	}
 
@@ -1847,7 +1890,8 @@ func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
 	})
 
 	session := &Session{
-		LastHeartbeatAck: time.Now().Add(time.Hour).UTC(),
+		lastHeartbeatAck: time.Now().Add(time.Hour),
+		wsConn:           conn,
 		sequence:         new(int64),
 	}
 
@@ -2011,6 +2055,154 @@ func TestHeartbeatContinuesAfterAck(t *testing.T) {
 	}
 }
 
+// shiftHeartbeatWallTime moves only the wall reading of a recorded timestamp.
+// Go has no public wall-only adjustment API: preserve its monotonic ext field
+// in this test helper. Fail explicitly if time.Time's representation changes.
+func shiftHeartbeatWallTime(t *testing.T, stamp time.Time, delta time.Duration) time.Time {
+	t.Helper()
+	if stamp.IsZero() {
+		return stamp
+	}
+	shifted := stamp.Add(delta)
+	if stamp != stamp.Round(0) {
+		ext := reflect.ValueOf(&shifted).Elem().FieldByName("ext")
+		if !ext.IsValid() || ext.Kind() != reflect.Int64 {
+			t.Fatal("time.Time monotonic representation changed")
+		}
+		*(*int64)(unsafe.Pointer(ext.UnsafeAddr())) = reflect.ValueOf(stamp).FieldByName("ext").Int()
+		if shifted.Sub(stamp) != 0 {
+			t.Fatal("wall adjustment changed monotonic elapsed time")
+		}
+	}
+	if shifted.Round(0).Sub(stamp.Round(0)) != delta {
+		t.Fatal("wall adjustment did not apply")
+	}
+	return shifted
+}
+
+// Rebasing earlier timestamps by -delta is equivalent to moving the clock by
+// delta before the next time.Now(), without changing the machine's clock.
+func adjustHeartbeatClock(t *testing.T, s *Session, delta time.Duration) {
+	t.Helper()
+	s.Lock()
+	defer s.Unlock()
+	for _, stamp := range []*time.Time{&s.LastHeartbeatSent, &s.LastHeartbeatAck, &s.lastHeartbeatSent, &s.lastHeartbeatAck} {
+		*stamp = shiftHeartbeatWallTime(t, *stamp, -delta)
+	}
+}
+
+func TestHeartbeatClockAdjustment(t *testing.T) {
+	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
+	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
+
+	for _, tt := range []struct {
+		name        string
+		adjustment  time.Duration
+		requested   bool
+		withholdAck bool
+	}{
+		{name: "normal"},
+		{name: "backwards", adjustment: -time.Second},
+		{name: "forwards", adjustment: time.Second},
+		{name: "backwards_missing_ack", adjustment: -time.Second, withholdAck: true},
+		{name: "forwards_missing_ack", adjustment: time.Second, withholdAck: true},
+		{name: "backwards_requested", adjustment: -time.Second, requested: true},
+		{name: "forwards_requested", adjustment: time.Second, requested: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, peer := newGatewayTestConnection(t)
+			s, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.ShouldReconnectOnError = false
+			listening := make(chan interface{})
+			s.wsConn, s.listening = conn, listening
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s.heartbeat(conn, listening, 200)
+			}()
+			t.Cleanup(func() {
+				s.Close()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("heartbeat did not stop")
+				}
+			})
+			readHeartbeat := func() error {
+				if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+					return err
+				}
+				var packet heartbeatOp
+				if err := peer.ReadJSON(&packet); err != nil {
+					return err
+				}
+				if packet.Op != 1 {
+					return fmt.Errorf("got opcode %d, want heartbeat", packet.Op)
+				}
+				return nil
+			}
+			if err := readHeartbeat(); err != nil {
+				t.Fatal(err)
+			}
+			adjustHeartbeatClock(t, s, tt.adjustment)
+			if tt.requested {
+				s.RLock()
+				previous := s.LastHeartbeatSent
+				s.RUnlock()
+				if _, err := s.onEvent(websocket.TextMessage, []byte(`{"op":1,"d":null}`)); err != nil {
+					t.Fatal(err)
+				}
+				if err := readHeartbeat(); err != nil {
+					t.Fatal(err)
+				}
+				s.RLock()
+				updated := s.LastHeartbeatSent
+				s.RUnlock()
+				if updated.Equal(previous) {
+					t.Error("opcode 1 rejected the newer heartbeat timestamp")
+				}
+				adjustHeartbeatClock(t, s, tt.adjustment)
+			}
+			if !tt.withholdAck {
+				if err := peer.WriteMessage(websocket.TextMessage, []byte(`{"op":11,"d":null}`)); err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				mt, message, err := conn.ReadMessage()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.onEvent(mt, message); err != nil {
+					t.Fatal(err)
+				}
+				if latency := s.HeartbeatLatency(); latency < 0 || latency >= 200*time.Millisecond {
+					t.Errorf("latency = %v, want elapsed time unaffected by clock adjustment", latency)
+				}
+				s.RLock()
+				utc := s.LastHeartbeatAck.Location() == time.UTC && s.LastHeartbeatSent.Location() == time.UTC
+				s.RUnlock()
+				if !utc {
+					t.Error("public heartbeat timestamps must remain UTC")
+				}
+			}
+			// This is the next actual heartbeat decision, after opcode 11 ran.
+			err = readHeartbeat()
+			if tt.withholdAck {
+				if !websocket.IsCloseError(err, websocket.CloseServiceRestart) {
+					t.Fatalf("missing ACK: got %v, want service-restart close at next interval", err)
+				}
+			} else if err != nil {
+				t.Fatalf("received ACK but next heartbeat failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
 	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
 	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
@@ -2026,9 +2218,11 @@ func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
 	releaseLog := make(chan struct{})
 	defer closeChannel(releaseLog)
 	var blockLog sync.Once
+	var elapsed time.Duration
 	Logger = func(msgL, caller int, format string, a ...interface{}) {
 		if strings.Contains(fmt.Sprintf(format, a...), "haven't gotten a heartbeat ACK") {
 			blockLog.Do(func() {
+				elapsed = a[0].(time.Duration)
 				close(logReached)
 				<-releaseLog
 			})
@@ -2036,8 +2230,8 @@ func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
 	}
 
 	session := &Session{
-		LastHeartbeatAck:       time.Now().Add(-time.Second).UTC(),
-		LastHeartbeatSent:      time.Now().UTC(),
+		lastHeartbeatAck:       time.Now().Add(-time.Second),
+		lastHeartbeatSent:      time.Now(),
 		LogLevel:               LogError,
 		ShouldReconnectOnError: false,
 		SyncEvents:             true,
@@ -2045,6 +2239,8 @@ func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
 		wsConn:                 oldConn,
 		listening:              oldListening,
 	}
+
+	adjustHeartbeatClock(t, session, -time.Hour)
 
 	disconnected := int32(0)
 	session.AddHandler(func(*Session, *Disconnect) {
@@ -2061,6 +2257,10 @@ func TestMissedHeartbeatAckDoesNotCloseReplacementConnection(t *testing.T) {
 	case <-logReached:
 	case <-time.After(time.Second):
 		t.Fatal("heartbeat did not detect the missed ACK")
+	}
+
+	if elapsed < 0 || elapsed >= time.Second {
+		t.Errorf("missed ACK diagnostic elapsed = %v, want monotonic elapsed time", elapsed)
 	}
 
 	session.Lock()
