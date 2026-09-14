@@ -7,6 +7,15 @@ This example demonstrates how to utilize DiscordGo to manage channel threads.
 **Join [Discord Gophers](https://discord.gg/0f1SbxBZjYoCtNPP)
 Discord chat channel for support.**
 
+### Setup
+
+Enable **Message Content Intent** on your application's **Bot** page in the
+Discord Developer Portal. This example reads text commands in server messages;
+without that intent, Discord sends empty message content. Apps subject to
+privileged-intent review also need Discord's approval.
+
+See [Discord's message content intent documentation](https://docs.discord.com/developers/events/gateway#message-content-intent).
+
 ### Build
 
 This assumes you already have a working Go environment setup and that

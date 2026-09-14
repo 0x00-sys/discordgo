@@ -55,7 +55,7 @@ func main() {
 
 	// We need information about guilds (which includes their channels),
 	// messages and voice states.
-	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsGuildVoiceStates
+	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsGuildVoiceStates | discordgo.IntentsMessageContent
 
 	// Open the websocket and begin listening.
 	err = dg.Open()

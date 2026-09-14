@@ -17,23 +17,31 @@ var (
 
 func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
-	flag.Parse()
 }
 
-func main() {
+func newSession(token string) (*discordgo.Session, error) {
 	// Create a new Discord session using the provided bot token.
-	dg, err := discordgo.New("Bot " + Token)
+	dg, err := discordgo.New("Bot " + token)
 	if err != nil {
-		fmt.Println("error creating Discord session,", err)
-		return
+		return nil, err
 	}
 
 	// Register the messageCreate func as a callback for MessageCreate events.
 	dg.AddHandler(messageCreate)
 
-	// Just like the ping pong example, we only care about receiving message
-	// events in this example.
-	dg.Identify.Intents = discordgo.IntentsGuildMessages
+	// Receive guild messages and the content needed to recognize "ping".
+	dg.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
+
+	return dg, nil
+}
+
+func main() {
+	flag.Parse()
+	dg, err := newSession(Token)
+	if err != nil {
+		fmt.Println("error creating Discord session,", err)
+		return
+	}
 
 	// Open a websocket connection to Discord and begin listening.
 	err = dg.Open()
