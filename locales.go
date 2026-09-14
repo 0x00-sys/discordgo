@@ -9,7 +9,10 @@ func (l Locale) String() string {
 	if name, ok := Locales[l]; ok {
 		return name
 	}
-	return Unknown.String()
+	if l != Unknown {
+		return Unknown.String()
+	}
+	return "unknown"
 }
 
 // All defined locales in Discord
