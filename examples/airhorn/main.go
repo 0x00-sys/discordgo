@@ -33,7 +33,7 @@ func main() {
 	err := loadSound()
 	if err != nil {
 		fmt.Println("Error loading sound: ", err)
-		fmt.Println("Please copy $GOPATH/src/github.com/bwmarrin/examples/airhorn/airhorn.dca to this directory.")
+		fmt.Println("Please copy examples/airhorn/airhorn.dca from the DiscordGo repository to the current directory.")
 		return
 	}
 
@@ -205,7 +205,7 @@ func playSound(s *discordgo.Session, guildID, channelID string) (err error) {
 	// Stop speaking
 	vc.Speaking(false)
 
-	// Sleep for a specificed amount of time before ending.
+	// Sleep for a specified amount of time before ending.
 	time.Sleep(250 * time.Millisecond)
 
 	// Disconnect from the provided voice channel.
