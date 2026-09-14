@@ -2179,6 +2179,62 @@ type GuildTemplate struct {
 	IsDirty bool `json:"is_dirty"`
 }
 
+// UnmarshalJSON accepts integer placeholder IDs in serialized template guilds.
+func (t *GuildTemplate) UnmarshalJSON(data []byte) error {
+	type template GuildTemplate
+	payload := struct {
+		*template
+		Guild json.RawMessage `json:"serialized_source_guild"`
+	}{template: (*template)(t)}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	if len(payload.Guild) == 0 {
+		return nil
+	}
+	data, err := normalizeTemplateSnapshot(payload.Guild)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &t.SerializedSourceGuild)
+}
+
+// Template IDs and permission bitfields may be numbers instead of the strings
+// used by ordinary guild objects. RawMessage preserves integer precision.
+func normalizeTemplateSnapshot(data json.RawMessage) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range fields {
+		switch key {
+		case "id", "parent_id", "afk_channel_id", "system_channel_id", "rules_channel_id", "public_updates_channel_id", "permissions", "allow", "deny":
+			if len(value) == 0 || value[0] == '"' || string(value) == "null" {
+				continue
+			}
+			var number uint64
+			if err := json.Unmarshal(value, &number); err != nil {
+				return nil, err
+			}
+			fields[key] = json.RawMessage(fmt.Sprintf("\"%d\"", number))
+		case "roles", "channels", "permission_overwrites":
+			var objects []json.RawMessage
+			if err := json.Unmarshal(value, &objects); err != nil {
+				return nil, err
+			}
+			for i, object := range objects {
+				normalized, err := normalizeTemplateSnapshot(object)
+				if err != nil {
+					return nil, err
+				}
+				objects[i] = normalized
+			}
+			fields[key], _ = json.Marshal(objects)
+		}
+	}
+	return json.Marshal(fields)
+}
+
 // GuildTemplateParams stores the data needed to create or update a GuildTemplate.
 type GuildTemplateParams struct {
 	// The name of the template (1-100 characters)
