@@ -119,6 +119,10 @@ type Session struct {
 	// Stores the last Heartbeat sent (in UTC)
 	LastHeartbeatSent time.Time
 
+	// Monotonic heartbeat times; the public timestamps above remain in UTC.
+	lastHeartbeatAck  time.Time
+	lastHeartbeatSent time.Time
+
 	// used to deal with rate limits
 	Ratelimiter *RateLimiter
 

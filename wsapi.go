@@ -360,7 +360,10 @@ func (s *Session) Open() error {
 		return err
 	}
 	s.log(LogInformational, "Op 10 Hello Packet received from Discord")
-	s.LastHeartbeatAck = time.Now().UTC()
+	s.lastHeartbeatAck = time.Now()
+	s.LastHeartbeatAck = s.lastHeartbeatAck.UTC()
+	s.lastHeartbeatSent = time.Time{}
+	s.LastHeartbeatSent = time.Time{}
 	var h helloOp
 	if err = json.Unmarshal(e.RawData, &h); err != nil {
 		err = fmt.Errorf("error unmarshalling helloOp, %s", err)
@@ -717,7 +720,7 @@ func (s *Session) HeartbeatLatency() time.Duration {
 	s.RLock()
 	defer s.RUnlock()
 
-	return s.LastHeartbeatAck.Sub(s.LastHeartbeatSent)
+	return s.lastHeartbeatAck.Sub(s.lastHeartbeatSent)
 
 }
 
@@ -747,15 +750,20 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		}
 
 		s.RLock()
-		lastAck := s.LastHeartbeatAck
-		lastSent := s.LastHeartbeatSent
+		lastAck := s.lastHeartbeatAck
+		lastSent := s.lastHeartbeatSent
 		s.RUnlock()
 		missedAck := lastAck.Before(lastSent)
 		if !missedAck {
 			sequence := atomic.LoadInt64(s.sequence)
 			s.log(LogDebug, "sending gateway websocket heartbeat seq %d", sequence)
 			s.Lock()
-			s.LastHeartbeatSent = time.Now().UTC()
+			if s.wsConn != wsConn {
+				s.Unlock()
+				return
+			}
+			s.lastHeartbeatSent = time.Now()
+			s.LastHeartbeatSent = s.lastHeartbeatSent.UTC()
 			s.Unlock()
 			s.wsMutex.Lock()
 			err = writeGatewayJSONWithDeadline(wsConn, heartbeatOp{1, sequence})
@@ -768,7 +776,7 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			if err != nil {
 				s.log(LogError, "error sending heartbeat to gateway %s, %s", s.gateway, err)
 			} else {
-				s.log(LogError, "haven't gotten a heartbeat ACK in %v, triggering a reconnection", time.Now().UTC().Sub(lastSent))
+				s.log(LogError, "haven't gotten a heartbeat ACK for heartbeat sent %v ago, triggering a reconnection", time.Since(lastSent))
 			}
 			closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
 			if !closed {
@@ -1173,7 +1181,7 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	if e.Operation == 1 {
 		s.log(LogInformational, "sending heartbeat in response to Op1")
 
-		sentAt := time.Now().UTC()
+		sentAt := time.Now()
 		s.RLock()
 		wsConn := s.wsConn
 		s.RUnlock()
@@ -1186,8 +1194,9 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 			return e, err
 		}
 		s.Lock()
-		if s.LastHeartbeatSent.Before(sentAt) {
-			s.LastHeartbeatSent = sentAt
+		if s.wsConn == wsConn && s.lastHeartbeatSent.Before(sentAt) {
+			s.lastHeartbeatSent = sentAt
+			s.LastHeartbeatSent = sentAt.UTC()
 		}
 		s.Unlock()
 
@@ -1238,7 +1247,8 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 
 	if e.Operation == 11 {
 		s.Lock()
-		s.LastHeartbeatAck = time.Now().UTC()
+		s.lastHeartbeatAck = time.Now()
+		s.LastHeartbeatAck = s.lastHeartbeatAck.UTC()
 		s.Unlock()
 		s.log(LogDebug, "got heartbeat ACK")
 		return e, nil

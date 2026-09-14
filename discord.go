@@ -51,8 +51,10 @@ func New(token string) (s *Session, err error) {
 		UserAgent:                          "DiscordBot (https://github.com/bwmarrin/discordgo, v" + VERSION + ")",
 		reconnectCancel:                    make(chan struct{}),
 		sequence:                           new(int64),
-		LastHeartbeatAck:                   time.Now().UTC(),
+		lastHeartbeatAck:                   time.Now(),
 	}
+
+	s.LastHeartbeatAck = s.lastHeartbeatAck.UTC()
 
 	// Initialize the Identify Package with defaults
 	// These can be modified prior to calling Open()
