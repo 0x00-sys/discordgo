@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"runtime/debug"
 	"testing"
 )
@@ -31,5 +32,31 @@ func TestLocaleStringFallback(t *testing.T) {
 				t.Fatalf("String() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIndonesianLocale(t *testing.T) {
+	locale := Indonesian
+	if string(locale) != "id" {
+		t.Fatalf("locale code = %q", string(locale))
+	}
+	if got := locale.String(); got != "Indonesian" {
+		t.Fatalf("String() = %q, want Indonesian", got)
+	}
+	data, err := json.Marshal(map[Locale]string{locale: "halo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"id":"halo"}` {
+		t.Fatalf("localization JSON = %s", data)
+	}
+	var decoded struct {
+		Locale Locale `json:"locale"`
+	}
+	if err := json.Unmarshal([]byte(`{"locale":"id"}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Locale != locale {
+		t.Fatalf("decoded locale = %q", string(decoded.Locale))
 	}
 }
