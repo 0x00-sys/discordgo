@@ -23,8 +23,9 @@ go build
 
 ### Usage
 
-This example uses bot tokens for authentication only. While email/password is 
-supported by DiscordGo, it is not recommended to use them.
+This example authenticates with a bot token from your application's **Bot** page
+in the [Discord Developer Portal](https://discord.com/developers/applications).
+See [Discord's authentication documentation](https://docs.discord.com/developers/reference#authentication) for supported token types.
 
 ```
 ./avatar --help
