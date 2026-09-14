@@ -34,8 +34,9 @@ go build
 
 ### Usage
 
-This example uses bot tokens for authentication only. While user/password is
-supported by DiscordGo, it is not recommended for bots.
+This example authenticates with a bot token from your application's **Bot** page
+in the [Discord Developer Portal](https://discord.com/developers/applications).
+See [Discord's authentication documentation](https://docs.discord.com/developers/reference#authentication) for supported token types.
 
 ```
 ./dm_pingpong --help
