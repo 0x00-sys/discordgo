@@ -565,6 +565,10 @@ const (
 	// ChannelFlagObfuscated indicates that channel metadata is hidden because the bot cannot view it.
 	// NOTE: only received over the Gateway, never the HTTP API.
 	ChannelFlagObfuscated ChannelFlags = 1 << 17
+	// ChannelFlagSpoiler requires users to opt in before viewing the channel's contents.
+	// Available on textual guild channels and voice channels, excluding stages, when NSFW is false.
+	// https://docs.discord.com/developers/resources/channel#channel-object-channel-flags
+	ChannelFlagSpoiler ChannelFlags = 1 << 21
 )
 
 // ForumSortOrderType represents sort order of a forum channel.
