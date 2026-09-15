@@ -1178,3 +1178,20 @@ func TestIdentifyCapabilitiesJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestGuildFeaturePruneRequiresAdmin(t *testing.T) {
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{"features":["PRUNE_REQUIRES_ADMIN"]}`), &guild); err != nil {
+		t.Fatal(err)
+	}
+	if len(guild.Features) != 1 || guild.Features[0] != GuildFeaturePruneRequiresAdmin {
+		t.Fatalf("features = %v, want PRUNE_REQUIRES_ADMIN", guild.Features)
+	}
+	data, err := json.Marshal(guild.Features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `["PRUNE_REQUIRES_ADMIN"]` {
+		t.Fatalf("features JSON = %s", data)
+	}
+}
