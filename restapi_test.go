@@ -5493,3 +5493,32 @@ func TestGuildPruneDaysRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelEditSpoilerFlag(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v"+APIVersion+"/channels/channel" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if string(payload["flags"]) != "2097152" || string(payload["nsfw"]) != "false" {
+			t.Fatalf("payload = %v", payload)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"channel","type":0,"nsfw":false,"flags":2097152}`)), Request: r}, nil
+	})
+	flags := ChannelFlagSpoiler
+	nsfw := false
+	channel, err := session.ChannelEdit("channel", &ChannelEdit{Flags: &flags, NSFW: &nsfw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel == nil || channel.Flags&ChannelFlagSpoiler == 0 || channel.NSFW {
+		t.Fatalf("channel = %#v", channel)
+	}
+}
