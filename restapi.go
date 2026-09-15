@@ -2009,7 +2009,8 @@ func (s *Session) GuildRoleMemberCounts(guildID string, options ...RequestOption
 }
 
 // GuildPruneCount Returns the number of members that would be removed in a prune operation.
-// Requires 'KICK_MEMBER' permission.
+// Requires MANAGE_GUILD and KICK_MEMBERS, or ADMINISTRATOR when the guild has GuildFeaturePruneRequiresAdmin.
+// https://docs.discord.com/developers/resources/guild#get-guild-prune-count
 // guildID	: The ID of a Guild.
 // days		: The number of days to count prune for (1 or more).
 func (s *Session) GuildPruneCount(guildID string, days uint32, options ...RequestOption) (count uint32, err error) {
@@ -2040,7 +2041,9 @@ func (s *Session) GuildPruneCount(guildID string, days uint32, options ...Reques
 	return
 }
 
-// GuildPrune Begin as prune operation. Requires the 'KICK_MEMBERS' permission.
+// GuildPrune begins a prune operation.
+// Requires MANAGE_GUILD and KICK_MEMBERS, or ADMINISTRATOR when the guild has GuildFeaturePruneRequiresAdmin.
+// https://docs.discord.com/developers/resources/guild#begin-guild-prune
 // Returns an object with one 'pruned' key indicating the number of members that were removed in the prune operation.
 // guildID	: The ID of a Guild.
 // days		: The number of days to count prune for (1 or more).
