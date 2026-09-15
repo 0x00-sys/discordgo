@@ -11,7 +11,10 @@
 
 package discordgo
 
-import "strconv"
+import (
+	"net/url"
+	"strconv"
+)
 
 // APIVersion is the Discord API version used for the REST and Websocket API.
 var APIVersion = "10"
@@ -289,6 +292,19 @@ var (
 	EndpointApplication                       = func(aID string) string { return EndpointApplications + "/" + aID }
 	EndpointApplicationAttachment             = func(aID string) string { return EndpointApplication(aID) + "/attachment" }
 	EndpointApplicationRoleConnectionMetadata = func(aID string) string { return EndpointApplication(aID) + "/role-connections/metadata" }
+
+	EndpointApplicationIdentityProfile = func(aID, uID, providerUserID string) string {
+		return EndpointApplication(aID) + "/users/" + uID + "/identities/" + url.PathEscape(providerUserID) + "/profile"
+	}
+	EndpointUserApplicationIdentities = func(uID, aID string) string {
+		return EndpointUser(uID) + "/application-identities/" + aID
+	}
+	EndpointApplicationIdentities = func(aID, providerType, providerUserID string) string {
+		return EndpointApplication(aID) + "/application-identities/" + url.PathEscape(providerType) + "/" + url.PathEscape(providerUserID)
+	}
+	EndpointApplicationIdentityDelete = func(uID, aID, providerType, providerUserID string) string {
+		return EndpointUserApplicationIdentities(uID, aID) + "/" + url.PathEscape(providerType) + "/" + url.PathEscape(providerUserID) + "/delete"
+	}
 
 	EndpointApplicationEmojis           = func(aID string) string { return EndpointApplication(aID) + "/emojis" }
 	EndpointApplicationEmoji            = func(aID, eID string) string { return EndpointApplication(aID) + "/emojis/" + eID }

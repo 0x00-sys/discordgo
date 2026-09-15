@@ -5885,3 +5885,83 @@ func (s *Session) lobbyChannelInviteCreate(lobbyID, userID string, options ...Re
 	err = unmarshal(body, &invite)
 	return
 }
+
+// ApplicationIdentityProfile returns the game stats stored on an application identity.
+// Requires the application's bot token and the user's application_identities.write OAuth2 authorization.
+func (s *Session) ApplicationIdentityProfile(appID, userID, providerUserID string, options ...RequestOption) (profile *ApplicationIdentityProfile, err error) {
+	endpoint := EndpointApplicationIdentityProfile(appID, userID, providerUserID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointApplicationIdentityProfile(appID, "", ""), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = unmarshal(body, &profile)
+	return
+}
+
+// ApplicationIdentityProfileUpdate updates game stats on an application identity.
+// Requires the application's bot token and the user's application_identities.write OAuth2 authorization.
+// Providing Data replaces all previously stored data; omitting Data preserves it.
+// If the user has no application identity, the first update creates a profile-only NONE identity.
+// https://docs.discord.com/developers/resources/application-identity-profile#update-application-identity-profile
+func (s *Session) ApplicationIdentityProfileUpdate(appID, userID, providerUserID string, params *ApplicationIdentityProfileParams, options ...RequestOption) (err error) {
+	if params == nil {
+		params = &ApplicationIdentityProfileParams{}
+	}
+
+	endpoint := EndpointApplicationIdentityProfile(appID, userID, providerUserID)
+	_, err = s.RequestWithBucketID("PATCH", endpoint, params, EndpointApplicationIdentityProfile(appID, "", ""), options...)
+	return
+}
+
+// UserApplicationIdentities returns the external account identities for a user and application.
+// Requires the application's bot token and the user's application_identities.write OAuth2 authorization.
+func (s *Session) UserApplicationIdentities(userID, appID string, options ...RequestOption) (identities []*ApplicationIdentity, err error) {
+	endpoint := EndpointUserApplicationIdentities(userID, appID)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointUserApplicationIdentities("", appID), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Identities []*ApplicationIdentity `json:"identities"`
+	}
+	err = unmarshal(body, &response)
+	return response.Identities, err
+}
+
+// ApplicationIdentities returns identities associated with an external account.
+// providerID is optional and disambiguates the provider type and provider-issued user ID.
+// Requires the application's bot token and the matched user's application_identities.write OAuth2 authorization.
+func (s *Session) ApplicationIdentities(appID, providerType, providerUserID, providerID string, options ...RequestOption) (identities []*ApplicationIdentity, err error) {
+	endpoint := EndpointApplicationIdentities(appID, providerType, providerUserID)
+	if providerID != "" {
+		query := url.Values{}
+		query.Set("provider_id", providerID)
+		endpoint += "?" + query.Encode()
+	}
+
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointApplicationIdentities(appID, "", ""), options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Identities []*ApplicationIdentity `json:"identities"`
+	}
+	err = unmarshal(body, &response)
+	return response.Identities, err
+}
+
+// ApplicationIdentityDelete deletes an external account identity and its profile data.
+// providerID is optional and disambiguates the provider type and provider-issued user ID.
+// Requires the application's bot token and the user's application_identities.write OAuth2 authorization.
+// Discord prevents deleting the user's last account-linking identity; profile-only NONE identities can be deleted.
+func (s *Session) ApplicationIdentityDelete(userID, appID, providerType, providerUserID, providerID string, options ...RequestOption) (err error) {
+	data := struct {
+		ProviderID string `json:"provider_id,omitempty"`
+	}{providerID}
+	endpoint := EndpointApplicationIdentityDelete(userID, appID, providerType, providerUserID)
+	_, err = s.RequestWithBucketID("POST", endpoint, &data, EndpointApplicationIdentityDelete("", appID, "", ""), options...)
+	return
+}
