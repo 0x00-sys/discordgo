@@ -562,6 +562,9 @@ const (
 	// ChannelFlagHideMediaDownloadOptions hides embedded media download options.
 	// NOTE: media channels only.
 	ChannelFlagHideMediaDownloadOptions ChannelFlags = 1 << 15
+	// ChannelFlagObfuscated indicates that channel metadata is hidden because the bot cannot view it.
+	// NOTE: only received over the Gateway, never the HTTP API.
+	ChannelFlagObfuscated ChannelFlags = 1 << 17
 )
 
 // ForumSortOrderType represents sort order of a forum channel.
@@ -3599,6 +3602,14 @@ const (
 	ActivityStatusDisplayTypeDetails
 )
 
+// GatewayCapability modifies Gateway behavior independently of event intents.
+type GatewayCapability int
+
+// GatewayCapabilityChannelObfuscation opts into obfuscated metadata for channels the bot cannot view.
+// This is a temporary, testing-only opt-in; Discord plans to enable obfuscation for all bots.
+// https://docs.discord.com/developers/events/gateway-events#gateway-capabilities
+const GatewayCapabilityChannelObfuscation GatewayCapability = 1 << 15
+
 // Identify is sent during initial handshake with the discord gateway.
 // https://discord.com/developers/docs/topics/gateway#identify
 type Identify struct {
@@ -3609,6 +3620,7 @@ type Identify struct {
 	Shard          *[2]int             `json:"shard,omitempty"`
 	Presence       GatewayStatusUpdate `json:"presence,omitempty"`
 	Intents        Intent              `json:"intents"`
+	Capabilities   GatewayCapability   `json:"capabilities,omitempty"`
 }
 
 // IdentifyProperties contains the "properties" portion of an Identify packet

@@ -1145,7 +1145,7 @@ func (s *State) ChannelAdd(channel *Channel) error {
 		if channelCopy.PermissionOverwrites == nil {
 			channelCopy.PermissionOverwrites = c.PermissionOverwrites
 		}
-		if channelCopy.ThreadMetadata == nil {
+		if channelCopy.ThreadMetadata == nil && channelCopy.Flags&ChannelFlagObfuscated == 0 {
 			channelCopy.ThreadMetadata = c.ThreadMetadata
 		}
 
