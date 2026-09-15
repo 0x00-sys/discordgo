@@ -5460,3 +5460,36 @@ func (r *closeNotifyReadCloser) Close() error {
 	close(r.closed)
 	return nil
 }
+
+func TestGuildPruneDaysRequest(t *testing.T) {
+	for _, days := range []uint32{1, 7, 30} {
+		t.Run(strconv.FormatUint(uint64(days), 10), func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v"+APIVersion+"/guilds/guild/prune" {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+				}
+				if r.Header.Get("Authorization") != "Bot test" || r.Header.Get("X-Test") != "prune" {
+					t.Fatal("missing authorization or request option")
+				}
+				var data map[string]uint32
+				if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+					t.Fatal(err)
+				}
+				if len(data) != 1 || data["days"] != days {
+					t.Fatalf("request body = %v, want days=%d", data, days)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"pruned":12}`)), Request: r}, nil
+			})
+			count, err := session.GuildPrune("guild", days, WithHeader("X-Test", "prune"))
+			if err != nil || count != 12 || calls != 1 {
+				t.Fatalf("GuildPrune = %d, %v; requests = %d", count, err, calls)
+			}
+		})
+	}
+}
