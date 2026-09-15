@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 	"sync"
@@ -7971,5 +7972,104 @@ func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 	}
 	if afterMessage.Threads[0].Member != nil || afterThread.Threads[0].Member == nil {
 		t.Fatalf("thread member snapshots = (%#v, %#v), want (nil, non-nil)", afterMessage.Threads[0].Member, afterThread.Threads[0].Member)
+	}
+}
+
+func TestChannelUpdateObfuscation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		channelType ChannelType
+	}{
+		{name: "text", channelType: ChannelTypeGuildText},
+		{name: "voice", channelType: ChannelTypeGuildVoice},
+		{name: "forum", channelType: ChannelTypeGuildForum},
+		{name: "thread", channelType: ChannelTypeGuildPublicThread},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+				t.Fatal(err)
+			}
+			visible := &Channel{
+				ID: "channel", GuildID: "guild", Type: test.channelType,
+				Name: "visible", Topic: "topic", ParentID: "parent", Position: 3,
+				LastMessageID: "message", ApplicationID: "application",
+				PermissionOverwrites: []*PermissionOverwrite{{ID: "role", Type: PermissionOverwriteTypeRole, Allow: PermissionViewChannel}},
+				Messages:             []*Message{{ID: "message", Content: "cached"}},
+			}
+			if visible.IsThread() {
+				visible.ThreadMetadata = &ThreadMetadata{AutoArchiveDuration: 1440}
+			}
+			if err := state.ChannelAdd(visible); err != nil {
+				t.Fatal(err)
+			}
+
+			var hidden ChannelUpdate
+			payload := `{"id":"channel","guild_id":"guild","type":` + strconv.Itoa(int(test.channelType)) + `,"name":"___hidden___","topic":null,"parent_id":"parent","position":3,"last_message_id":null,"application_id":null,"last_pin_timestamp":null,"rtc_region":null,"thread_metadata":null,"default_sort_order":null,"flags":131072,"permission_overwrites":[{"id":"guild","type":0,"allow":"0","deny":"1024"}]}`
+			if err := json.Unmarshal([]byte(payload), &hidden); err != nil {
+				t.Fatalf("decode obfuscated channel: %v", err)
+			}
+			if err := state.OnInterface(&Session{StateEnabled: true}, &hidden); err != nil {
+				t.Fatal(err)
+			}
+			cached, err := state.Channel("channel")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cached.Flags&ChannelFlagObfuscated == 0 || cached.Name != "___hidden___" {
+				t.Fatalf("obfuscated channel not cached: %+v", cached)
+			}
+			if cached.Topic != "" || cached.LastMessageID != "" || cached.ApplicationID != "" || cached.ThreadMetadata != nil {
+				t.Fatalf("obfuscated channel retained hidden metadata: %+v", cached)
+			}
+			if cached.ParentID != "parent" || cached.Position != 3 || cached.Type != test.channelType {
+				t.Fatalf("obfuscation lost visible fields: %+v", cached)
+			}
+			if len(cached.PermissionOverwrites) != 1 || cached.PermissionOverwrites[0].ID != "guild" || cached.PermissionOverwrites[0].Deny != PermissionViewChannel || cached.PermissionOverwrites[0].Allow != 0 {
+				t.Fatalf("obfuscation did not replace permission overwrites: %+v", cached.PermissionOverwrites)
+			}
+			if len(cached.Messages) != 1 || cached.Messages[0].ID != "message" {
+				t.Fatal("channel update lost cached messages")
+			}
+			if visible.Name != "visible" || visible.Topic != "topic" || hidden.BeforeUpdate == nil || hidden.BeforeUpdate.Name != "visible" {
+				t.Fatal("obfuscation mutated the original channel snapshot")
+			}
+
+			var restored ChannelUpdate
+			data, err := json.Marshal(visible)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = json.Unmarshal(data, &restored); err != nil {
+				t.Fatal(err)
+			}
+			if err = state.OnInterface(&Session{StateEnabled: true}, &restored); err != nil {
+				t.Fatal(err)
+			}
+			current, err := state.Channel("channel")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Flags != 0 || current.Name != "visible" || current.Topic != "topic" || current.PermissionOverwrites[0].ID != "role" {
+				t.Fatalf("full channel data not restored: %+v", current)
+			}
+			if visible.IsThread() && (current.ThreadMetadata == nil || current.ThreadMetadata.AutoArchiveDuration != 1440) {
+				t.Fatal("thread metadata not restored")
+			}
+			if cached.Name != "___hidden___" || restored.BeforeUpdate == nil || restored.BeforeUpdate.Flags&ChannelFlagObfuscated == 0 {
+				t.Fatal("restoring visibility mutated the obfuscated channel snapshot")
+			}
+			guild, err := state.Guild("guild")
+			if err != nil {
+				t.Fatal(err)
+			}
+			channels := guild.Channels
+			if current.IsThread() {
+				channels = guild.Threads
+			}
+			if len(channels) != 1 || channels[0] != current {
+				t.Fatal("guild channel list does not contain the current channel")
+			}
+		})
 	}
 }

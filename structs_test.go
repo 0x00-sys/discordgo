@@ -1145,3 +1145,36 @@ func TestApplicationActivityInstance(t *testing.T) {
 		t.Fatalf("Users = %#v", instance.Users)
 	}
 }
+
+func TestIdentifyCapabilitiesJSON(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		capabilities GatewayCapability
+		want         string
+	}{
+		{name: "default"},
+		{name: "channel obfuscation", capabilities: GatewayCapabilityChannelObfuscation, want: "32768"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session, err := New("Bot token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.Identify.Capabilities = test.capabilities
+			data, err := json.Marshal(session.Identify)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err = json.Unmarshal(data, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(fields["capabilities"]); got != test.want {
+				t.Fatalf("capabilities = %q, want %q", got, test.want)
+			}
+			if string(fields["intents"]) != fmt.Sprint(IntentsAllWithoutPrivileged) {
+				t.Fatalf("capabilities changed intents: %s", fields["intents"])
+			}
+		})
+	}
+}
