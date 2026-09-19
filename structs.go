@@ -2290,6 +2290,18 @@ func (g *Guild) BannerURL(size string) string {
 	return bannerURL(g.Banner, EndpointGuildBanner(g.ID, g.Banner), EndpointGuildBannerAnimated(g.ID, g.Banner), size)
 }
 
+// UserGuildsOptions contains pagination and filters for the current user's guilds.
+// Shard is required for apps using large bot sharding; valid values are 0 through
+// max_concurrency - 1 from SessionInformation. It differs from the Gateway shard ID.
+// https://docs.discord.com/developers/resources/user#get-current-user-guilds
+type UserGuildsOptions struct {
+	Limit      int
+	Before     string
+	After      string
+	WithCounts bool
+	Shard      *int
+}
+
 // A UserGuild holds a brief version of a Guild
 type UserGuild struct {
 	ID          string         `json:"id"`

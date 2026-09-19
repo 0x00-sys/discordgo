@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -5520,5 +5521,66 @@ func TestChannelEditSpoilerFlag(t *testing.T) {
 	}
 	if channel == nil || channel.Flags&ChannelFlagSpoiler == 0 || channel.NSFW {
 		t.Fatalf("channel = %#v", channel)
+	}
+}
+
+func TestUserGuildsWithOptionsRequest(t *testing.T) {
+	shard, three := 0, 3
+	tests := []struct {
+		name  string
+		query *UserGuildsOptions
+		want  url.Values
+	}{
+		{name: "nil", query: nil, want: url.Values{}},
+		{name: "empty", query: &UserGuildsOptions{}, want: url.Values{}},
+		{name: "shard zero", query: &UserGuildsOptions{Shard: &shard}, want: url.Values{"shard": {"0"}}},
+		{
+			name:  "all",
+			query: &UserGuildsOptions{Limit: 50, Before: "2", After: "1", WithCounts: true, Shard: &three},
+			want:  url.Values{"limit": {"50"}, "before": {"2"}, "after": {"1"}, "with_counts": {"true"}, "shard": {"3"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v"+APIVersion+"/users/@me/guilds" {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+				}
+				if r.Header.Get("Authorization") != "Bot test" || r.Header.Get("X-Test") != "guilds" {
+					t.Fatal("missing authorization or request option")
+				}
+				if got := r.URL.Query(); !reflect.DeepEqual(got, tt.want) {
+					t.Fatalf("query = %v, want %v", got, tt.want)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[{"id":"guild","name":"Guild"}]`)), Request: r}, nil
+			})
+			guilds, err := session.UserGuildsWithOptions(tt.query, WithHeader("X-Test", "guilds"))
+			if err != nil || calls != 1 || len(guilds) != 1 || guilds[0].ID != "guild" {
+				t.Fatalf("UserGuildsWithOptions = %v, %v; requests = %d", guilds, err, calls)
+			}
+		})
+	}
+}
+
+func TestUserGuildsDelegatesQuery(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		want := url.Values{"limit": {"10"}, "before": {"2"}, "after": {"1"}, "with_counts": {"true"}}
+		if got := r.URL.Query(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("query = %v, want %v", got, want)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`[]`)), Request: r}, nil
+	})
+	if _, err := session.UserGuilds(10, "2", "1", true); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -868,27 +868,42 @@ func (s *Session) UserGuildMember(guildID string, options ...RequestOption) (st 
 // beforeID    : If provided all guilds returned will be before given ID.
 // afterID     : If provided all guilds returned will be after given ID.
 // withCounts  : Whether to include approximate member and presence counts or not.
+// NOTE: apps using large bot sharding must use UserGuildsWithOptions and set Shard.
 func (s *Session) UserGuilds(limit int, beforeID, afterID string, withCounts bool, options ...RequestOption) (st []*UserGuild, err error) {
+	return s.UserGuildsWithOptions(&UserGuildsOptions{
+		Limit:      limit,
+		Before:     beforeID,
+		After:      afterID,
+		WithCounts: withCounts,
+	}, options...)
+}
 
-	v := url.Values{}
-
-	if limit > 0 {
-		v.Set("limit", strconv.Itoa(limit))
-	}
-	if afterID != "" {
-		v.Set("after", afterID)
-	}
-	if beforeID != "" {
-		v.Set("before", beforeID)
-	}
-	if withCounts {
-		v.Set("with_counts", "true")
-	}
-
+// UserGuildsWithOptions returns an array of UserGuild structures for the current user's guilds.
+// query   : Optional pagination, count and shard filters.
+// https://docs.discord.com/developers/resources/user#get-current-user-guilds
+func (s *Session) UserGuildsWithOptions(query *UserGuildsOptions, options ...RequestOption) (st []*UserGuild, err error) {
 	uri := EndpointUserGuilds("@me")
 
-	if len(v) > 0 {
-		uri += "?" + v.Encode()
+	if query != nil {
+		v := url.Values{}
+		if query.Limit > 0 {
+			v.Set("limit", strconv.Itoa(query.Limit))
+		}
+		if query.After != "" {
+			v.Set("after", query.After)
+		}
+		if query.Before != "" {
+			v.Set("before", query.Before)
+		}
+		if query.WithCounts {
+			v.Set("with_counts", "true")
+		}
+		if query.Shard != nil {
+			v.Set("shard", strconv.Itoa(*query.Shard))
+		}
+		if encoded := v.Encode(); encoded != "" {
+			uri += "?" + encoded
+		}
 	}
 
 	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointUserGuilds(""), options...)
