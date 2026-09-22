@@ -2,6 +2,8 @@ module github.com/bwmarrin/discordgo/examples/voice_receive
 
 go 1.25.0
 
+replace github.com/bwmarrin/discordgo v0.28.1 => ../../
+
 require (
 	github.com/bwmarrin/discordgo v0.28.1
 	github.com/pion/rtp v1.6.2
