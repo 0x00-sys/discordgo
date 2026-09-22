@@ -2,11 +2,14 @@ name: CI
 
 # Post-merge only. Pull requests are deliberately not checked; CI runs once a
 # change has landed on master.
+#
+# workflow_dispatch is intentionally absent: only-new-issues scopes lint
+# findings using the push/PR diff from the GitHub API, and a manual run has no
+# such diff, so the entire pre-existing backlog would surface and fail the job.
 on:
   push:
     branches:
       - master
-  workflow_dispatch:
 
 # Least privilege. contents:read also covers the compare-commits API that
 # only-new-issues uses to scope lint findings to the merged diff.
