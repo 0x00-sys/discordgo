@@ -1,6 +1,8 @@
 version: "2"
 
 linters:
-  default: none
+  # "standard" is errcheck, govet, ineffassign, staticcheck and unused.
+  # Pre-existing findings are masked by only-new-issues in CI; these gate new code.
+  default: standard
   enable:
     - revive
