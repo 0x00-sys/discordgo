@@ -3,3 +3,7 @@
 
 # Environment variables. Useful for examples.
 .env
+
+# Binaries produced by `go build` inside the example modules.
+/examples/linked_roles/linked_roles
+/examples/voice_receive/voice_receive

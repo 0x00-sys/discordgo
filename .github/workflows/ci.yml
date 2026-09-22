@@ -1,53 +1,90 @@
+name: CI
+
+# Post-merge only. Pull requests are deliberately not checked; CI runs once a
+# change has landed on master.
 on:
   push:
     branches:
       - master
-  pull_request:
+  workflow_dispatch:
 
-name: CI
+# Least privilege. contents:read also covers the compare-commits API that
+# only-new-issues uses to scope lint findings to the merged diff.
+permissions:
+  contents: read
 
 jobs:
   format:
+    name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.25.x'
+          go-version: '1.27.x'
       - name: Check diff between gofmt and code
         run: diff <(gofmt -d .) <(echo -n)
 
   test:
+    name: Test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25.x', '1.26.x']
+        # The go.mod floor, plus every release still under upstream support.
+        go-version: ['1.25.x', '1.26.x', '1.27.x']
     steps:
       - name: Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
       - run: go test -v -race ./...
 
-  lint:
+  examples:
+    # These carry their own go.mod, so ./... from the root never reaches them.
+    name: Build ${{ matrix.module }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - examples/linked_roles
+          - examples/voice_receive
     steps:
       - name: Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.25.x'
+          go-version: '1.27.x'
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: Build
+        run: go build ./...
+        working-directory: ${{ matrix.module }}
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Code
+        uses: actions/checkout@v7
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.x'
       - name: Go vet
-        run: go vet -x ./...
+        run: go vet ./...
 
       - name: GolangCI-Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12
+          version: v2.13.2
           only-new-issues: true
