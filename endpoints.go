@@ -280,9 +280,12 @@ var (
 
 	EndpointGuildCreate = EndpointAPI + "guilds"
 
-	EndpointInvite                     = func(iID string) string { return EndpointAPI + "invites/" + iID }
-	EndpointInviteTargetUsers          = func(iID string) string { return EndpointInvite(iID) + "/target-users" }
-	EndpointInviteTargetUsersJobStatus = func(iID string) string { return EndpointInviteTargetUsers(iID) + "/job-status" }
+	EndpointInvite                      = func(iID string) string { return EndpointAPI + "invites/" + iID }
+	EndpointInviteTargetUsers           = func(iID string) string { return EndpointInvite(iID) + "/target-users" }
+	EndpointInviteTargetUsersJobStatus  = func(iID string) string { return EndpointInviteTargetUsers(iID) + "/job-status" }
+	EndpointInviteTargetUser            = func(iID, uID string) string { return EndpointInviteTargetUsers(iID) + "/" + uID }
+	EndpointInviteTargetUsersBulkAdd    = func(iID string) string { return EndpointInviteTargetUsers(iID) + "/bulk-add" }
+	EndpointInviteTargetUsersBulkDelete = func(iID string) string { return EndpointInviteTargetUsers(iID) + "/bulk-delete" }
 
 	EndpointEmoji         = func(eID string) string { return EndpointCDN + "emojis/" + eID + ".png" }
 	EndpointEmojiAnimated = func(eID string) string { return EndpointCDN + "emojis/" + eID + ".gif" }

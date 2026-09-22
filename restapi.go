@@ -3298,6 +3298,14 @@ func (s *Session) ChannelInvites(channelID string, options ...RequestOption) (st
 // i           : An Invite struct with the values MaxAge, MaxUses and Temporary defined.
 func (s *Session) ChannelInviteCreate(channelID string, i Invite, options ...RequestOption) (st *Invite, err error) {
 
+	// Discord rejects a request carrying both, so fail before the round trip.
+	if i.TargetUsersFile != nil && len(i.TargetUserIDs) > 0 {
+		return nil, fmt.Errorf("TargetUserIDs and TargetUsersFile are mutually exclusive")
+	}
+	if len(i.TargetUserIDs) > MaxInviteTargetUsers {
+		return nil, fmt.Errorf("too many target user IDs supplied: %d, maximum is %d", len(i.TargetUserIDs), MaxInviteTargetUsers)
+	}
+
 	data := struct {
 		MaxAge              int              `json:"max_age"`
 		MaxUses             int              `json:"max_uses"`
@@ -3307,6 +3315,7 @@ func (s *Session) ChannelInviteCreate(channelID string, i Invite, options ...Req
 		TargetUserID        string           `json:"target_user_id,omitempty"`
 		TargetApplicationID string           `json:"target_application_id,omitempty"`
 		RoleIDs             []string         `json:"role_ids,omitempty"`
+		TargetUserIDs       []string         `json:"target_user_ids,omitempty"`
 	}{
 		MaxAge:              i.MaxAge,
 		MaxUses:             i.MaxUses,
@@ -3316,6 +3325,7 @@ func (s *Session) ChannelInviteCreate(channelID string, i Invite, options ...Req
 		TargetUserID:        i.TargetUserID,
 		TargetApplicationID: i.TargetApplicationID,
 		RoleIDs:             i.RoleIDs,
+		TargetUserIDs:       i.TargetUserIDs,
 	}
 
 	endpoint := EndpointChannelInvites(channelID)
@@ -3528,6 +3538,53 @@ func (s *Session) InviteTargetUsersJobStatus(inviteID string, options ...Request
 	}
 
 	err = unmarshal(body, &st)
+	return
+}
+
+// InviteTargetUserAdd adds a single target user to an existing invite.
+// inviteID : The invite code.
+// userID   : The ID of the user to add.
+func (s *Session) InviteTargetUserAdd(inviteID, userID string, options ...RequestOption) (err error) {
+	_, err = s.RequestWithBucketID("PUT", EndpointInviteTargetUser(inviteID, userID), nil, EndpointInviteTargetUser(inviteID, ""), options...)
+	return
+}
+
+// InviteTargetUserRemove removes a single target user from an existing invite.
+// inviteID : The invite code.
+// userID   : The ID of the user to remove.
+func (s *Session) InviteTargetUserRemove(inviteID, userID string, options ...RequestOption) (err error) {
+	_, err = s.RequestWithBucketID("DELETE", EndpointInviteTargetUser(inviteID, userID), nil, EndpointInviteTargetUser(inviteID, ""), options...)
+	return
+}
+
+// InviteTargetUsersBulkAdd adds multiple target users to an existing invite.
+// inviteID : The invite code.
+// userIDs  : The IDs of the users to add, up to MaxInviteTargetUsers.
+func (s *Session) InviteTargetUsersBulkAdd(inviteID string, userIDs []string, options ...RequestOption) (err error) {
+	return s.inviteTargetUsersBulk(EndpointInviteTargetUsersBulkAdd(inviteID), userIDs, options...)
+}
+
+// InviteTargetUsersBulkDelete removes multiple target users from an existing invite.
+// inviteID : The invite code.
+// userIDs  : The IDs of the users to remove, up to MaxInviteTargetUsers.
+func (s *Session) InviteTargetUsersBulkDelete(inviteID string, userIDs []string, options ...RequestOption) (err error) {
+	return s.inviteTargetUsersBulk(EndpointInviteTargetUsersBulkDelete(inviteID), userIDs, options...)
+}
+
+// inviteTargetUsersBulk sends a bulk target-user mutation to the given endpoint.
+func (s *Session) inviteTargetUsersBulk(endpoint string, userIDs []string, options ...RequestOption) (err error) {
+	if len(userIDs) == 0 {
+		return fmt.Errorf("no user IDs supplied")
+	}
+	if len(userIDs) > MaxInviteTargetUsers {
+		return fmt.Errorf("too many user IDs supplied: %d, maximum is %d", len(userIDs), MaxInviteTargetUsers)
+	}
+
+	data := struct {
+		UserIDs []string `json:"user_ids"`
+	}{UserIDs: userIDs}
+
+	_, err = s.RequestWithBucketID("POST", endpoint, data, endpoint, options...)
 	return
 }
 
