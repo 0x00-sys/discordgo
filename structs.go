@@ -465,6 +465,10 @@ const (
 	InviteFlagIsGuestInvite InviteFlags = 1 << 0
 )
 
+// MaxInviteTargetUsers is the maximum number of user IDs Discord accepts in a
+// single bulk invite target-user request, or in Invite.TargetUserIDs.
+const MaxInviteTargetUsers = 1000
+
 // A Invite stores all data related to a specific Discord Guild or Channel invite.
 type Invite struct {
 	Type                InviteType           `json:"type"`
@@ -488,6 +492,7 @@ type Invite struct {
 	Flags               InviteFlags          `json:"flags"`
 	Roles               []*Role              `json:"roles,omitempty"`
 	RoleIDs             []string             `json:"role_ids,omitempty"`
+	TargetUserIDs       []string             `json:"target_user_ids,omitempty"`
 	TargetUsersFile     *File                `json:"-"`
 
 	// will only be filled when using InviteWithCounts

@@ -5584,3 +5584,175 @@ func TestUserGuildsDelegatesQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInviteTargetUserAddRemove(t *testing.T) {
+	tests := []struct {
+		name       string
+		call       func(*Session) error
+		wantMethod string
+	}{
+		{
+			name:       "add",
+			call:       func(s *Session) error { return s.InviteTargetUserAdd("code", "user") },
+			wantMethod: http.MethodPut,
+		},
+		{
+			name:       "remove",
+			call:       func(s *Session) error { return s.InviteTargetUserRemove("code", "user") },
+			wantMethod: http.MethodDelete,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != tt.wantMethod {
+					t.Fatalf("method = %s, want %s", r.Method, tt.wantMethod)
+				}
+				if want := "/api/v" + APIVersion + "/invites/code/target-users/user"; r.URL.Path != want {
+					t.Fatalf("path = %s, want %s", r.URL.Path, want)
+				}
+				return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+			})
+			if err := tt.call(session); err != nil || calls != 1 {
+				t.Fatalf("err = %v; requests = %d", err, calls)
+			}
+		})
+	}
+}
+
+func TestInviteTargetUsersBulk(t *testing.T) {
+	tests := []struct {
+		name     string
+		call     func(*Session, []string) error
+		wantPath string
+	}{
+		{
+			name:     "bulk add",
+			call:     func(s *Session, ids []string) error { return s.InviteTargetUsersBulkAdd("code", ids) },
+			wantPath: "/api/v" + APIVersion + "/invites/code/target-users/bulk-add",
+		},
+		{
+			name:     "bulk delete",
+			call:     func(s *Session, ids []string) error { return s.InviteTargetUsersBulkDelete("code", ids) },
+			wantPath: "/api/v" + APIVersion + "/invites/code/target-users/bulk-delete",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodPost || r.URL.Path != tt.wantPath {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				body, readErr := io.ReadAll(r.Body)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				var payload struct {
+					UserIDs []string `json:"user_ids"`
+				}
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(payload.UserIDs, []string{"1", "2"}) {
+					t.Fatalf("user_ids = %v", payload.UserIDs)
+				}
+				return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+			})
+			if err := tt.call(session, []string{"1", "2"}); err != nil || calls != 1 {
+				t.Fatalf("err = %v; requests = %d", err, calls)
+			}
+		})
+	}
+}
+
+func TestInviteTargetUsersBulkValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []string
+	}{
+		{name: "empty", ids: nil},
+		{name: "over limit", ids: make([]string, MaxInviteTargetUsers+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+			})
+			if err := session.InviteTargetUsersBulkAdd("code", tt.ids); err == nil {
+				t.Fatal("expected an error")
+			}
+			if calls != 0 {
+				t.Fatalf("expected no request, got %d", calls)
+			}
+		})
+	}
+}
+
+func TestChannelInviteCreateTargetUserIDs(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var payload struct {
+			TargetUserIDs []string `json:"target_user_ids"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(payload.TargetUserIDs, []string{"1", "2"}) {
+			t.Fatalf("target_user_ids = %v", payload.TargetUserIDs)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"abc"}`)), Request: r}, nil
+	})
+	invite, err := session.ChannelInviteCreate("channel", Invite{TargetUserIDs: []string{"1", "2"}})
+	if err != nil || calls != 1 || invite.Code != "abc" {
+		t.Fatalf("ChannelInviteCreate = %v, %v; requests = %d", invite, err, calls)
+	}
+}
+
+func TestChannelInviteCreateRejectsConflictingTargetUsers(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	_, err = session.ChannelInviteCreate("channel", Invite{
+		TargetUserIDs:   []string{"1"},
+		TargetUsersFile: &File{Name: "users.csv"},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if calls != 0 {
+		t.Fatalf("expected no request, got %d", calls)
+	}
+}
