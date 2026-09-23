@@ -3610,6 +3610,9 @@ const (
 	ActivityTypeStreaming ActivityType = 1
 	ActivityTypeListening ActivityType = 2
 	ActivityTypeWatching  ActivityType = 3
+	// ActivityTypeCustom is a user's custom status. Discord omits it from
+	// Presence.Activities when the user's profile privacy settings hide it,
+	// so its absence does not mean the user has no custom status set.
 	ActivityTypeCustom    ActivityType = 4
 	ActivityTypeCompeting ActivityType = 5
 )
