@@ -676,9 +676,11 @@ const (
 	InteractionResponseChannelMessageWithSource InteractionResponseType = 4
 	// InteractionResponseDeferredChannelMessageWithSource acknowledges that the event was received, and that a follow-up will come later.
 	InteractionResponseDeferredChannelMessageWithSource InteractionResponseType = 5
-	// InteractionResponseDeferredMessageUpdate acknowledges that the message component interaction event was received, and message will be updated later.
+	// InteractionResponseDeferredMessageUpdate acknowledges a component interaction or
+	// a modal submission from a component, allowing its message to be updated later.
 	InteractionResponseDeferredMessageUpdate InteractionResponseType = 6
-	// InteractionResponseUpdateMessage is for updating the message to which message component was attached.
+	// InteractionResponseUpdateMessage updates the message for a component interaction
+	// or a modal submission from a component.
 	InteractionResponseUpdateMessage InteractionResponseType = 7
 	// InteractionApplicationCommandAutocompleteResult shows autocompletion results. Autocomplete interaction only.
 	InteractionApplicationCommandAutocompleteResult InteractionResponseType = 8
