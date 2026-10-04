@@ -498,8 +498,10 @@ type MessageAllowedMentions struct {
 
 // A MessageAttachment stores data for message attachments.
 type MessageAttachment struct {
-	ID                 string                 `json:"id"`
-	URL                string                 `json:"url"`
+	ID  string `json:"id"`
+	URL string `json:"url"`
+	// ProxyURL supports images, videos, and audio. Other attachment types return
+	// HTTP 415 Unsupported Media Type; use URL to download those files.
 	ProxyURL           string                 `json:"proxy_url"`
 	Filename           string                 `json:"filename"`
 	Title              string                 `json:"title,omitempty"`
