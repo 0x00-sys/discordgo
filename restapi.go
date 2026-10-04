@@ -1305,6 +1305,7 @@ func (s *Session) GuildJoinRequestAction(guildID, requestID string, data *GuildJ
 }
 
 // GuildBans returns an array of GuildBan structures for bans in the given guild.
+// Requires the BAN_MEMBERS or VIEW_AUDIT_LOG permission.
 // guildID   : The ID of a Guild
 // limit     : Max number of bans to return (max 1000)
 // beforeID  : If not empty all returned users will be after the given id
@@ -1346,6 +1347,7 @@ func (s *Session) GuildBanCreate(guildID, userID string, days int, options ...Re
 }
 
 // GuildBan finds ban by given guild and user id and returns GuildBan structure
+// Requires the BAN_MEMBERS or VIEW_AUDIT_LOG permission.
 func (s *Session) GuildBan(guildID, userID string, options ...RequestOption) (st *GuildBan, err error) {
 
 	body, err := s.RequestWithBucketID("GET", EndpointGuildBan(guildID, userID), nil, EndpointGuildBan(guildID, userID), options...)
