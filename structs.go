@@ -2725,6 +2725,42 @@ type Member struct {
 	// The time at which the member's timeout will expire.
 	// Time in the past or nil if the user is not timed out.
 	CommunicationDisabledUntil *time.Time `json:"communication_disabled_until"`
+
+	// The time at which the member will no longer be flagged by Discord for unusual DM activity.
+	// Time in the past or nil if the member is not flagged.
+	//
+	// NOTE: This field is undocumented by Discord and may change or be removed without notice.
+	// It is a signal to combine with other context, not a reason to act on a member by itself.
+	// Values that cannot be parsed are decoded as nil instead of failing the whole member.
+	UnusualDMActivityUntil *time.Time `json:"unusual_dm_activity_until,omitempty"`
+}
+
+// UnmarshalJSON is a helper function to unmarshal the Member.
+func (m *Member) UnmarshalJSON(data []byte) error {
+	type member Member
+	var v struct {
+		member
+		RawUnusualDMActivityUntil json.RawMessage `json:"unusual_dm_activity_until"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*m = Member(v.member)
+	m.UnusualDMActivityUntil = parseOptionalTimestamp(v.RawUnusualDMActivityUntil)
+	return nil
+}
+
+// parseOptionalTimestamp decodes an ISO8601 timestamp, returning nil when the
+// value is absent, null, or not a valid timestamp.
+func parseOptionalTimestamp(raw json.RawMessage) *time.Time {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var t time.Time
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return nil
+	}
+	return &t
 }
 
 // Mention creates a member mention. It returns an empty string if the member's user is unavailable.

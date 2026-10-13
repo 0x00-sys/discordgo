@@ -191,16 +191,34 @@ type GuildMemberAdd struct {
 	*Member
 }
 
+// UnmarshalJSON is a helper function to unmarshal GuildMemberAdd object.
+// It keeps the embedded Member's UnmarshalJSON from being promoted onto a nil Member.
+func (e *GuildMemberAdd) UnmarshalJSON(b []byte) error {
+	return json.Unmarshal(b, &e.Member)
+}
+
 // GuildMemberUpdate is the data for a GuildMemberUpdate event.
 type GuildMemberUpdate struct {
 	*Member
 	BeforeUpdate *Member `json:"-"`
 }
 
+// UnmarshalJSON is a helper function to unmarshal GuildMemberUpdate object.
+// It keeps the embedded Member's UnmarshalJSON from being promoted onto a nil Member.
+func (e *GuildMemberUpdate) UnmarshalJSON(b []byte) error {
+	return json.Unmarshal(b, &e.Member)
+}
+
 // GuildMemberRemove is the data for a GuildMemberRemove event.
 type GuildMemberRemove struct {
 	*Member
 	BeforeDelete *Member `json:"-"`
+}
+
+// UnmarshalJSON is a helper function to unmarshal GuildMemberRemove object.
+// It keeps the embedded Member's UnmarshalJSON from being promoted onto a nil Member.
+func (e *GuildMemberRemove) UnmarshalJSON(b []byte) error {
+	return json.Unmarshal(b, &e.Member)
 }
 
 // GuildRoleCreate is the data for a GuildRoleCreate event.
