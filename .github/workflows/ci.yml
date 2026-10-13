@@ -89,5 +89,7 @@ jobs:
       - name: GolangCI-Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          # v2.13.2 cannot read the export data written by Go 1.27.2 and
+          # fails every run with typecheck errors on the standard library.
+          version: v2.14.0
           only-new-issues: true
