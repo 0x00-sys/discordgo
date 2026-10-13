@@ -640,10 +640,36 @@ type MessageEmbed struct {
 	Provider    *MessageEmbedProvider  `json:"provider,omitempty"`
 	Author      *MessageEmbedAuthor    `json:"author,omitempty"`
 	Fields      []*MessageEmbedField   `json:"fields,omitempty"`
+
+	// The components that make up the embed, only present on EmbedTypeComponents embeds.
+	// These are link previews built by websites and are display-only.
+	// Filled by UnmarshalJSON below; the json tag only affects marshaling.
+	Components []MessageComponent `json:"components,omitempty"`
+}
+
+// UnmarshalJSON is a helper function to unmarshal the MessageEmbed.
+func (e *MessageEmbed) UnmarshalJSON(data []byte) error {
+	type messageEmbed MessageEmbed
+	var v struct {
+		messageEmbed
+		RawComponents []unmarshalableMessageComponent `json:"components"`
+	}
+	err := json.Unmarshal(data, &v)
+	if err != nil {
+		return err
+	}
+	*e = MessageEmbed(v.messageEmbed)
+	if v.RawComponents != nil {
+		e.Components = make([]MessageComponent, len(v.RawComponents))
+		for i, v := range v.RawComponents {
+			e.Components[i] = v.MessageComponent
+		}
+	}
+	return nil
 }
 
 // EmbedType is the type of embed
-// https://discord.com/developers/docs/resources/channel#embed-object-embed-types
+// https://discord.com/developers/docs/resources/message#embed-object-embed-types
 type EmbedType string
 
 // Block of valid EmbedTypes
@@ -654,6 +680,9 @@ const (
 	EmbedTypeGifv    EmbedType = "gifv"
 	EmbedTypeArticle EmbedType = "article"
 	EmbedTypeLink    EmbedType = "link"
+	// EmbedTypeComponents is a link preview built from Discord components.
+	// https://discord.com/developers/docs/link-previews/component-embeds
+	EmbedTypeComponents EmbedType = "components"
 )
 
 // ReactionType is the type of reaction.

@@ -864,3 +864,192 @@ func TestEventStructsMarshalWithNilMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestMessageEmbedComponentsUnmarshal(t *testing.T) {
+	var m Message
+	err := json.Unmarshal([]byte(`{
+		"id":"message",
+		"channel_id":"channel",
+		"content":"https://watchanimeattheoffice.com/posts/version2",
+		"embeds":[
+			{
+				"type":"components",
+				"url":"https://watchanimeattheoffice.com/posts/version2",
+				"components":[
+					{
+						"type":17,
+						"id":1,
+						"accent_color":1752220,
+						"spoiler":false,
+						"components":[
+							{
+								"type":9,
+								"components":[{"type":10,"content":"# New version out!"}],
+								"accessory":{"type":2,"style":5,"url":"https://watchanimeattheoffice.com/posts/version2","label":"Open"}
+							},
+							{
+								"type":12,
+								"items":[
+									{"media":{"url":"https://watchanimeattheoffice.com/photos/1.png","proxy_url":"https://media.discordapp.net/1.png","width":1280,"height":720,"content_type":"image/png"},"description":"The main character entering the dungeon"},
+									{"media":{"url":"https://watchanimeattheoffice.com/photos/2.png"}}
+								]
+							},
+							{"type":14,"spacing":1},
+							{
+								"type":1,
+								"components":[
+									{"type":2,"style":5,"url":"https://watchanimeattheoffice.com/store","label":"Store"},
+									{"type":2,"style":5,"url":"https://watchanimeattheoffice.com/community","label":"Community"}
+								]
+							},
+							{
+								"type":9,
+								"components":[{"type":10,"content":"Who could this be?"}],
+								"accessory":{"type":11,"media":{"url":"https://watchanimeattheoffice.com/new-boss.png"},"spoiler":true}
+							}
+						]
+					}
+				]
+			},
+			{"type":"rich","title":"Plain embed"}
+		]
+	}`), &m)
+	if err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(m.Embeds) != 2 {
+		t.Fatalf("len(Embeds) = %d, want 2", len(m.Embeds))
+	}
+
+	embed := m.Embeds[0]
+	if embed.Type != EmbedTypeComponents {
+		t.Fatalf("embed.Type = %q, want %q", embed.Type, EmbedTypeComponents)
+	}
+	if embed.URL != "https://watchanimeattheoffice.com/posts/version2" {
+		t.Fatalf("embed.URL = %q", embed.URL)
+	}
+	if len(embed.Components) != 1 {
+		t.Fatalf("len(embed.Components) = %d, want 1", len(embed.Components))
+	}
+
+	container, ok := embed.Components[0].(*Container)
+	if !ok {
+		t.Fatalf("embed component type = %T, want *Container", embed.Components[0])
+	}
+	if container.ID != 1 || container.AccentColor == nil || *container.AccentColor != 1752220 {
+		t.Fatalf("container = %#v, want id 1 with accent color 1752220", container)
+	}
+	if len(container.Components) != 5 {
+		t.Fatalf("len(container.Components) = %d, want 5", len(container.Components))
+	}
+
+	section, ok := container.Components[0].(*Section)
+	if !ok {
+		t.Fatalf("container.Components[0] type = %T, want *Section", container.Components[0])
+	}
+	text, ok := section.Components[0].(*TextDisplay)
+	if !ok || text.Content != "# New version out!" {
+		t.Fatalf("section text = %#v, want TextDisplay with heading", section.Components[0])
+	}
+	open, ok := section.Accessory.(*Button)
+	if !ok || open.Style != LinkButton || open.URL != "https://watchanimeattheoffice.com/posts/version2" || open.Label != "Open" {
+		t.Fatalf("section accessory = %#v, want link Button labelled Open", section.Accessory)
+	}
+
+	gallery, ok := container.Components[1].(*MediaGallery)
+	if !ok {
+		t.Fatalf("container.Components[1] type = %T, want *MediaGallery", container.Components[1])
+	}
+	if len(gallery.Items) != 2 {
+		t.Fatalf("len(gallery.Items) = %d, want 2", len(gallery.Items))
+	}
+	media := gallery.Items[0].Media
+	if media.ProxyURL != "https://media.discordapp.net/1.png" || media.Width != 1280 || media.Height != 720 || media.ContentType != "image/png" {
+		t.Fatalf("gallery.Items[0].Media = %#v, want unfurled media fields", media)
+	}
+	if gallery.Items[0].Description == nil || *gallery.Items[0].Description != "The main character entering the dungeon" {
+		t.Fatalf("gallery.Items[0].Description = %v", gallery.Items[0].Description)
+	}
+
+	separator, ok := container.Components[2].(*Separator)
+	if !ok || separator.Spacing == nil || *separator.Spacing != SeparatorSpacingSizeSmall {
+		t.Fatalf("container.Components[2] = %#v, want small Separator", container.Components[2])
+	}
+
+	row, ok := container.Components[3].(*ActionsRow)
+	if !ok || len(row.Components) != 2 {
+		t.Fatalf("container.Components[3] = %#v, want ActionsRow with 2 buttons", container.Components[3])
+	}
+	store, ok := row.Components[0].(*Button)
+	if !ok || store.Style != LinkButton || store.URL != "https://watchanimeattheoffice.com/store" || store.Label != "Store" {
+		t.Fatalf("row.Components[0] = %#v, want Store link Button", row.Components[0])
+	}
+
+	boss, ok := container.Components[4].(*Section)
+	if !ok {
+		t.Fatalf("container.Components[4] type = %T, want *Section", container.Components[4])
+	}
+	thumbnail, ok := boss.Accessory.(*Thumbnail)
+	if !ok || !thumbnail.Spoiler || thumbnail.Media.URL != "https://watchanimeattheoffice.com/new-boss.png" {
+		t.Fatalf("section accessory = %#v, want spoilered Thumbnail", boss.Accessory)
+	}
+
+	plain := m.Embeds[1]
+	if plain.Type != EmbedTypeRich || plain.Title != "Plain embed" {
+		t.Fatalf("plain embed = %#v, want rich embed titled Plain embed", plain)
+	}
+	if plain.Components != nil {
+		t.Fatalf("plain.Components = %#v, want nil when omitted", plain.Components)
+	}
+}
+
+func TestMessageEmbedComponentsMarshal(t *testing.T) {
+	plain, err := json.Marshal(&MessageEmbed{Type: EmbedTypeRich, Title: "Plain embed"})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(plain), `"components"`) {
+		t.Fatalf("plain embed JSON = %s, want no components key", plain)
+	}
+
+	accent := 5793266
+	data, err := json.Marshal(&MessageEmbed{
+		Type: EmbedTypeComponents,
+		Components: []MessageComponent{
+			Container{
+				AccentColor: &accent,
+				Components: []MessageComponent{
+					TextDisplay{Content: "# Patch Notes"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+
+	var embed MessageEmbed
+	if err := json.Unmarshal(data, &embed); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if embed.Type != EmbedTypeComponents {
+		t.Fatalf("embed.Type = %q, want %q", embed.Type, EmbedTypeComponents)
+	}
+	if len(embed.Components) != 1 {
+		t.Fatalf("len(embed.Components) = %d, want 1", len(embed.Components))
+	}
+	container, ok := embed.Components[0].(*Container)
+	if !ok {
+		t.Fatalf("embed component type = %T, want *Container", embed.Components[0])
+	}
+	if container.AccentColor == nil || *container.AccentColor != accent {
+		t.Fatalf("container.AccentColor = %v, want %d", container.AccentColor, accent)
+	}
+	if len(container.Components) != 1 {
+		t.Fatalf("len(container.Components) = %d, want 1", len(container.Components))
+	}
+	text, ok := container.Components[0].(*TextDisplay)
+	if !ok || text.Content != "# Patch Notes" {
+		t.Fatalf("container.Components[0] = %#v, want TextDisplay with Patch Notes", container.Components[0])
+	}
+}
