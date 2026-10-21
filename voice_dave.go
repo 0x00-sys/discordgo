@@ -74,7 +74,16 @@ var (
 	errDAVEFrameShort        = errors.New("discordgo: DAVE binary frame is shorter than its header")
 	errDAVESessionMissing    = errors.New("discordgo: DAVE session is unavailable")
 	errDAVETransitionPending = errors.New("discordgo: DAVE transition is not ready")
+	errDAVEUnknownSSRC       = errors.New("discordgo: no speaking event has identified the user for this ssrc")
 )
+
+// daveUnknownSSRCReportThreshold is how many packets from one SSRC can be
+// dropped while waiting for its speaking event (about one second of audio)
+// before the drops are reported.
+const daveUnknownSSRCReportThreshold = 50
+
+// daveDropReportLimit bounds the per-SSRC state kept by daveDropReporter.
+const daveDropReportLimit = 1024
 
 type voiceDAVECallbacks struct {
 	mu         sync.Mutex
@@ -570,6 +579,67 @@ func (v *VoiceConnection) encryptDAVEFrame(ssrc uint32, frame []byte) ([]byte, e
 	return encrypted, nil
 }
 
+// hasDAVEMarker reports whether frame ends with the DAVE trailer: a
+// supplemental data size byte followed by the 0xFAFA magic marker. The size
+// covers the whole trailer, so it must fit inside the frame.
+func hasDAVEMarker(frame []byte) bool {
+	n := len(frame)
+	if n < 3 || frame[n-2] != 0xfa || frame[n-1] != 0xfa {
+		return false
+	}
+	size := int(frame[n-3])
+	return size >= 3 && size <= n
+}
+
+// daveDropReporter reports received audio dropped by DAVE decryption without
+// flooding the log. The first drop for each SSRC and kind of failure is
+// logged as an error and later ones at debug level. Packets can arrive just
+// before the speaking event that identifies their user, so unknown SSRCs are
+// only reported when the drops continue.
+type daveDropReporter struct {
+	unknown  map[uint32]int
+	reported map[daveDropKey]struct{}
+}
+
+type daveDropKey struct {
+	ssrc    uint32
+	unknown bool
+}
+
+func (r *daveDropReporter) decrypted(ssrc uint32) {
+	delete(r.unknown, ssrc)
+}
+
+func (r *daveDropReporter) dropped(ssrc uint32, err error) (report bool) {
+	if r.unknown == nil || len(r.unknown) > daveDropReportLimit {
+		r.unknown = make(map[uint32]int)
+	}
+	if r.reported == nil || len(r.reported) > daveDropReportLimit {
+		r.reported = make(map[daveDropKey]struct{})
+	}
+	key := daveDropKey{ssrc: ssrc, unknown: errors.Is(err, errDAVEUnknownSSRC)}
+	if _, ok := r.reported[key]; ok {
+		return false
+	}
+	if key.unknown {
+		r.unknown[ssrc]++
+		if r.unknown[ssrc] < daveUnknownSSRCReportThreshold {
+			return false
+		}
+		delete(r.unknown, ssrc)
+	}
+	r.reported[key] = struct{}{}
+	return true
+}
+
+func (v *VoiceConnection) logDAVEDrop(r *daveDropReporter, ssrc uint32, err error) {
+	if r.dropped(ssrc, err) {
+		v.log(LogError, "dropping received audio from ssrc %d, %s; later drops from this ssrc are logged at debug level", ssrc, err)
+		return
+	}
+	v.log(LogDebug, "DAVE decrypt error for ssrc %d, %s", ssrc, err)
+}
+
 func (v *VoiceConnection) decryptDAVEFrame(ssrc uint32, frame []byte) ([]byte, error) {
 	if isOpusSilenceFrame(frame) {
 		return frame, nil
@@ -588,8 +658,14 @@ func (v *VoiceConnection) decryptDAVEFrame(ssrc uint32, frame []byte) ([]byte, e
 		}
 		return nil, errDAVESessionMissing
 	}
+	// While DAVE is inactive, peers send plain Opus. Only frames carrying the
+	// DAVE marker, from peers that switched first during an upgrade, need
+	// the backend.
+	if protocolVersion == 0 && !hasDAVEMarker(frame) {
+		return frame, nil
+	}
 	if userID == "" {
-		return nil, fmt.Errorf("decrypting DAVE frame: unknown ssrc %d", ssrc)
+		return nil, fmt.Errorf("decrypting DAVE frame: ssrc %d: %w", ssrc, errDAVEUnknownSSRC)
 	}
 
 	decrypted, err := session.DecryptFrame(userID, frame)

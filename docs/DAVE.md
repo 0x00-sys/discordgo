@@ -32,6 +32,35 @@ of sending it unencrypted. Applications can inspect the same state through
 `VoiceConnection.DAVEReady`. `Close` must be safe to call more than once and
 must stop all backend work before returning.
 
+## Receiving audio
+
+Receiving needs more than sending. Sending only uses the local encryptor;
+receiving decrypts each remote user's frames with that user's keys.
+
+- Join undeafened. With `ChannelVoiceJoin(guildID, channelID, mute, true)`,
+  DiscordGo does not start receiving and `OpusRecv` stays nil.
+- Read `VoiceConnection.OpusRecv` continuously. It buffers only a few packets,
+  and receiving pauses while it is full.
+- `DecryptFrame(userID, frame)` must use a decryptor for that user. After each
+  processed commit or welcome, and on each executed transition, the adapter
+  should give every remote user's decryptor their current key ratchet (in
+  libdave, `GetKeyRatchet(userID)`). Keep the users from `AddUser` and
+  `RemoveUser` as the recognized member set passed to the backend when it
+  processes commits and welcomes.
+- DiscordGo learns which user owns each SSRC from Speaking (op 5) events.
+  Packets that arrive before that event are dropped.
+
+While DAVE is inactive (protocol version 0), DiscordGo passes plain frames
+through without calling `DecryptFrame`. Frames that carry the DAVE `0xFAFA`
+marker, sent by peers that upgrade first, still go to the backend.
+
+Dropped audio is logged as an error the first time each SSRC fails for a given
+reason (unknown speaker or backend error); later drops are logged at debug
+level. Set `VoiceConnection.LogLevel` to `LogDebug` to see
+every drop.
+
+## Disabled DAVE and reconnects
+
 A nil factory advertises DAVE protocol version 0. Discord may close the voice
 connection with code 4017 when end-to-end encryption is required, and
 DiscordGo will not reconnect that unsupported connection. A resumable

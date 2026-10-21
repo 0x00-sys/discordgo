@@ -1060,3 +1060,90 @@ func TestVoiceDAVEConcurrentClose(t *testing.T) {
 		t.Fatalf("DAVE Close calls = %d, want 1", closed)
 	}
 }
+
+func TestVoiceDAVEDecryptPassesPlainAudioWhileInactive(t *testing.T) {
+	fake := &fakeVoiceDAVESession{maxVersion: 1, ready: true}
+	voice := &VoiceConnection{LogLevel: -1}
+	installFakeDAVE(voice, fake, 0)
+
+	// Plain Opus from an unidentified speaker passes through untouched.
+	plain := []byte{0xd1, 7, 8}
+	if got, err := voice.decryptDAVEFrame(99, plain); err != nil || !reflect.DeepEqual(got, plain) {
+		t.Fatalf("protocol 0 plain decrypt = %v, %v", got, err)
+	}
+
+	// A peer that upgraded first sends marked frames, which need the backend.
+	marked := []byte{0xd1, 7, 3, 0xfa, 0xfa}
+	if _, err := voice.decryptDAVEFrame(99, marked); !errors.Is(err, errDAVEUnknownSSRC) {
+		t.Fatalf("protocol 0 marked frame from unknown ssrc error = %v", err)
+	}
+	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 99})
+	if got, err := voice.decryptDAVEFrame(99, marked); err != nil || !reflect.DeepEqual(got, []byte{7, 3, 0xfa, 0xfa}) {
+		t.Fatalf("protocol 0 marked decrypt = %v, %v", got, err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !reflect.DeepEqual(fake.decryptUsers, []string{"remote"}) {
+		t.Fatalf("backend decrypt users = %v, want only the marked frame", fake.decryptUsers)
+	}
+}
+
+func TestDAVEDropReporter(t *testing.T) {
+	var r daveDropReporter
+	unknown := fmt.Errorf("ssrc 1: %w", errDAVEUnknownSSRC)
+
+	// Packets that arrive before the speaking event are not reported.
+	for i := 0; i < daveUnknownSSRCReportThreshold-1; i++ {
+		if r.dropped(1, unknown) {
+			t.Fatalf("unknown ssrc reported after %d drops", i+1)
+		}
+	}
+	r.decrypted(1)
+	for i := 0; i < daveUnknownSSRCReportThreshold-1; i++ {
+		if r.dropped(1, unknown) {
+			t.Fatal("unknown ssrc count survived a successful decrypt")
+		}
+	}
+	if !r.dropped(1, unknown) {
+		t.Fatal("persistent unknown ssrc was not reported")
+	}
+	if r.dropped(1, unknown) {
+		t.Fatal("unknown ssrc reported twice")
+	}
+
+	// Backend failures are reported on the first drop, once per ssrc.
+	failure := errors.New("decrypt failed")
+	if !r.dropped(2, failure) {
+		t.Fatal("backend failure was not reported")
+	}
+	if r.dropped(2, failure) {
+		t.Fatal("backend failure reported twice")
+	}
+	if !r.dropped(3, failure) {
+		t.Fatal("backend failure for another ssrc was not reported")
+	}
+
+	// A backend failure is still reported after an unknown-ssrc report.
+	if !r.dropped(1, failure) {
+		t.Fatal("backend failure hidden by an earlier unknown-ssrc report")
+	}
+}
+
+func TestHasDAVEMarker(t *testing.T) {
+	tests := []struct {
+		frame []byte
+		want  bool
+	}{
+		{[]byte{1, 2, 3, 0xfa, 0xfa}, true},
+		{[]byte{1, 5, 0xfa, 0xfa}, false}, // trailer larger than the frame
+		{[]byte{1, 2, 0xfa, 0xfa}, false}, // trailer too small
+		{[]byte{0xfa, 0xfa}, false},
+		{[]byte{1, 3, 0xfa, 0xfb}, false},
+	}
+	for _, tt := range tests {
+		if got := hasDAVEMarker(tt.frame); got != tt.want {
+			t.Errorf("hasDAVEMarker(%v) = %v, want %v", tt.frame, got, tt.want)
+		}
+	}
+}
