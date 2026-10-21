@@ -50,8 +50,11 @@ type VoiceConnection struct {
 	reconnectAgain bool // If true, the active reconnect must retry after teardown
 	disconnecting  bool // If true, voice connection is being permanently torn down
 
-	OpusSend chan []byte  // Chan for sending opus audio
-	OpusRecv chan *Packet // Chan for receiving opus audio
+	OpusSend chan []byte // Chan for sending opus audio
+	// OpusRecv receives Opus audio from other users. It is nil when the
+	// connection joined deafened. Read it continuously; it buffers only a
+	// few packets, and receiving pauses while it is full.
+	OpusRecv chan *Packet
 
 	wsConn  *websocket.Conn
 	wsMutex sync.Mutex
@@ -1622,6 +1625,7 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 
 	recvbuf := make([]byte, 2048)
 	var nonce []byte
+	var daveDrops daveDropReporter
 
 	for {
 		rlen, err := udpConn.Read(recvbuf)
@@ -1724,9 +1728,10 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 
 		p.Opus, err = v.decryptDAVEFrame(p.SSRC, p.Opus)
 		if err != nil {
-			v.log(LogDebug, "DAVE decrypt error for ssrc %d, %s", p.SSRC, err)
+			v.logDAVEDrop(&daveDrops, p.SSRC, err)
 			continue
 		}
+		daveDrops.decrypted(p.SSRC)
 
 		if c != nil {
 			select {
