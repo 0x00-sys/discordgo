@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"time"
@@ -22,7 +23,6 @@ func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
 	flag.StringVar(&GuildID, "g", "", "Guild in which voice channel exists")
 	flag.StringVar(&ChannelID, "c", "", "Voice channel to connect to")
-	flag.Parse()
 }
 
 func createPionRTPPacket(p *discordgo.Packet) *rtp.Packet {
@@ -39,9 +39,24 @@ func createPionRTPPacket(p *discordgo.Packet) *rtp.Packet {
 	}
 }
 
-func handleVoice(c chan *discordgo.Packet) {
+func handleVoice(ctx context.Context, c <-chan *discordgo.Packet) {
 	files := make(map[uint32]media.Writer)
-	for p := range c {
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+	for {
+		var p *discordgo.Packet
+		select {
+		case <-ctx.Done():
+			return
+		case packet, ok := <-c:
+			if !ok {
+				return
+			}
+			p = packet
+		}
 		file, ok := files[p.SSRC]
 		if !ok {
 			var err error
@@ -59,14 +74,10 @@ func handleVoice(c chan *discordgo.Packet) {
 			fmt.Printf("failed to write to file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
 		}
 	}
-
-	// Once we made it here, we're done listening for packets. Close all files
-	for _, f := range files {
-		f.Close()
-	}
 }
 
 func main() {
+	flag.Parse()
 	s, err := discordgo.New("Bot " + Token)
 	if err != nil {
 		fmt.Println("error creating Discord session:", err)
@@ -89,11 +100,11 @@ func main() {
 		return
 	}
 
-	go func() {
-		time.Sleep(10 * time.Second)
-		close(v.OpusRecv)
-		v.Close()
-	}()
+	defer v.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	handleVoice(v.OpusRecv)
+	// OpusRecv belongs to the library's receiver. Stop consuming on timeout
+	// and let Close stop the transport without closing its output channel.
+	handleVoice(ctx, v.OpusRecv)
 }
