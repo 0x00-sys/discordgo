@@ -597,7 +597,7 @@ func (v *VoiceConnection) open() (err error) {
 	// Connect to VoiceConnection Websocket
 	vg := "wss://" + strings.TrimSuffix(endpoint, ":80") + "?v=" + strconv.Itoa(voiceGatewayVersion)
 	v.log(LogInformational, "connecting to voice endpoint %s", vg)
-	wsConn, err := dialVoiceWebsocket(ctx, dialer, vg)
+	wsConn, err := dialWebsocket(ctx, dialer, vg, nil)
 	if err != nil {
 		if !isCurrent() {
 			return ErrWSNotFound

@@ -3,14 +3,15 @@ package discordgo
 import (
 	"context"
 	"net"
+	"net/http"
 
 	"github.com/gorilla/websocket"
 )
 
-// dialVoiceWebsocket cancels both dialing and the subsequent TLS/HTTP
+// dialWebsocket cancels both dialing and the subsequent TLS/HTTP
 // handshake. The pinned websocket dialer uses context for TCP dialing and
 // deadlines, but does not close an established transport on cancellation.
-func dialVoiceWebsocket(ctx context.Context, dialer *websocket.Dialer, endpoint string) (*websocket.Conn, error) {
+func dialWebsocket(ctx context.Context, dialer *websocket.Dialer, endpoint string, header http.Header) (*websocket.Conn, error) {
 	copyDialer := *dialer
 	var stopClosing func() bool
 	copyDialer.NetDialContext = func(dialCtx context.Context, network, address string) (conn net.Conn, err error) {
@@ -29,7 +30,7 @@ func dialVoiceWebsocket(ctx context.Context, dialer *websocket.Dialer, endpoint 
 		}
 		return
 	}
-	conn, _, err := copyDialer.DialContext(ctx, endpoint, nil)
+	conn, _, err := copyDialer.DialContext(ctx, endpoint, header)
 	if stopClosing != nil {
 		stopClosing()
 	}
