@@ -700,9 +700,11 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 
 				// Abandon the voice WS connection
 				v.Lock()
-				if v.wsConn == wsConn {
-					v.wsConn = nil
+				if v.wsConn != wsConn || v.close != close {
+					v.Unlock()
+					return
 				}
+				v.wsConn = nil
 				v.Unlock()
 
 				if closeErr.Code == 4014 {
@@ -726,13 +728,22 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 				// When VOICE_SERVER_UPDATE is not received, disconnect as usual.
 				v.log(LogInformational, "disconnect due to %d manual disconnection", closeErr.Code)
 
-				v.session.Lock()
-				if v.session.VoiceConnections[v.GuildID] == v {
-					delete(v.session.VoiceConnections, v.GuildID)
+				// A server update can install (or begin opening) a replacement
+				// on this same VoiceConnection while the old listener unwinds.
+				// Serialize the ownership check and teardown with open/Close.
+				v.lifecycleMu.Lock()
+				v.RLock()
+				current := v.close == close && v.wsConn == nil && v.opening == nil
+				v.RUnlock()
+				if current {
+					v.session.Lock()
+					if v.session.VoiceConnections[v.GuildID] == v {
+						delete(v.session.VoiceConnections, v.GuildID)
+					}
+					v.session.Unlock()
+					v.closeLocked()
 				}
-				v.session.Unlock()
-
-				v.Close()
+				v.lifecycleMu.Unlock()
 
 				return
 			}
