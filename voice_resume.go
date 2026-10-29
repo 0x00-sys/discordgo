@@ -65,7 +65,7 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 		case <-ctx.Done():
 		}
 	}()
-	conn, err := dialVoiceWebsocket(ctx, dialer, gateway)
+	conn, err := dialWebsocket(ctx, dialer, gateway, nil)
 	cancel()
 	<-dialWatcherDone
 	if err != nil {

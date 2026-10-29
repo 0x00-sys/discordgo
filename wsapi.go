@@ -13,6 +13,7 @@ package discordgo
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -241,7 +242,19 @@ func (s *Session) Open() error {
 	gatewayOpen := make(chan struct{})
 	s.gatewayOpen = gatewayOpen
 	reconnectCancel := s.reconnectCancel
+	ctx, cancel := context.WithCancel(context.Background())
+	setupWatcherDone := make(chan struct{})
+	go func() {
+		defer close(setupWatcherDone)
+		select {
+		case <-reconnectCancel:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	defer func() {
+		cancel()
+		<-setupWatcherDone
 		if s.gatewayOpen == gatewayOpen {
 			s.gatewayOpen = nil
 		}
@@ -259,7 +272,7 @@ func (s *Session) Open() error {
 	} else {
 		if s.gateway == "" {
 			s.Unlock()
-			gateway, err = s.Gateway()
+			gateway, err = s.Gateway(WithContext(ctx))
 			s.Lock()
 			if s.gatewayOpen != gatewayOpen || reconnectCanceled(reconnectCancel) {
 				if err == nil {
@@ -285,7 +298,7 @@ func (s *Session) Open() error {
 	header.Add("accept-encoding", "zlib")
 	dialer := s.Dialer
 	s.Unlock()
-	wsConn, _, err := dialer.Dial(gateway, header)
+	wsConn, err := dialWebsocket(ctx, dialer, gateway, header)
 	s.Lock()
 	if s.gatewayOpen != gatewayOpen || reconnectCanceled(reconnectCancel) {
 		if wsConn != nil {

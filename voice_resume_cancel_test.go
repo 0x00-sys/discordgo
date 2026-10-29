@@ -130,7 +130,7 @@ func TestVoiceDialSuccessfulConnectionSurvivesContextCleanup(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn, err := dialVoiceWebsocket(ctx, &websocket.Dialer{HandshakeTimeout: time.Second}, "ws"+strings.TrimPrefix(server.URL, "http"))
+	conn, err := dialWebsocket(ctx, &websocket.Dialer{HandshakeTimeout: time.Second}, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
