@@ -1807,8 +1807,8 @@ func TestPresenceAddReplacesCachedPointer(t *testing.T) {
 	if updatedPresence.User.Avatar != "avatar" {
 		t.Fatalf("updated presence avatar = %q, want avatar", updatedPresence.User.Avatar)
 	}
-	if updatedPresence.ClientStatus.Desktop != StatusOnline {
-		t.Fatalf("updated desktop status = %q, want %q", updatedPresence.ClientStatus.Desktop, StatusOnline)
+	if updatedPresence.ClientStatus.Desktop != "" {
+		t.Fatalf("updated desktop status = %q, want empty for an inactive client", updatedPresence.ClientStatus.Desktop)
 	}
 	if updatedPresence.ClientStatus.Mobile != StatusIdle {
 		t.Fatalf("updated mobile status = %q, want %q", updatedPresence.ClientStatus.Mobile, StatusIdle)

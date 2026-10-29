@@ -509,15 +509,9 @@ func presenceAddToGuild(guild *Guild, presence *Presence) error {
 			if presence.Status != "" {
 				updated.Status = presence.Status
 			}
-			if presence.ClientStatus.Desktop != "" {
-				updated.ClientStatus.Desktop = presence.ClientStatus.Desktop
-			}
-			if presence.ClientStatus.Mobile != "" {
-				updated.ClientStatus.Mobile = presence.ClientStatus.Mobile
-			}
-			if presence.ClientStatus.Web != "" {
-				updated.ClientStatus.Web = presence.ClientStatus.Web
-			}
+			// Missing platforms are offline or invisible, so this object
+			// replaces the previous platform statuses rather than merging.
+			updated.ClientStatus = presence.ClientStatus
 
 			//Update the optionally sent user information
 			//ID Is a mandatory field so you should not need to check if it is empty
