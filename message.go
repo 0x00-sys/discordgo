@@ -525,15 +525,21 @@ type MessageAttachment struct {
 }
 
 // MessageAttachmentFlags is the flags of a message attachment.
+// Content scanning flags may arrive in a later MessageUpdate event and are not
+// included in interaction resolved attachments before the media is sent in a message.
+// https://docs.discord.com/developers/resources/message#attachment-flags
 type MessageAttachmentFlags int
 
 // Valid MessageAttachmentFlags values.
 const (
-	MessageAttachmentFlagsIsClip      MessageAttachmentFlags = 1 << 0
-	MessageAttachmentFlagsIsThumbnail MessageAttachmentFlags = 1 << 1
-	MessageAttachmentFlagsIsRemix     MessageAttachmentFlags = 1 << 2
-	MessageAttachmentFlagsIsSpoiler   MessageAttachmentFlags = 1 << 3
-	MessageAttachmentFlagsIsAnimated  MessageAttachmentFlags = 1 << 5
+	MessageAttachmentFlagsIsClip                  MessageAttachmentFlags = 1 << 0
+	MessageAttachmentFlagsIsThumbnail             MessageAttachmentFlags = 1 << 1
+	MessageAttachmentFlagsIsRemix                 MessageAttachmentFlags = 1 << 2
+	MessageAttachmentFlagsIsSpoiler               MessageAttachmentFlags = 1 << 3
+	MessageAttachmentFlagsContainsExplicitContent MessageAttachmentFlags = 1 << 4
+	MessageAttachmentFlagsIsAnimated              MessageAttachmentFlags = 1 << 5
+	MessageAttachmentFlagsContainsGoreContent     MessageAttachmentFlags = 1 << 6
+	MessageAttachmentFlagsContainsSelfHarmContent MessageAttachmentFlags = 1 << 7
 )
 
 // GuildMessagesSearchOptions stores query parameters for guild message search.
@@ -640,12 +646,26 @@ type MessageEmbed struct {
 	Provider    *MessageEmbedProvider  `json:"provider,omitempty"`
 	Author      *MessageEmbedAuthor    `json:"author,omitempty"`
 	Fields      []*MessageEmbedField   `json:"fields,omitempty"`
+	Flags       MessageEmbedFlags      `json:"flags,omitempty"`
 
 	// The components that make up the embed, only present on EmbedTypeComponents embeds.
 	// These are link previews built by websites and are display-only.
 	// Filled by UnmarshalJSON below; the json tag only affects marshaling.
 	Components []MessageComponent `json:"components,omitempty"`
 }
+
+// MessageEmbedFlags is the flags of a message embed.
+// Content scanning flags may arrive in a later MessageUpdate event.
+// https://docs.discord.com/developers/resources/message#embed-flags
+type MessageEmbedFlags int
+
+// Valid MessageEmbedFlags values.
+const (
+	MessageEmbedFlagsContainsExplicitContent MessageEmbedFlags = 1 << 4
+	MessageEmbedFlagsIsContentInventoryEntry MessageEmbedFlags = 1 << 5
+	MessageEmbedFlagsContainsGoreContent     MessageEmbedFlags = 1 << 6
+	MessageEmbedFlagsContainsSelfHarmContent MessageEmbedFlags = 1 << 7
+)
 
 // UnmarshalJSON is a helper function to unmarshal the MessageEmbed.
 func (e *MessageEmbed) UnmarshalJSON(data []byte) error {
