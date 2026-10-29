@@ -267,6 +267,10 @@ func (s *State) updateGuildMemberCount(guildID string, delta int) error {
 // GuildAdd adds a guild to the current world state, or
 // updates it if it already exists.
 func (s *State) GuildAdd(guild *Guild) error {
+	return s.guildAdd(guild, false)
+}
+
+func (s *State) guildAdd(guild *Guild, preserveCreateFields bool) error {
 	if s == nil {
 		return ErrNilState
 	}
@@ -309,6 +313,13 @@ func (s *State) GuildAdd(guild *Guild) error {
 	}
 
 	if g, ok := s.guildMap[guild.ID]; ok {
+		if preserveCreateFields {
+			// GUILD_UPDATE carries a guild object without these
+			// GUILD_CREATE-only fields. Keep the cached session metadata.
+			guild.JoinedAt = g.JoinedAt
+			guild.Large = g.Large
+			guild.Unavailable = g.Unavailable
+		}
 		// We are about to replace `g` in the state with `guild`, but first we need to
 		// make sure we preserve any fields that the `guild` doesn't contain from `g`.
 		if guild.MemberCount == 0 {
@@ -2397,7 +2408,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		if t == nil {
 			return ErrStateInvalidData
 		}
-		err = s.GuildAdd(t.Guild)
+		err = s.guildAdd(t.Guild, true)
 	case *GuildDelete:
 		if t == nil || t.Guild == nil {
 			return ErrStateInvalidData
