@@ -6,6 +6,109 @@ import (
 	"testing"
 )
 
+func TestMessagePollVoteCreatesMissingZeroCount(t *testing.T) {
+	for _, self := range []bool{false, true} {
+		for _, sparse := range []bool{false, true} {
+			results := &PollResults{}
+			if sparse {
+				results.AnswerCounts = []*PollAnswerCount{{ID: 2, Count: 4}}
+			}
+			state, session := newMessagePollVoteTestState(t, &Poll{
+				Answers: []PollAnswer{{AnswerID: 1}, {AnswerID: 2}}, Results: results,
+			})
+			before, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			userID := "user"
+			if self {
+				userID = "bot"
+			}
+			if err := state.OnInterface(session, &MessagePollVoteAdd{
+				UserID: userID, ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var added *PollAnswerCount
+			for _, count := range got.Poll.Results.AnswerCounts {
+				if count.ID == 1 {
+					added = count
+				}
+			}
+			if added == nil || added.Count != 1 || added.MeVoted != self {
+				t.Fatalf("self=%v sparse=%v: first vote = %#v, want count 1 and me_voted %v", self, sparse, added, self)
+			}
+			wantOldCount := 0
+			if sparse {
+				wantOldCount = 1
+			}
+			if len(before.Poll.Results.AnswerCounts) != wantOldCount || before.Poll.Results != results {
+				t.Fatal("first vote mutated old snapshot")
+			}
+			if sparse && got.Poll.Results.AnswerCounts[0].Count != 4 {
+				t.Fatal("unrelated count changed")
+			}
+			if err := state.OnInterface(session, &MessagePollVoteRemove{
+				UserID: userID, ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, count := range after.Poll.Results.AnswerCounts {
+				if count.ID == 1 && (count.Count != 0 || count.MeVoted) {
+					t.Fatalf("removed vote = %#v", count)
+				}
+			}
+			if added.Count != 1 {
+				t.Fatal("removal mutated preceding snapshot")
+			}
+		}
+	}
+}
+
+func TestMessagePollVoteDoesNotInventUnknownCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		results  *PollResults
+		answerID int
+		adding   bool
+	}{
+		{"unknown results", nil, 1, true},
+		{"unknown answer", &PollResults{}, 99, true},
+		{"remove zero votes", &PollResults{}, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, _ := newMessagePollVoteTestState(t, &Poll{
+				Answers: []PollAnswer{{AnswerID: 1}}, Results: tc.results,
+			})
+			before, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := state.messagePollVoteUpdate("channel", "message", "user", tc.answerID, tc.adding); err != nil {
+				t.Fatal(err)
+			}
+			after, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before != after {
+				t.Fatal("vote event replaced unchanged snapshot")
+			}
+			if tc.results != nil && len(after.Poll.Results.AnswerCounts) != 0 {
+				t.Fatal("vote event invented a count")
+			}
+		})
+	}
+}
+
 func TestMessagePollVoteStateLifecycle(t *testing.T) {
 	state, session := newMessagePollVoteTestState(t, &Poll{Results: &PollResults{
 		AnswerCounts: []*PollAnswerCount{{ID: 1, Count: 2}, {ID: 2, Count: 7}},

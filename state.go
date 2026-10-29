@@ -1889,43 +1889,64 @@ func (s *State) messagePollVoteUpdate(channelID, messageID, userID string, answe
 			return nil
 		}
 
-		for answerIndex, answer := range message.Poll.Results.AnswerCounts {
-			if answer == nil || answer.ID != answerID {
-				continue
+		answerIndex := -1
+		var updatedAnswer PollAnswerCount
+		for i, answer := range message.Poll.Results.AnswerCounts {
+			if answer != nil && answer.ID == answerID {
+				answerIndex = i
+				updatedAnswer = *answer
+				break
 			}
-
-			updatedAnswer := *answer
-			changed := false
-			if adding {
-				updatedAnswer.Count++
-				changed = true
-			} else if updatedAnswer.Count > 0 {
-				updatedAnswer.Count--
-				changed = true
+		}
+		if answerIndex < 0 {
+			// With known results, an omitted answer count means zero votes.
+			// Only create a count for an answer that belongs to this poll.
+			knownAnswer := false
+			for _, answer := range message.Poll.Answers {
+				if answer.AnswerID == answerID {
+					knownAnswer = true
+					break
+				}
 			}
-
-			if s.User != nil && userID == s.User.ID && updatedAnswer.MeVoted != adding {
-				updatedAnswer.MeVoted = adding
-				changed = true
-			}
-			if !changed {
+			if !adding || !knownAnswer {
 				return nil
 			}
+			updatedAnswer.ID = answerID
+		}
 
-			updatedResults := *message.Poll.Results
-			updatedResults.AnswerCounts = append([]*PollAnswerCount(nil), message.Poll.Results.AnswerCounts...)
-			updatedResults.AnswerCounts[answerIndex] = &updatedAnswer
-			updatedPoll := *message.Poll
-			updatedPoll.Results = &updatedResults
-			updatedMessage := *message
-			updatedMessage.Poll = &updatedPoll
-			updatedChannel := *channel
-			updatedChannel.Messages = append([]*Message(nil), channel.Messages...)
-			updatedChannel.Messages[messageIndex] = &updatedMessage
-			s.channelMap[updatedChannel.ID] = &updatedChannel
-			s.replaceChannel(channel, &updatedChannel)
+		changed := false
+		if adding {
+			updatedAnswer.Count++
+			changed = true
+		} else if updatedAnswer.Count > 0 {
+			updatedAnswer.Count--
+			changed = true
+		}
+
+		if s.User != nil && userID == s.User.ID && updatedAnswer.MeVoted != adding {
+			updatedAnswer.MeVoted = adding
+			changed = true
+		}
+		if !changed {
 			return nil
 		}
+
+		updatedResults := *message.Poll.Results
+		updatedResults.AnswerCounts = append([]*PollAnswerCount(nil), message.Poll.Results.AnswerCounts...)
+		if answerIndex < 0 {
+			updatedResults.AnswerCounts = append(updatedResults.AnswerCounts, &updatedAnswer)
+		} else {
+			updatedResults.AnswerCounts[answerIndex] = &updatedAnswer
+		}
+		updatedPoll := *message.Poll
+		updatedPoll.Results = &updatedResults
+		updatedMessage := *message
+		updatedMessage.Poll = &updatedPoll
+		updatedChannel := *channel
+		updatedChannel.Messages = append([]*Message(nil), channel.Messages...)
+		updatedChannel.Messages[messageIndex] = &updatedMessage
+		s.channelMap[updatedChannel.ID] = &updatedChannel
+		s.replaceChannel(channel, &updatedChannel)
 
 		return nil
 	}
