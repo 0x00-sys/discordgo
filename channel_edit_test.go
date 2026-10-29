@@ -143,8 +143,8 @@ func TestChannelEditRequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/channels/channel" {
 			t.Fatalf("path = %q, want %q", r.URL.Path, "/channels/channel")
 		}
-		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "channel parity" {
-			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "channel parity")
+		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "channel%20parity" {
+			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "channel%20parity")
 		}
 
 		body, err := ioutil.ReadAll(r.Body)

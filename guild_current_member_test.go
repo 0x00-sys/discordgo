@@ -68,8 +68,8 @@ func TestGuildCurrentMemberEditRequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/guilds/guild/members/@me" {
 			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/members/@me")
 		}
-		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "profile refresh" {
-			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "profile refresh")
+		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "profile%20refresh" {
+			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "profile%20refresh")
 		}
 
 		var payload map[string]json.RawMessage

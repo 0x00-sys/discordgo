@@ -447,8 +447,8 @@ func TestGuildBulkBan(t *testing.T) {
 		if r.URL.Path != "/guilds/guild/bulk-ban" {
 			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/bulk-ban")
 		}
-		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "raid cleanup" {
-			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "raid cleanup")
+		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "raid%20cleanup" {
+			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "raid%20cleanup")
 		}
 
 		var data GuildBulkBanParams
@@ -607,8 +607,8 @@ func TestGuildStickerEndpoints(t *testing.T) {
 		case http.MethodGet + " /guilds/guild/stickers/sticker":
 			_, _ = w.Write([]byte(`{"id":"sticker","name":"Wave","type":2,"format_type":1}`))
 		case http.MethodPost + " /guilds/guild/stickers":
-			if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "new sticker" {
-				t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "new sticker")
+			if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "new%20sticker" {
+				t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "new%20sticker")
 			}
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Fatalf("ParseMultipartForm returned error: %v", err)
@@ -1244,8 +1244,8 @@ func TestGuildWelcomeScreen(t *testing.T) {
 		case http.MethodGet:
 			_, _ = w.Write([]byte(`{"description":"Welcome","welcome_channels":[{"channel_id":"channel","description":"Read the rules","emoji_id":null,"emoji_name":"👋"}]}`))
 		case http.MethodPatch:
-			if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "community refresh" {
-				t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "community refresh")
+			if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "community%20refresh" {
+				t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "community%20refresh")
 			}
 
 			var payload map[string]json.RawMessage

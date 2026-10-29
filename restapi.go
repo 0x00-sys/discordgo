@@ -218,9 +218,10 @@ func withoutAuthorizationOptions(options []RequestOption) []RequestOption {
 	return unauthenticated
 }
 
-// WithAuditLogReason changes audit log reason associated with the request.
+// WithAuditLogReason changes the audit log reason associated with the request.
+// The reason is plain text; it is URL-encoded for the X-Audit-Log-Reason header.
 func WithAuditLogReason(reason string) RequestOption {
-	return WithHeader("X-Audit-Log-Reason", reason)
+	return WithHeader("X-Audit-Log-Reason", strings.ReplaceAll(url.QueryEscape(reason), "+", "%20"))
 }
 
 // WithLocale changes accepted locale of the request.
