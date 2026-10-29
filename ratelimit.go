@@ -217,7 +217,9 @@ func (r *RateLimiter) LockBucketObjectContext(ctx context.Context, b *Bucket) (*
 		return nil, err
 	}
 
-	if wait := r.GetWaitTime(b, 1); wait > 0 {
+	// Another in-flight request can extend the global limit while this
+	// bucket is asleep. Recheck before allowing its next request through.
+	for wait := r.GetWaitTime(b, 1); wait > 0; wait = r.GetWaitTime(b, 1) {
 		if err := sleepWithContext(ctx, wait); err != nil {
 			atomic.AddInt32(&b.activeRequests, -1)
 			b.Unlock()
