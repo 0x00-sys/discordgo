@@ -24,15 +24,15 @@ func TestVoiceHandshakeCanceledOnClose(t *testing.T) {
 				endpoint := "voice.invalid"
 				if phase == "TLS" {
 					client, peer := net.Pipe()
-					defer client.Close()
-					defer peer.Close()
+					defer func() { _ = client.Close() }()
+					defer func() { _ = peer.Close() }()
 					dialer.NetDialContext = func(context.Context, string, string) (net.Conn, error) {
 						close(entered)
 						return client, nil
 					}
 				} else {
 					release := make(chan struct{})
-					server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 						close(entered)
 						select {
 						case <-release:
@@ -134,9 +134,9 @@ func TestVoiceDialSuccessfulConnectionSurvivesContextCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	peer := <-peers
-	defer peer.Close()
+	defer func() { _ = peer.Close() }()
 	// Both the dialer's internal timeout context and our caller's context
 	// are cleaned up once dialing returns. Neither owns the live socket.
 	cancel()
