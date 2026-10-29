@@ -819,16 +819,36 @@ func (c Checkbox) MarshalJSON() ([]byte, error) {
 
 // UnfurledMediaItem represents an unfurled media item.
 type UnfurledMediaItem struct {
-	URL          string                        `json:"url"`
-	ProxyURL     string                        `json:"proxy_url,omitempty"`
-	Width        int                           `json:"width,omitempty"`
-	Height       int                           `json:"height,omitempty"`
-	ContentType  string                        `json:"content_type,omitempty"`
-	AttachmentID string                        `json:"attachment_id,omitempty"`
-	LoadingState UnfurledMediaItemLoadingState `json:"loading_state,omitempty"`
-	Flags        MessageAttachmentFlags        `json:"flags,omitempty"`
-	Placeholder  string                        `json:"placeholder,omitempty"`
+	URL                 string                        `json:"url"`
+	ProxyURL            string                        `json:"proxy_url,omitempty"`
+	Width               int                           `json:"width,omitempty"`
+	Height              int                           `json:"height,omitempty"`
+	ContentType         string                        `json:"content_type,omitempty"`
+	AttachmentID        string                        `json:"attachment_id,omitempty"`
+	LoadingState        UnfurledMediaItemLoadingState `json:"loading_state,omitempty"`
+	Flags               MessageAttachmentFlags        `json:"flags,omitempty"`
+	Placeholder         string                        `json:"placeholder,omitempty"`
+	ContentScanMetadata *ContentScanMetadata          `json:"content_scan_metadata,omitempty"`
 }
+
+// ContentScanMetadata contains Discord's content scanning results for media.
+// It may be absent initially and arrive in a later MessageUpdate event.
+// This is response metadata populated by Discord, not settable by applications.
+// https://docs.discord.com/developers/components/reference#content-scan-metadata-structure
+type ContentScanMetadata struct {
+	Flags ContentScanMetadataFlags `json:"flags"`
+}
+
+// ContentScanMetadataFlags is the flags of content scan metadata.
+// These use different bits from MessageAttachmentFlags and MessageEmbedFlags.
+type ContentScanMetadataFlags int
+
+// Valid ContentScanMetadataFlags values.
+const (
+	ContentScanMetadataFlagsIsExplicitContent ContentScanMetadataFlags = 1 << 0
+	ContentScanMetadataFlagsIsGoreContent     ContentScanMetadataFlags = 1 << 1
+	ContentScanMetadataFlagsIsSelfHarmContent ContentScanMetadataFlags = 1 << 2
+)
 
 // UnfurledMediaItemLoadingState is the loading state of the unfurled media item.
 type UnfurledMediaItemLoadingState uint
@@ -843,13 +863,14 @@ const (
 
 // ResolvedUnfurledMediaItem represents a resolved unfurled media item.
 type ResolvedUnfurledMediaItem struct {
-	URL          string                        `json:"url"`
-	ProxyURL     string                        `json:"proxy_url"`
-	Width        int                           `json:"width"`
-	Height       int                           `json:"height"`
-	ContentType  string                        `json:"content_type"`
-	AttachmentID string                        `json:"attachment_id,omitempty"`
-	LoadingState UnfurledMediaItemLoadingState `json:"loading_state,omitempty"`
-	Flags        MessageAttachmentFlags        `json:"flags,omitempty"`
-	Placeholder  string                        `json:"placeholder,omitempty"`
+	URL                 string                        `json:"url"`
+	ProxyURL            string                        `json:"proxy_url"`
+	Width               int                           `json:"width"`
+	Height              int                           `json:"height"`
+	ContentType         string                        `json:"content_type"`
+	AttachmentID        string                        `json:"attachment_id,omitempty"`
+	LoadingState        UnfurledMediaItemLoadingState `json:"loading_state,omitempty"`
+	Flags               MessageAttachmentFlags        `json:"flags,omitempty"`
+	Placeholder         string                        `json:"placeholder,omitempty"`
+	ContentScanMetadata *ContentScanMetadata          `json:"content_scan_metadata,omitempty"`
 }
