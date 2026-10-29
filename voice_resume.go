@@ -1,6 +1,7 @@
 package discordgo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -54,7 +55,19 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 	}
 
 	gateway := "wss://" + strings.TrimSuffix(endpoint, ":80") + "?v=" + strconv.Itoa(voiceGatewayVersion)
-	conn, _, err := dialer.Dial(gateway, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	dialWatcherDone := make(chan struct{})
+	go func() {
+		defer close(dialWatcherDone)
+		select {
+		case <-closeChan:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	conn, err := dialVoiceWebsocket(ctx, dialer, gateway)
+	cancel()
+	<-dialWatcherDone
 	if err != nil {
 		return fmt.Errorf("dialing voice resume websocket: %w", err)
 	}
