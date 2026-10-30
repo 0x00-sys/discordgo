@@ -97,12 +97,18 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 
 	sequenceAck := v.voiceSequenceAck()
 	v.wsMutex.Lock()
-	err = conn.WriteJSON(voiceResumeOp{Op: 7, Data: voiceResumeData{
-		ServerID:    guildID,
-		SessionID:   sessionID,
-		Token:       token,
-		SequenceAck: sequenceAck,
-	}})
+	err = conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+	if err == nil {
+		err = conn.WriteJSON(voiceResumeOp{Op: 7, Data: voiceResumeData{
+			ServerID:    guildID,
+			SessionID:   sessionID,
+			Token:       token,
+			SequenceAck: sequenceAck,
+		}})
+	}
+	if err == nil {
+		err = conn.SetWriteDeadline(time.Time{})
+	}
 	v.wsMutex.Unlock()
 	close(writeDone)
 	<-writeWatcherDone
