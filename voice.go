@@ -236,6 +236,14 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 		guildID := v.GuildID
 		v.RUnlock()
 
+		session.RLock()
+		current := session.VoiceConnections[guildID] == v
+		session.RUnlock()
+		if !current {
+			session.voiceMutex.Unlock()
+			return ErrWSNotFound
+		}
+
 		err = session.channelVoiceJoinManual(guildID, channelID, mute, deaf)
 		if err == nil {
 			v.Lock()
