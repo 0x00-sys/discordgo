@@ -292,6 +292,9 @@ func (v *VoiceConnection) Disconnect() (err error) {
 		session.Lock()
 		if session.VoiceConnections[guildID] == v {
 			delete(session.VoiceConnections, guildID)
+		} else {
+			// A stale handle must not disconnect a newer guild voice session.
+			sessionID = ""
 		}
 		session.Unlock()
 	}
