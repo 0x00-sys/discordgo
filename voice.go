@@ -489,7 +489,8 @@ type voiceOP8 struct {
 
 // WaitUntilConnected waits for the Voice Connection to
 // become ready, if it does not become ready it returns an err
-func (v *VoiceConnection) waitUntilConnected() error {
+// A non-nil previousClose excludes the previous channel's transport.
+func (v *VoiceConnection) waitUntilConnected(previousClose <-chan struct{}) error {
 
 	v.log(LogInformational, "called")
 
@@ -507,7 +508,7 @@ func (v *VoiceConnection) waitUntilConnected() error {
 	i := 0
 	for {
 		v.RLock()
-		ready := v.Ready
+		ready := v.Ready && (previousClose == nil || v.close != previousClose)
 		v.RUnlock()
 		if ready {
 			return nil
