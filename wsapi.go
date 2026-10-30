@@ -1416,6 +1416,7 @@ func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *Voi
 	s.log(LogInformational, "called")
 	s.voiceMutex.Lock()
 
+	var joinVersion uint64
 	// A disconnect unregisters its connection before writing to the
 	// gateway. Select and configure a registered connection in a loop
 	// so a join racing that teardown switches to a replacement.
@@ -1447,6 +1448,8 @@ func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *Voi
 		voice.deaf = deaf
 		voice.mute = mute
 		voice.session = s
+		voice.joinVersion++
+		joinVersion = voice.joinVersion
 		voice.Unlock()
 
 		s.RLock()
@@ -1472,7 +1475,7 @@ func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *Voi
 	err = voice.waitUntilConnected()
 	if err != nil {
 		s.log(LogWarning, "error waiting for voice to connect, %s", err)
-		voice.Close()
+		voice.closeWithJoinVersion(&joinVersion)
 		return
 	}
 

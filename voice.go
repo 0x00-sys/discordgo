@@ -67,6 +67,8 @@ type VoiceConnection struct {
 
 	// Assigned in gateway receive order before server-update workers run.
 	serverUpdateVersion uint64
+	// Identifies the latest public join configuring this voice connection.
+	joinVersion uint64
 
 	// Used to send a close signal to goroutines
 	close chan struct{}
@@ -311,16 +313,25 @@ func (v *VoiceConnection) Disconnect() (err error) {
 
 // Close closes the voice ws and udp connections
 func (v *VoiceConnection) Close() {
-	v.lifecycleMu.Lock()
-	defer v.lifecycleMu.Unlock()
-	v.closeLocked()
+	v.closeWithJoinVersion(nil)
 }
 
-func (v *VoiceConnection) closeLocked() {
+func (v *VoiceConnection) closeWithJoinVersion(joinVersion *uint64) {
+	v.lifecycleMu.Lock()
+	defer v.lifecycleMu.Unlock()
+	v.closeLocked(joinVersion)
+}
+
+// A nil joinVersion permits unconditional teardown.
+func (v *VoiceConnection) closeLocked(joinVersion *uint64) {
 
 	v.log(LogInformational, "called")
 
 	v.Lock()
+	if joinVersion != nil && v.joinVersion != *joinVersion {
+		v.Unlock()
+		return
+	}
 	attempt := v.opening
 	v.opening = nil
 	if attempt != nil {
@@ -501,7 +512,7 @@ func (v *VoiceConnection) applyVoiceServerUpdate(st *VoiceServerUpdate, version 
 	if !current {
 		return false
 	}
-	v.closeLocked()
+	v.closeLocked(nil)
 
 	v.Lock()
 	defer v.Unlock()
@@ -799,7 +810,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 						delete(session.VoiceConnections, guildID)
 					}
 					session.Unlock()
-					v.closeLocked()
+					v.closeLocked(nil)
 				}
 				v.lifecycleMu.Unlock()
 
@@ -1097,7 +1108,7 @@ func (v *VoiceConnection) failVoiceEncryption(wsConn *websocket.Conn, eventClose
 	v.nonceCounter = 0
 	v.op4 = voiceOP4{}
 	v.Unlock()
-	v.closeLocked()
+	v.closeLocked(nil)
 }
 
 func selectVoiceEncryptionMode(modes []string) (string, error) {
@@ -1901,7 +1912,7 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.
 		return
 	}
 	v.Unlock()
-	v.closeLocked()
+	v.closeLocked(nil)
 	v.lifecycleMu.Unlock()
 	v.reconnectAfterCloseUntilStable()
 }
@@ -1917,14 +1928,14 @@ func (v *VoiceConnection) reconnectUDPIfCurrent(udpConn *net.UDPConn, close <-ch
 	if v.reconnecting {
 		v.reconnectAgain = true
 		v.Unlock()
-		v.closeLocked()
+		v.closeLocked(nil)
 		v.lifecycleMu.Unlock()
 		return
 	}
 	v.reconnecting = true
 	v.reconnectAgain = false
 	v.Unlock()
-	v.closeLocked()
+	v.closeLocked(nil)
 	v.lifecycleMu.Unlock()
 
 	v.reconnectAfterCloseUntilStable()
