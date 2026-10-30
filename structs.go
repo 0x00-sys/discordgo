@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -2563,6 +2564,12 @@ func (r Roles) Len() int {
 }
 
 func (r Roles) Less(i, j int) bool {
+	if r[i].Position == r[j].Position {
+		// Older roles rank higher when positions are equal.
+		idI, _ := strconv.ParseUint(r[i].ID, 10, 64)
+		idJ, _ := strconv.ParseUint(r[j].ID, 10, 64)
+		return idI < idJ
+	}
 	return r[i].Position > r[j].Position
 }
 
