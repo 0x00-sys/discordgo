@@ -130,7 +130,7 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 		if messageType != websocket.BinaryMessage {
 			operation, operationErr := voiceMessageOperation(message)
 			if operationErr == nil && operation == 9 {
-				v.updateSequence(message)
+				v.updateSequence(conn, closeChan, message)
 				if err = conn.SetReadDeadline(time.Time{}); err != nil {
 					return fmt.Errorf("clearing voice resume deadline: %w", err)
 				}

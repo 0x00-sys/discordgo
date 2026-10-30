@@ -483,12 +483,12 @@ func TestVoiceDAVEInboundProtocolLifecycle(t *testing.T) {
 	voice.onEvent([]byte(`{"op":22,"d":{"transition_id":7}}`))
 	voice.onEvent([]byte(`{"op":24,"d":{"epoch":1,"protocol_version":1}}`))
 
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(10, 25, 1, 2))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(11, 27, 0, 3, 4))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(12, 29, 0, 0, 9))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(13, 29, 0, 8, 5, 6))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(10, 25, 1, 2))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(11, 27, 0, 3, 4))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(12, 29, 0, 0, 9))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(13, 29, 0, 8, 5, 6))
 	voice.onEvent([]byte(`{"op":22,"d":{"transition_id":8}}`))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(14, 30, 0, 9, 7, 8))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(14, 30, 0, 9, 7, 8))
 	voice.onEvent([]byte(`{"op":13,"d":{"user_id":"remote"}}`))
 
 	fake.mu.Lock()
@@ -536,13 +536,13 @@ func TestVoiceDAVEMalformedBinaryFrames(t *testing.T) {
 	voice := &VoiceConnection{LogLevel: -1}
 	installFakeDAVE(voice, fake, 1)
 
-	voice.handleDAVEBinaryFrame([]byte{0, 1})
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(1, 25))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(2, 27))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(2, 27, 2, 1))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(3, 29, 0))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(4, 30, 0, 1))
-	voice.handleDAVEBinaryFrame(daveBinaryFrame(5, 99, 1))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, []byte{0, 1})
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(1, 25))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(2, 27))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(2, 27, 2, 1))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(3, 29, 0))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(4, 30, 0, 1))
+	voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(5, 99, 1))
 	voice.onEvent([]byte(`{"op":21,"d":{"transition_id":1}}`))
 	voice.onEvent([]byte(`{"op":22,"d":{}}`))
 	voice.onEvent([]byte(`{"op":24,"d":{"epoch":1}}`))
@@ -559,7 +559,7 @@ func TestVoiceDAVEFrameTransforms(t *testing.T) {
 	fake := &fakeVoiceDAVESession{maxVersion: 1, ready: true}
 	voice := &VoiceConnection{LogLevel: -1}
 	installFakeDAVE(voice, fake, 1)
-	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
+	voice.onDAVESpeakingUpdate(voice.wsConn, voice.close, &VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
 	if !voice.DAVEReady() {
 		t.Fatal("DAVEReady() = false for a ready backend")
 	}
@@ -669,7 +669,7 @@ func TestVoiceDAVEBackendCloseDoesNotBlockFrameTransforms(t *testing.T) {
 	}
 	voice := &VoiceConnection{LogLevel: -1}
 	installFakeDAVE(voice, fake, 1)
-	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
+	voice.onDAVESpeakingUpdate(voice.wsConn, voice.close, &VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
 
 	closeDone := make(chan struct{})
 	go func() {
@@ -866,7 +866,7 @@ func TestVoiceDAVEInboundMediaIntegration(t *testing.T) {
 	fake := &fakeVoiceDAVESession{maxVersion: 1, ready: true}
 	voice := &VoiceConnection{LogLevel: -1, aead: aead}
 	installFakeDAVE(voice, fake, 1)
-	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
+	voice.onDAVESpeakingUpdate(voice.wsConn, voice.close, &VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
 
 	closeChan := make(chan struct{})
 	packets := make(chan *Packet, 1)
@@ -1036,7 +1036,7 @@ func TestVoiceDAVEConcurrentClose(t *testing.T) {
 	fake := &fakeVoiceDAVESession{maxVersion: 1, ready: true}
 	voice := &VoiceConnection{LogLevel: -1}
 	installFakeDAVE(voice, fake, 1)
-	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
+	voice.onDAVESpeakingUpdate(voice.wsConn, voice.close, &VoiceSpeakingUpdate{UserID: "remote", SSRC: 55})
 
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
@@ -1046,7 +1046,7 @@ func TestVoiceDAVEConcurrentClose(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				_, _ = voice.encryptDAVEFrame(42, []byte{1})
 				_, _ = voice.decryptDAVEFrame(55, []byte{0xd1, 2})
-				voice.handleDAVEBinaryFrame(daveBinaryFrame(uint16(j), 25, 1))
+				voice.handleDAVEBinaryFrame(voice.wsConn, voice.close, daveBinaryFrame(uint16(j), 25, 1))
 			}
 		}()
 	}
@@ -1077,7 +1077,7 @@ func TestVoiceDAVEDecryptPassesPlainAudioWhileInactive(t *testing.T) {
 	if _, err := voice.decryptDAVEFrame(99, marked); !errors.Is(err, errDAVEUnknownSSRC) {
 		t.Fatalf("protocol 0 marked frame from unknown ssrc error = %v", err)
 	}
-	voice.onDAVESpeakingUpdate(&VoiceSpeakingUpdate{UserID: "remote", SSRC: 99})
+	voice.onDAVESpeakingUpdate(voice.wsConn, voice.close, &VoiceSpeakingUpdate{UserID: "remote", SSRC: 99})
 	if got, err := voice.decryptDAVEFrame(99, marked); err != nil || !reflect.DeepEqual(got, []byte{7, 3, 0xfa, 0xfa}) {
 		t.Fatalf("protocol 0 marked decrypt = %v, %v", got, err)
 	}
