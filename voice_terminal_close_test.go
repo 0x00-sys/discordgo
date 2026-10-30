@@ -1,11 +1,55 @@
 package discordgo
 
 import (
+	"errors"
 	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/gorilla/websocket"
 )
+
+func TestVoiceTerminalCloseConcurrentJoin(t *testing.T) {
+	for i := 0; i < 32; i++ {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			conn, peer := newGatewayTestConnection(t)
+			session := &Session{LogLevel: -1, VoiceConnections: make(map[string]*VoiceConnection)}
+			voice := &VoiceConnection{
+				LogLevel: -1, GuildID: "guild", session: session,
+				wsConn: conn, close: make(chan struct{}),
+			}
+			session.VoiceConnections["guild"] = voice
+			stop, done := make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					// The public join configures the registered voice connection
+					// before its send notices that the gateway is unavailable.
+					if _, err := session.ChannelVoiceJoin("guild", "channel", false, false); !errors.Is(err, ErrWSNotFound) {
+						t.Errorf("ChannelVoiceJoin error = %v, want ErrWSNotFound", err)
+						return
+					}
+					runtime.Gosched()
+				}
+			}()
+			defer func() { close(stop); <-done }()
+			if err := peer.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4022, "")); err != nil {
+				t.Fatal(err)
+			}
+			voice.wsListen(conn, voice.close)
+			voice.RLock()
+			defer voice.RUnlock()
+			if voice.wsConn != nil || voice.close != nil {
+				t.Error("terminal listener retained its transport")
+			}
+		})
+	}
+}
 
 func TestVoiceTerminalClosePreservesNewGeneration(t *testing.T) {
 	for _, code := range []int{4014, 4017, 4021, 4022} {
