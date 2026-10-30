@@ -253,10 +253,10 @@ func TestUDPKeepAliveWriteErrorInterruptsReconnect(t *testing.T) {
 	if current != nil || currentClose != nil || ready || !reconnecting || !reconnectAgain {
 		t.Fatal("UDP failure did not interrupt the in-flight resumable reconnect")
 	}
-	if !voice.continueReconnect() {
+	if _, again := voice.continueReconnect(); !again {
 		t.Fatal("in-flight reconnect did not consume the queued UDP recovery")
 	}
-	if voice.continueReconnect() {
+	if _, again := voice.continueReconnect(); again {
 		t.Fatal("queued UDP recovery was consumed more than once")
 	}
 }

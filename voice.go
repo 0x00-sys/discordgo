@@ -351,21 +351,22 @@ func (v *VoiceConnection) Close() {
 	v.closeWithJoinVersion(nil)
 }
 
-func (v *VoiceConnection) closeWithJoinVersion(joinVersion *uint64) {
+func (v *VoiceConnection) closeWithJoinVersion(joinVersion *uint64) bool {
 	v.lifecycleMu.Lock()
 	defer v.lifecycleMu.Unlock()
-	v.closeLocked(joinVersion)
+	return v.closeLocked(joinVersion)
 }
 
 // A nil joinVersion permits unconditional teardown.
-func (v *VoiceConnection) closeLocked(joinVersion *uint64) {
+// The result reports whether this request still owned the teardown.
+func (v *VoiceConnection) closeLocked(joinVersion *uint64) bool {
 
 	v.log(LogInformational, "called")
 
 	v.Lock()
 	if joinVersion != nil && v.joinVersion != *joinVersion {
 		v.Unlock()
-		return
+		return false
 	}
 	attempt := v.opening
 	v.opening = nil
@@ -420,6 +421,7 @@ func (v *VoiceConnection) closeLocked(joinVersion *uint64) {
 	// otherwise an in-flight sender could observe protocol version 0 and leak
 	// a plaintext frame during teardown.
 	v.closeVoiceDAVE()
+	return true
 }
 
 // AddHandler adds a Handler for VoiceSpeakingUpdate events.
@@ -1937,7 +1939,7 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.
 	if canResume && v.canResumeVoice() && v.isSessionVoiceConnection() {
 		if err := v.resumeVoice(); err == nil {
 			v.log(LogInformational, "successfully resumed voice websocket")
-			if !v.continueReconnect() {
+			if _, again := v.continueReconnect(); !again {
 				return
 			}
 		} else {
@@ -1991,24 +1993,31 @@ func (v *VoiceConnection) reconnectUDPIfCurrent(udpConn *net.UDPConn, close <-ch
 func (v *VoiceConnection) reconnectAfterCloseUntilStable() {
 	for {
 		v.reconnectAfterClose()
-		if !v.continueReconnect() {
-			return
+		for {
+			version, again := v.continueReconnect()
+			if !again {
+				return
+			}
+			// A public join can supersede the queued request while teardown
+			// waits for lifecycle ownership. Recheck under the close lock.
+			if v.closeWithJoinVersion(&version) {
+				break
+			}
 		}
-		v.Close()
 	}
 }
 
-func (v *VoiceConnection) continueReconnect() bool {
+func (v *VoiceConnection) continueReconnect() (uint64, bool) {
 	v.Lock()
 	defer v.Unlock()
 	if v.reconnectAgain {
 		v.reconnectAgain = false
 		if v.reconnectAgainVersion == v.joinVersion {
-			return true
+			return v.reconnectAgainVersion, true
 		}
 	}
 	v.reconnecting = false
-	return false
+	return 0, false
 }
 
 func (v *VoiceConnection) reconnectAfterClose() {
