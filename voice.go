@@ -701,7 +701,13 @@ func (v *VoiceConnection) open() (err error) {
 	data := voiceHandshakeOp{0, voiceHandshakeData{guildID, userID, sessionID, token, maxDAVEVersion}}
 
 	v.wsMutex.Lock()
-	err = wsConn.WriteJSON(data)
+	err = wsConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+	if err == nil {
+		err = wsConn.WriteJSON(data)
+	}
+	if err == nil {
+		err = wsConn.SetWriteDeadline(time.Time{})
+	}
 	v.wsMutex.Unlock()
 	if err != nil {
 		if !isCurrent() {
