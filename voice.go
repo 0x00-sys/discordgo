@@ -68,6 +68,9 @@ type VoiceConnection struct {
 	// Used to send a close signal to goroutines
 	close chan struct{}
 
+	// Permanent Disconnect cancels recovery; transport Close leaves it active.
+	disconnectCancel chan struct{}
+
 	// Used to allow blocking until connected
 	connected chan bool
 
@@ -256,6 +259,9 @@ func (v *VoiceConnection) Disconnect() (err error) {
 		sessionID = v.sessionID
 		guildID = v.GuildID
 		v.sessionID = ""
+		if !v.disconnecting && v.disconnectCancel != nil {
+			close(v.disconnectCancel)
+		}
 		v.disconnecting = true
 		v.Unlock()
 		break
@@ -1897,10 +1903,18 @@ func (v *VoiceConnection) continueReconnect() bool {
 
 func (v *VoiceConnection) reconnectAfterClose() {
 
-	v.RLock()
+	v.Lock()
 	session := v.session
-	v.RUnlock()
-	if session == nil || !v.isSessionVoiceConnection() {
+	if session == nil || v.disconnecting {
+		v.Unlock()
+		return
+	}
+	if v.disconnectCancel == nil {
+		v.disconnectCancel = make(chan struct{})
+	}
+	disconnectCancel := v.disconnectCancel
+	v.Unlock()
+	if !v.isSessionVoiceConnection() {
 		return
 	}
 	cancel := session.reconnectCancelSignal()
@@ -1912,6 +1926,9 @@ func (v *VoiceConnection) reconnectAfterClose() {
 		select {
 		case <-timer.C:
 		case <-cancel:
+			timer.Stop()
+			return
+		case <-disconnectCancel:
 			timer.Stop()
 			return
 		}
