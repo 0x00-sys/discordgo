@@ -511,14 +511,19 @@ func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchRepla
 		}
 
 		mt, m, err := wsConn.ReadMessage()
+		s.Lock()
+		if s.wsConn != wsConn {
+			s.Unlock()
+			return nil, ErrWSNotFound
+		}
 		if err != nil {
 			if shouldStartNewGatewaySessionOnClose(err) {
-				s.resetGatewayResumeState()
+				s.resetGatewayResumeStateLocked()
 			}
+			s.Unlock()
 			return nil, err
 		}
 
-		s.Lock()
 		err = s.openGatewayControlEvent(mt, m, 0, allowDispatchReplay, "READY", "RESUMED")
 		s.Unlock()
 		if err != nil {
@@ -690,12 +695,6 @@ func shouldStartNewGatewaySessionOnClose(err error) bool {
 
 func shouldResetGatewayResumeStateOnCloseCode(closeCode int) bool {
 	return closeCode == websocket.CloseNormalClosure || closeCode == websocket.CloseGoingAway
-}
-
-func (s *Session) resetGatewayResumeState() {
-	s.Lock()
-	defer s.Unlock()
-	s.resetGatewayResumeStateLocked()
 }
 
 func (s *Session) resetGatewayResumeStateLocked() {
