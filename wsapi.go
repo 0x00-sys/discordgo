@@ -1675,7 +1675,10 @@ func (s *Session) reconnectVoiceConnections() {
 	s.RUnlock()
 
 	for i, voice := range voiceConnections {
-		s.log(LogInformational, "reconnecting voice connection to guild %s", voice.GuildID)
+		voice.RLock()
+		guildID := voice.GuildID
+		voice.RUnlock()
+		s.log(LogInformational, "reconnecting voice connection to guild %s", guildID)
 		go voice.reconnect()
 
 		// This is here just to prevent violently spamming the
