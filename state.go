@@ -2500,17 +2500,20 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			return ErrStateInvalidData
 		}
 
-		// Updates the MemberCount of the guild.
+		// Discord can send this event for an existing guild member. Keep
+		// the membership check, count update, and cache insertion atomic.
 		s.Lock()
-		err = s.updateGuildMemberCount(t.Member.GuildID, 1)
-		s.Unlock()
-		if err != nil {
-			return err
+		defer s.Unlock()
+		if !s.TrackMembers || s.memberMap[t.GuildID][t.User.ID] == nil {
+			err = s.updateGuildMemberCount(t.GuildID, 1)
+			if err != nil {
+				return err
+			}
 		}
 
 		// Caches member if tracking is enabled.
 		if s.TrackMembers {
-			err = s.MemberAdd(t.Member)
+			err = s.memberAdd(t.Member)
 		}
 	case *GuildMemberUpdate:
 		if s.TrackMembers {
