@@ -774,7 +774,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 		case <-close:
 			return
 		default:
-			v.dispatchVoiceMessage(messageType, message)
+			v.dispatchVoiceMessage(wsConn, close, messageType, message)
 		}
 	}
 }
@@ -805,9 +805,15 @@ func (v *VoiceConnection) voiceSequenceAck() int64 {
 	return v.sequence
 }
 
-// wsEvent handles any voice websocket events. This is only called by the
-// wsListen() function.
+// onEvent handles a voice event against the currently installed transport.
 func (v *VoiceConnection) onEvent(message []byte) {
+	v.RLock()
+	wsConn, eventClose := v.wsConn, v.close
+	v.RUnlock()
+	v.onEventForConnection(wsConn, eventClose, message)
+}
+
+func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClose <-chan struct{}, message []byte) {
 
 	if v.LogLevel >= LogDebug {
 		v.log(LogDebug, "received: %s", redactedVoiceData(message))
@@ -826,17 +832,21 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		op2 := voiceOP2{}
 		if err := json.Unmarshal(e.RawData, &op2); err != nil {
 			v.log(LogError, "OP2 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
-			v.failVoiceEncryption()
+			v.failVoiceEncryption(wsConn, eventClose)
 			return
 		}
 		mode, err := selectVoiceEncryptionMode(op2.Modes)
 		if err != nil {
 			v.log(LogError, "OP2 encryption mode error, %s", err)
-			v.failVoiceEncryption()
+			v.failVoiceEncryption(wsConn, eventClose)
 			return
 		}
 
 		v.Lock()
+		if v.wsConn != wsConn || v.close != eventClose {
+			v.Unlock()
+			return
+		}
 		v.op2 = op2
 		v.aead = nil
 		v.encryptionMode = mode
@@ -844,10 +854,10 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		v.op4 = voiceOP4{}
 		v.Ready = false
 		v.Unlock()
-		v.onDAVELocalSSRC(op2.SSRC)
+		v.onDAVELocalSSRC(wsConn, eventClose, op2.SSRC)
 
 		// Start the UDP connection
-		err = v.udpOpen()
+		err = v.udpOpen(wsConn, eventClose)
 		if err != nil {
 			v.log(LogError, "error opening udp connection, %s", err)
 			return
@@ -864,7 +874,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		op4 := voiceOP4{}
 		if err := json.Unmarshal(e.RawData, &op4); err != nil {
 			v.log(LogError, "OP4 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
-			v.failVoiceEncryption()
+			v.failVoiceEncryption(wsConn, eventClose)
 			return
 		}
 
@@ -876,11 +886,15 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		receive := false
 
 		v.Lock()
+		if v.wsConn != wsConn || v.close != eventClose {
+			v.Unlock()
+			return
+		}
 		if op4.Mode != v.encryptionMode {
 			selectedMode := v.encryptionMode
 			v.Unlock()
 			v.log(LogError, "OP4 encryption mode %q does not match selected mode %q", op4.Mode, selectedMode)
-			v.failVoiceEncryption()
+			v.failVoiceEncryption(wsConn, eventClose)
 			return
 		}
 
@@ -888,7 +902,7 @@ func (v *VoiceConnection) onEvent(message []byte) {
 		if err != nil {
 			v.Unlock()
 			v.log(LogError, "OP4 encryption setup error, %s", err)
-			v.failVoiceEncryption()
+			v.failVoiceEncryption(wsConn, eventClose)
 			return
 		}
 
@@ -911,9 +925,9 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			v.Ready = true
 		}
 		v.Unlock()
-		if err := v.onDAVESessionDescription(op4.DAVEProtocolVersion); err != nil {
+		if err := v.onDAVESessionDescription(wsConn, eventClose, op4.DAVEProtocolVersion); err != nil {
 			v.log(LogError, "OP4 DAVE setup error, %s", err)
-			v.failVoiceEncryption()
+			v.failVoiceEncryption(wsConn, eventClose)
 			return
 		}
 
@@ -984,13 +998,8 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
-		v.RLock()
-		wsConn := v.wsConn
-		closeChan := v.close
-		v.RUnlock()
-
 		// Start the voice websocket heartbeat to keep the connection alive
-		go v.wsHeartbeat(wsConn, closeChan, hello.HeartbeatInterval)
+		go v.wsHeartbeat(wsConn, eventClose, hello.HeartbeatInterval)
 		// TODO monitor a chan/bool to verify this was successful
 
 	default:
@@ -1012,14 +1021,20 @@ func (v *VoiceConnection) callVoiceSpeakingUpdateHandler(h VoiceSpeakingUpdateHa
 	h(v, vs)
 }
 
-func (v *VoiceConnection) failVoiceEncryption() {
+func (v *VoiceConnection) failVoiceEncryption(wsConn *websocket.Conn, eventClose <-chan struct{}) {
+	v.lifecycleMu.Lock()
+	defer v.lifecycleMu.Unlock()
 	v.Lock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.Unlock()
+		return
+	}
 	v.aead = nil
 	v.encryptionMode = ""
 	v.nonceCounter = 0
 	v.op4 = voiceOP4{}
 	v.Unlock()
-	v.Close()
+	v.closeLocked()
 }
 
 func selectVoiceEncryptionMode(modes []string) (string, error) {
@@ -1215,11 +1230,13 @@ var voiceUDPReadTimeout = 5 * time.Second
 // initial required handshake.  This connection is left open in the session
 // and can be used to send or receive audio.  This should only be called
 // from voice.wsEvent OP2
-func (v *VoiceConnection) udpOpen() (err error) {
+func (v *VoiceConnection) udpOpen(wsConn *websocket.Conn, closeChan <-chan struct{}) (err error) {
 	v.RLock()
-	wsConn := v.wsConn
+	if v.wsConn != wsConn || v.close != closeChan {
+		v.RUnlock()
+		return ErrWSNotFound
+	}
 	udpAlreadyOpen := v.udpConn != nil
-	closeChan := v.close
 	endpoint := v.endpoint
 	encryptionMode := v.encryptionMode
 	op2 := v.op2

@@ -27,8 +27,8 @@ func TestVoiceSpeakingDispatchDoesNotRestoreDisconnectedUser(t *testing.T) {
 		dispatched := make(chan struct{})
 		go func() {
 			// The same reader receives these two messages in wire order.
-			voice.dispatchVoiceMessage(websocket.TextMessage, []byte(`{"op":5,"seq":1,"d":{"user_id":"remote","ssrc":55,"speaking":1}}`))
-			voice.dispatchVoiceMessage(websocket.TextMessage, []byte(`{"op":13,"seq":2,"d":{"user_id":"remote"}}`))
+			voice.dispatchVoiceMessage(voice.wsConn, voice.close, websocket.TextMessage, []byte(`{"op":5,"seq":1,"d":{"user_id":"remote","ssrc":55,"speaking":1}}`))
+			voice.dispatchVoiceMessage(voice.wsConn, voice.close, websocket.TextMessage, []byte(`{"op":13,"seq":2,"d":{"user_id":"remote"}}`))
 			close(dispatched)
 		}()
 		<-paused
@@ -58,8 +58,8 @@ func TestVoiceSpeakingCallbacksDoNotBlockDisconnect(t *testing.T) {
 		})
 		dispatched := make(chan struct{})
 		go func() {
-			voice.dispatchVoiceMessage(websocket.TextMessage, []byte(`{"op":5,"seq":1,"d":{"user_id":"remote","ssrc":55,"speaking":1}}`))
-			voice.dispatchVoiceMessage(websocket.TextMessage, []byte(`{"op":13,"seq":2,"d":{"user_id":"remote"}}`))
+			voice.dispatchVoiceMessage(voice.wsConn, voice.close, websocket.TextMessage, []byte(`{"op":5,"seq":1,"d":{"user_id":"remote","ssrc":55,"speaking":1}}`))
+			voice.dispatchVoiceMessage(voice.wsConn, voice.close, websocket.TextMessage, []byte(`{"op":13,"seq":2,"d":{"user_id":"remote"}}`))
 			close(dispatched)
 		}()
 		<-started

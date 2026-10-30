@@ -244,11 +244,15 @@ func (v *VoiceConnection) closeVoiceDAVE() {
 	}
 }
 
-func (v *VoiceConnection) onDAVESessionDescription(protocolVersion uint16) error {
+func (v *VoiceConnection) onDAVESessionDescription(wsConn *websocket.Conn, eventClose <-chan struct{}, protocolVersion uint16) error {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 
 	v.RLock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.RUnlock()
+		return ErrWSNotFound
+	}
 	session := v.dave
 	maxVersion := v.daveMaxProtocolVersion
 	v.RUnlock()
@@ -288,10 +292,14 @@ func (v *VoiceConnection) DAVEReady() bool {
 	return session != nil && session.Ready()
 }
 
-func (v *VoiceConnection) onDAVELocalSSRC(ssrc uint32) {
+func (v *VoiceConnection) onDAVELocalSSRC(wsConn *websocket.Conn, eventClose <-chan struct{}, ssrc uint32) {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.RLock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.RUnlock()
+		return
+	}
 	session := v.dave
 	v.RUnlock()
 	if session != nil {
@@ -688,16 +696,17 @@ func voiceMessageOperation(message []byte) (int, error) {
 	return payload.Operation, nil
 }
 
-func (v *VoiceConnection) dispatchVoiceMessage(messageType int, message []byte) {
+func (v *VoiceConnection) dispatchVoiceMessage(wsConn *websocket.Conn, eventClose <-chan struct{}, messageType int, message []byte) {
 	if messageType == websocket.BinaryMessage {
 		v.handleDAVEBinaryFrame(message)
 		return
 	}
 
 	v.updateSequence(message)
+	// Keep queued handshake work bound to the transport that received it.
 	operation, err := voiceMessageOperation(message)
 	if err != nil {
-		go v.onEvent(message)
+		go v.onEventForConnection(wsConn, eventClose, message)
 		return
 	}
 	switch operation {
@@ -705,8 +714,8 @@ func (v *VoiceConnection) dispatchVoiceMessage(messageType int, message []byte) 
 		voiceOpDAVEPrepareTransition,
 		voiceOpDAVEExecuteTransition,
 		voiceOpDAVEPrepareEpoch:
-		v.onEvent(message)
+		v.onEventForConnection(wsConn, eventClose, message)
 	default:
-		go v.onEvent(message)
+		go v.onEventForConnection(wsConn, eventClose, message)
 	}
 }
