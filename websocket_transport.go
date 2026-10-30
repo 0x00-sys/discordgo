@@ -14,6 +14,14 @@ import (
 func dialWebsocket(ctx context.Context, dialer *websocket.Dialer, endpoint string, header http.Header) (*websocket.Conn, error) {
 	copyDialer := *dialer
 	var stopClosing func() bool
+	closeOnCancel := func(conn net.Conn, err error) (net.Conn, error) {
+		if err == nil {
+			// Use the caller's context: the websocket dialer cancels its own
+			// handshake-timeout context even when a connection succeeds.
+			stopClosing = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		}
+		return conn, err
+	}
 	copyDialer.NetDialContext = func(dialCtx context.Context, network, address string) (conn net.Conn, err error) {
 		switch {
 		case dialer.NetDialContext != nil:
@@ -23,12 +31,12 @@ func dialWebsocket(ctx context.Context, dialer *websocket.Dialer, endpoint strin
 		default:
 			conn, err = (&net.Dialer{}).DialContext(dialCtx, network, address)
 		}
-		if err == nil {
-			// Use the caller's context: the websocket dialer cancels its own
-			// handshake-timeout context even when a connection succeeds.
-			stopClosing = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		return closeOnCancel(conn, err)
+	}
+	if dialer.NetDialTLSContext != nil {
+		copyDialer.NetDialTLSContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+			return closeOnCancel(dialer.NetDialTLSContext(dialCtx, network, address))
 		}
-		return
 	}
 	conn, _, err := copyDialer.DialContext(ctx, endpoint, header)
 	if stopClosing != nil {

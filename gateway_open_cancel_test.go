@@ -14,7 +14,7 @@ import (
 )
 
 func TestGatewayOpenCanceledDuringNetworkSetup(t *testing.T) {
-	for _, stage := range []string{"lookup", "dial", "TLS", "HTTP"} {
+	for _, stage := range []string{"lookup", "dial", "TLS", "custom TLS", "HTTP"} {
 		t.Run(stage, func(t *testing.T) {
 			session, err := New("Bot dummy-token")
 			if err != nil {
@@ -50,6 +50,14 @@ func TestGatewayOpenCanceledDuringNetworkSetup(t *testing.T) {
 				defer func() { _ = client.Close() }()
 				defer func() { _ = peer.Close() }()
 				session.Dialer.NetDialContext = func(context.Context, string, string) (net.Conn, error) {
+					close(entered)
+					return client, nil
+				}
+			case "custom TLS":
+				client, peer := net.Pipe()
+				defer func() { _ = client.Close() }()
+				defer func() { _ = peer.Close() }()
+				session.Dialer.NetDialTLSContext = func(context.Context, string, string) (net.Conn, error) {
 					close(entered)
 					return client, nil
 				}
