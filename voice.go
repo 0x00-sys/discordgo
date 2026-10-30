@@ -186,6 +186,7 @@ func (v *VoiceConnection) speakingFlags(flags VoiceSpeakingFlags, udpConn *net.U
 
 	data := voiceSpeakingOp{5, voiceSpeakingData{flags, 0, ssrc}}
 	v.wsMutex.Lock()
+	defer v.wsMutex.Unlock() // Keep the local speaking state in websocket write order.
 	err = wsConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
 	if err == nil {
 		err = wsConn.WriteJSON(data)
@@ -193,7 +194,6 @@ func (v *VoiceConnection) speakingFlags(flags VoiceSpeakingFlags, udpConn *net.U
 	if err == nil {
 		err = wsConn.SetWriteDeadline(time.Time{})
 	}
-	v.wsMutex.Unlock()
 
 	v.Lock()
 	defer v.Unlock()
