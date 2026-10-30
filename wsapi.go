@@ -1313,6 +1313,9 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		if r, ok := e.Struct.(*Ready); ok && r != nil {
 			s.onReadyLocked(r)
 		}
+		if update, ok := e.Struct.(*VoiceServerUpdate); ok {
+			s.queueVoiceServerUpdate(wsConn, update)
+		}
 		stateErr = s.onInterfaceData(e.Struct)
 	}
 	s.Unlock()
@@ -1546,12 +1549,18 @@ func (s *Session) onVoiceStateUpdate(st *VoiceStateUpdate) {
 	voice.Unlock()
 }
 
-// onVoiceServerUpdate handles the Voice Server Update data websocket event.
+func (s *Session) queueVoiceServerUpdate(wsConn *websocket.Conn, update *VoiceServerUpdate) {
+	go s.callEventHandler(&eventHandlerInstance{voiceServerUpdateEventHandler(func(s *Session, update *VoiceServerUpdate) {
+		s.onVoiceServerUpdate(wsConn, update)
+	})}, update)
+}
+
+// onVoiceServerUpdate handles a Voice Server Update from the receiving websocket.
 //
 // This is also fired if the Guild's voice region changes while connected
 // to a voice channel.  In that case, need to re-establish connection to
 // the new region endpoint.
-func (s *Session) onVoiceServerUpdate(st *VoiceServerUpdate) {
+func (s *Session) onVoiceServerUpdate(wsConn *websocket.Conn, st *VoiceServerUpdate) {
 	if st == nil {
 		return
 	}
@@ -1559,6 +1568,12 @@ func (s *Session) onVoiceServerUpdate(st *VoiceServerUpdate) {
 	s.log(LogInformational, "called")
 
 	s.RLock()
+	// The queued handler must not select a voice connection belonging to a
+	// gateway that replaced the event's source before this worker started.
+	if s.wsConn != wsConn {
+		s.RUnlock()
+		return
+	}
 	voice, exists := s.VoiceConnections[st.GuildID]
 	s.RUnlock()
 
