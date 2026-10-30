@@ -2837,7 +2837,11 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				oldCopy := *old
 				t.BeforeUpdate = &oldCopy
 			}
-			err = s.ChannelAdd(t.Channel)
+			if t.ThreadMetadata != nil && t.ThreadMetadata.Archived {
+				_ = s.ChannelRemove(t.Channel)
+			} else {
+				_ = s.ChannelAdd(t.Channel)
+			}
 		}
 	case *ThreadDelete:
 		if s.TrackThreads {
