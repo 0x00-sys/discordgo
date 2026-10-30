@@ -364,7 +364,7 @@ func (s *Session) Open() error {
 	if err != nil {
 		return err
 	}
-	e, err := s.onEvent(mt, m)
+	e, err := s.onEventForConnection(wsConn, mt, m)
 	if err != nil {
 		return err
 	}
@@ -525,7 +525,7 @@ func (s *Session) waitForGatewayReady(wsConn *websocket.Conn, allowDispatchRepla
 			return nil, err
 		}
 
-		e, err := s.onEvent(mt, m)
+		e, err := s.onEventForConnection(wsConn, mt, m)
 		if err != nil {
 			return e, err
 		}
@@ -674,7 +674,7 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 			return
 
 		default:
-			s.onEvent(messageType, message)
+			_, _ = s.onEventForConnection(wsConn, messageType, message)
 
 		}
 	}
@@ -1152,6 +1152,13 @@ func (s *Session) requestGuildMembers(data requestGuildMembersData) (err error) 
 // If you use the AddHandler() function to register a handler for the
 // "OnEvent" event then all events will be passed to that handler.
 func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
+	s.RLock()
+	wsConn := s.wsConn
+	s.RUnlock()
+	return s.onEventForConnection(wsConn, messageType, message)
+}
+
+func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, message []byte) (*Event, error) {
 
 	var err error
 	var reader io.Reader
@@ -1226,7 +1233,10 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	// Must immediately disconnect from gateway and reconnect to new gateway.
 	if e.Operation == 7 {
 		s.log(LogInformational, "Closing and reconnecting in response to Op7")
-		s.closeWithCode(websocket.CloseServiceRestart, false)
+		closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
+		if !closed {
+			return e, nil
+		}
 		s.reconnect()
 		return e, nil
 	}
@@ -1235,7 +1245,6 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 	// Must respond with a Identify packet.
 	if e.Operation == 9 {
 		s.log(LogInformational, "Closing and reconnecting in response to Op9")
-		s.closeWithCode(websocket.CloseServiceRestart, false)
 
 		var resumable bool
 		err = json.Unmarshal(e.RawData, &resumable)
@@ -1246,13 +1255,10 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 		// If Discord sends an invalid payload, discard the session rather
 		// than leaving the gateway closed or repeatedly attempting a resume
 		// that cannot be known to be valid.
-		if err != nil || !resumable {
-			s.log(LogInformational, "Gateway session is not resumable, discarding its information")
-			s.Lock()
-			s.resumeGatewayURL = ""
-			s.sessionID = ""
-			s.Unlock()
-			atomic.StoreInt64(s.sequence, 0)
+		// Reset resume state atomically with the owning connection's close.
+		closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, err != nil || !resumable)
+		if !closed {
+			return e, err
 		}
 
 		s.reconnect()
