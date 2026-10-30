@@ -2024,7 +2024,7 @@ func (v *VoiceConnection) reconnectAfterClose() {
 
 		v.log(LogInformational, "trying to reconnect to channel %s", channelID)
 
-		_, err := session.ChannelVoiceJoin(guildID, channelID, mute, deaf)
+		_, err := session.channelVoiceJoin(guildID, channelID, mute, deaf, v)
 		if err == nil {
 			v.log(LogInformational, "successfully reconnected to channel %s", channelID)
 			return
