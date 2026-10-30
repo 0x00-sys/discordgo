@@ -37,8 +37,7 @@ func TestEffectiveChannelPermissions(t *testing.T) {
 		PermissionVoiceUseVAD |
 		PermissionUseEmbeddedActivities |
 		PermissionUseSoundboard |
-		PermissionUseExternalSounds |
-		PermissionSetVoiceChannelStatus
+		PermissionUseExternalSounds
 	const connectDependentPermissions int64 = voicePermissions |
 		PermissionManageChannels |
 		PermissionManageRoles
@@ -95,6 +94,15 @@ func TestEffectiveChannelPermissions(t *testing.T) {
 			},
 			channelType: ChannelTypeGuildVoice,
 			want:        basePermissions,
+		},
+		{
+			name:        "voice without connect keeps set voice channel status",
+			permissions: basePermissions | connectDependentPermissions | PermissionSetVoiceChannelStatus,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionVoiceConnect},
+			},
+			channelType: ChannelTypeGuildVoice,
+			want:        basePermissions | PermissionSetVoiceChannelStatus,
 		},
 		{
 			name: "stage without connect clears voice but keeps stage permissions",
