@@ -1113,7 +1113,7 @@ func TestReconnectVoiceConnectionsSkipsNil(t *testing.T) {
 		}
 	}()
 
-	session.reconnectVoiceConnections()
+	session.reconnectVoiceConnections(session.reconnectCancelSignal())
 }
 
 func newGatewayTestConnection(t *testing.T) (*websocket.Conn, *websocket.Conn) {

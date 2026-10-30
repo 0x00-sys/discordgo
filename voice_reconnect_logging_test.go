@@ -23,7 +23,7 @@ func TestVoiceReconnectLoggingConcurrentJoin(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				// Gateway recovery snapshots the registered voice connections
 				// while a caller can independently request a channel join.
-				session.reconnectVoiceConnections()
+				session.reconnectVoiceConnections(session.reconnectCancelSignal())
 			}
 		}()
 		go func() {

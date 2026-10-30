@@ -28,7 +28,7 @@ func TestVoiceReconnectBatchCancellation(t *testing.T) {
 				started := time.Now()
 				go func() {
 					defer close(done)
-					session.reconnectVoiceConnections()
+					session.reconnectVoiceConnections(session.reconnectCancelSignal())
 				}()
 				// The batch has scheduled its first recovery and is waiting
 				// between guilds; individual recovery also waits for the gateway.
