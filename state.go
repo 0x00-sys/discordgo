@@ -2784,7 +2784,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			s.Unlock()
 		}
 	case *ChannelPinsUpdate:
-		if s.TrackChannels {
+		track := s.TrackChannels
+		if !track && s.TrackThreads && t != nil {
+			channel, lookupErr := s.Channel(t.ChannelID)
+			track = lookupErr == nil && channel.IsThread()
+		}
+		if track {
 			if t == nil || t.ChannelID == "" {
 				return ErrStateInvalidData
 			}
