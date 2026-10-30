@@ -44,6 +44,7 @@ type State struct {
 	Ready
 
 	// MaxMessageCount represents how many messages per channel the state will store.
+	// It must be non-negative; zero disables gateway message caching.
 	MaxMessageCount       int
 	TrackMessageReactions bool
 	TrackChannels         bool
@@ -1571,6 +1572,9 @@ func (s *State) MessageAdd(message *Message) error {
 
 	s.Lock()
 	defer s.Unlock()
+	if s.MaxMessageCount < 0 {
+		return ErrStateInvalidData
+	}
 
 	// Fetch the channel under the write lock; a pointer obtained
 	// earlier could have been replaced by a concurrent update, losing
@@ -1791,6 +1795,9 @@ func (s *State) messageUpdate(update *MessageUpdate) error {
 
 	s.Lock()
 	defer s.Unlock()
+	if s.MaxMessageCount < 0 {
+		return ErrStateInvalidData
+	}
 
 	c, ok := s.channelMap[update.ChannelID]
 	if !ok {
