@@ -65,6 +65,9 @@ type VoiceConnection struct {
 	token     string
 	endpoint  string
 
+	// Assigned in gateway receive order before server-update workers run.
+	serverUpdateVersion uint64
+
 	// Used to send a close signal to goroutines
 	close chan struct{}
 
@@ -486,6 +489,30 @@ func (v *VoiceConnection) waitUntilConnected() error {
 		}
 		i++
 	}
+}
+
+func (v *VoiceConnection) applyVoiceServerUpdate(st *VoiceServerUpdate, version uint64) bool {
+	v.lifecycleMu.Lock()
+	defer v.lifecycleMu.Unlock()
+
+	v.RLock()
+	current := v.serverUpdateVersion == version
+	v.RUnlock()
+	if !current {
+		return false
+	}
+	v.closeLocked()
+
+	v.Lock()
+	defer v.Unlock()
+	// Backend teardown can yield to a newer update before credentials apply.
+	if v.serverUpdateVersion != version {
+		return false
+	}
+	v.token = st.Token
+	v.endpoint = st.Endpoint
+	v.GuildID = st.GuildID
+	return true
 }
 
 // Open opens a voice connection.  This should be called

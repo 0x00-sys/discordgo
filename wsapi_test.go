@@ -205,12 +205,12 @@ func TestOnVoiceStateUpdateHandlesMalformedEvent(t *testing.T) {
 
 func TestVoiceEventHandlersHandleIncompleteState(t *testing.T) {
 	t.Run("nil server update", func(t *testing.T) {
-		new(Session).onVoiceServerUpdate(nil, nil)
+		new(Session).onVoiceServerUpdate(nil, nil, nil, 0)
 	})
 
 	t.Run("nil voice connection", func(t *testing.T) {
 		s := &Session{VoiceConnections: map[string]*VoiceConnection{"guild": nil}}
-		s.onVoiceServerUpdate(nil, &VoiceServerUpdate{GuildID: "guild"})
+		s.onVoiceServerUpdate(nil, &VoiceServerUpdate{GuildID: "guild"}, nil, 0)
 	})
 
 	t.Run("state update before READY", func(t *testing.T) {
