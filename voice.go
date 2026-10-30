@@ -1807,6 +1807,7 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 	}
 	v.reconnecting = true
 	v.reconnectAgain = false
+	closeChan := v.close
 	v.Unlock()
 
 	if canResume && v.canResumeVoice() && v.isSessionVoiceConnection() {
@@ -1820,8 +1821,21 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 		}
 	}
 
-	// Close any currently open connections
-	v.Close()
+	// A server update can replace the transport while resume is in flight.
+	// Check ownership and close atomically with open/Close. A nil close
+	// signal still permits recovery after an intervening UDP failure.
+	v.lifecycleMu.Lock()
+	v.Lock()
+	if v.opening != nil || (v.close != nil && v.close != closeChan) {
+		v.reconnecting = false
+		v.reconnectAgain = false
+		v.Unlock()
+		v.lifecycleMu.Unlock()
+		return
+	}
+	v.Unlock()
+	v.closeLocked()
+	v.lifecycleMu.Unlock()
 	v.reconnectAfterCloseUntilStable()
 }
 
