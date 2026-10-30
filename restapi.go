@@ -2963,34 +2963,49 @@ func validateEmbeds(embeds []*MessageEmbed) error {
 	return nil
 }
 
-func (s *Session) applyAllowedMentionsToMessage(data *MessageSend) {
+func (s *Session) applyAllowedMentionsToMessage(data *MessageSend) *MessageSend {
 	if data.AllowedMentions == nil && s.AllowedMentions != nil {
-		data.AllowedMentions = s.AllowedMentions
+		dataCopy := *data
+		dataCopy.AllowedMentions = s.AllowedMentions
+		return &dataCopy
 	}
+	return data
 }
 
-func (s *Session) applyAllowedMentionsToMessageEdit(data *MessageEdit) {
+func (s *Session) applyAllowedMentionsToMessageEdit(data *MessageEdit) *MessageEdit {
 	if data.AllowedMentions == nil && s.AllowedMentions != nil {
-		data.AllowedMentions = s.AllowedMentions
+		dataCopy := *data
+		dataCopy.AllowedMentions = s.AllowedMentions
+		return &dataCopy
 	}
+	return data
 }
 
-func (s *Session) applyAllowedMentionsToWebhook(data *WebhookParams) {
+func (s *Session) applyAllowedMentionsToWebhook(data *WebhookParams) *WebhookParams {
 	if data.AllowedMentions == nil && s.AllowedMentions != nil {
-		data.AllowedMentions = s.AllowedMentions
+		dataCopy := *data
+		dataCopy.AllowedMentions = s.AllowedMentions
+		return &dataCopy
 	}
+	return data
 }
 
-func (s *Session) applyAllowedMentionsToWebhookEdit(data *WebhookEdit) {
+func (s *Session) applyAllowedMentionsToWebhookEdit(data *WebhookEdit) *WebhookEdit {
 	if data.AllowedMentions == nil && s.AllowedMentions != nil {
-		data.AllowedMentions = s.AllowedMentions
+		dataCopy := *data
+		dataCopy.AllowedMentions = s.AllowedMentions
+		return &dataCopy
 	}
+	return data
 }
 
-func (s *Session) applyAllowedMentionsToInteractionResponse(data *InteractionResponseData) {
+func (s *Session) applyAllowedMentionsToInteractionResponse(data *InteractionResponseData) *InteractionResponseData {
 	if data.AllowedMentions == nil && s.AllowedMentions != nil {
-		data.AllowedMentions = s.AllowedMentions
+		dataCopy := *data
+		dataCopy.AllowedMentions = s.AllowedMentions
+		return &dataCopy
 	}
+	return data
 }
 
 // ChannelMessageSendComplex sends a message to the given channel.
@@ -3014,7 +3029,7 @@ func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend,
 	if err = validateEmbeds(data.Embeds); err != nil {
 		return
 	}
-	s.applyAllowedMentionsToMessage(data)
+	data = s.applyAllowedMentionsToMessage(data)
 	endpoint := EndpointChannelMessages(channelID)
 
 	// TODO: Remove this when compatibility is not required.
@@ -3146,7 +3161,7 @@ func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOp
 			return
 		}
 	}
-	s.applyAllowedMentionsToMessageEdit(m)
+	m = s.applyAllowedMentionsToMessageEdit(m)
 
 	endpoint := EndpointChannelMessage(m.Channel, m.ID)
 
@@ -3840,7 +3855,7 @@ func (s *Session) webhookExecute(webhookID, token string, executeOptions Webhook
 	if data == nil {
 		return nil, fmt.Errorf("webhook data cannot be nil")
 	}
-	s.applyAllowedMentionsToWebhook(data)
+	data = s.applyAllowedMentionsToWebhook(data)
 
 	uri := EndpointWebhookToken(webhookID, token)
 	options = withoutAuthorizationOptions(options)
@@ -3883,7 +3898,7 @@ func (s *Session) interactionWebhookExecute(appID, token string, wait bool, data
 	if data == nil {
 		return nil, fmt.Errorf("webhook data cannot be nil")
 	}
-	s.applyAllowedMentionsToWebhook(data)
+	data = s.applyAllowedMentionsToWebhook(data)
 
 	uri := EndpointWebhookToken(appID, token)
 	options = withoutAuthorizationOptions(options)
@@ -3991,7 +4006,7 @@ func (s *Session) WebhookMessageEditWithOptions(webhookID, token, messageID stri
 	if data == nil {
 		return nil, fmt.Errorf("webhook edit data cannot be nil")
 	}
-	s.applyAllowedMentionsToWebhookEdit(data)
+	data = s.applyAllowedMentionsToWebhookEdit(data)
 
 	uri := webhookMessageURI(webhookID, token, messageID, editOptions.ThreadID, editOptions.WithComponents)
 	bucketID := webhookMessageBucketID(webhookID)
@@ -4024,7 +4039,7 @@ func (s *Session) interactionWebhookMessageEdit(appID, token, messageID string, 
 	if data == nil {
 		return nil, fmt.Errorf("webhook edit data cannot be nil")
 	}
-	s.applyAllowedMentionsToWebhookEdit(data)
+	data = s.applyAllowedMentionsToWebhookEdit(data)
 
 	uri := EndpointWebhookMessage(appID, token, messageID)
 	bucketID := interactionWebhookMessageBucketID(appID, token)
@@ -4298,7 +4313,7 @@ func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadSt
 	if err = validateEmbeds(messageData.Embeds); err != nil {
 		return
 	}
-	s.applyAllowedMentionsToMessage(messageData)
+	messageData = s.applyAllowedMentionsToMessage(messageData)
 
 	// TODO: Remove this when compatibility is not required.
 	files := messageData.Files
@@ -4848,7 +4863,9 @@ func (s *Session) interactionRespond(interaction *Interaction, resp *Interaction
 	options = withoutAuthorizationOptions(options)
 
 	if resp.Data != nil {
-		s.applyAllowedMentionsToInteractionResponse(resp.Data)
+		respCopy := *resp
+		respCopy.Data = s.applyAllowedMentionsToInteractionResponse(resp.Data)
+		resp = &respCopy
 	}
 
 	var response []byte
