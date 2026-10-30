@@ -753,13 +753,14 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 			// current session.
 			v.Lock()
 			sameConnection := v.wsConn == wsConn
+			endpoint := v.endpoint
 			if sameConnection {
 				v.wsConn = nil
 			}
 			v.Unlock()
 			if sameConnection {
 
-				v.log(LogError, "voice endpoint %s websocket closed unexpectedly, %s", v.endpoint, err)
+				v.log(LogError, "voice endpoint %s websocket closed unexpectedly, %s", endpoint, err)
 
 				// Start reconnect goroutine then exit.
 				canResume := !isCloseErr || closeErr.Code == 4015 || closeErr.Code < 4000
@@ -1149,6 +1150,7 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 	for {
 		v.RLock()
 		current := v.wsConn == wsConn && v.close == close
+		endpoint := v.endpoint
 		v.RUnlock()
 		if !current {
 			return
@@ -1170,7 +1172,7 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 		v.wsMutex.Unlock()
 		if err != nil {
 			_ = wsConn.Close()
-			v.log(LogError, "error sending heartbeat to voice endpoint %s, %s", v.endpoint, err)
+			v.log(LogError, "error sending heartbeat to voice endpoint %s, %s", endpoint, err)
 			return
 		}
 
@@ -1646,10 +1648,11 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 			// to the current session.
 			v.RLock()
 			sameConnection := v.udpConn == udpConn
+			endpoint := v.endpoint
 			v.RUnlock()
 			if sameConnection {
 
-				v.log(LogError, "udp read error, %s, %s", v.endpoint, err)
+				v.log(LogError, "udp read error, %s, %s", endpoint, err)
 				v.log(LogDebug, "voice struct: %p (details redacted)\n", v)
 
 				go v.reconnectUDPIfCurrent(udpConn, close)
