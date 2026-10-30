@@ -1719,9 +1719,10 @@ func (s *Session) reconnectVoiceConnections(cancel <-chan struct{}) {
 		}
 		voice.RLock()
 		guildID := voice.GuildID
+		wsConn, closeChan := voice.wsConn, voice.close
 		voice.RUnlock()
 		s.log(LogInformational, "reconnecting voice connection to guild %s", guildID)
-		go voice.reconnect()
+		go voice.reconnectWithResume(true, wsConn, closeChan)
 
 		// This is here just to prevent violently spamming the
 		// voice reconnects.

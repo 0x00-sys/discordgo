@@ -1526,7 +1526,7 @@ func TestVoiceReconnectStopsWhenUnregistered(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		v.reconnect()
+		v.reconnectWithResume(true, nil, nil)
 		close(done)
 	}()
 
