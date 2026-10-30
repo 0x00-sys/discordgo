@@ -2618,8 +2618,9 @@ func TestVoiceHeartbeatClearsWriteDeadline(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("heartbeat did not stop after lifecycle close")
 	}
-	if err := voice.Speaking(false); err != nil {
-		t.Fatalf("Speaking() error = %v", err)
+	// Inspect the deadline inherited by a writer that does not set its own.
+	if err := conn.WriteJSON(struct{}{}); err != nil {
+		t.Fatalf("WriteJSON() error = %v", err)
 	}
 	select {
 	case deadline := <-transport.deadlines:
