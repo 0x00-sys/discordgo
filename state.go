@@ -2981,10 +2981,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				return ErrStateInvalidData
 			}
 
-			var m *Member
-			m, err = s.Member(t.GuildID, t.User.ID)
+			// Keep the lookup and replacement atomic with other member updates.
+			s.Lock()
+			defer s.Unlock()
+			m := s.memberMap[t.GuildID][t.User.ID]
 
-			if err != nil {
+			if m == nil {
 				// Member not found; this is a user coming online
 				m = &Member{
 					GuildID: t.GuildID,
@@ -2992,14 +2994,14 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				}
 			} else {
 				// The cached member is a shared snapshot; mutate a
-				// copy and let MemberAdd replace it.
+				// copy and let memberAdd replace it.
 				m = copyMember(m)
 				if m.User != nil && t.User.Username != "" {
 					m.User.Username = t.User.Username
 				}
 			}
 
-			err = s.MemberAdd(m)
+			err = s.memberAdd(m)
 		}
 	case *UserUpdate:
 		if t == nil || t.User == nil || t.User.ID == "" {
