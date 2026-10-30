@@ -24,7 +24,7 @@ type observedVoiceWriteConn struct {
 }
 
 func (c *observedVoiceWriteConn) Write(p []byte) (int, error) {
-	if len(p) > 0 && p[0] == 0x81 {
+	if len(p) > 0 && (p[0] == 0x81 || p[0] == 0x82) {
 		c.once.Do(func() { close(c.entered) })
 	}
 	return c.Conn.Write(p)

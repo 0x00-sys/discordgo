@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -120,7 +121,13 @@ func (c *voiceDAVECallbacks) writeJSON(data interface{}) error {
 	}
 	c.voice.wsMutex.Lock()
 	defer c.voice.wsMutex.Unlock()
-	return conn.WriteJSON(data)
+	if err = conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
+		return err
+	}
+	if err = conn.WriteJSON(data); err != nil {
+		return err
+	}
+	return conn.SetWriteDeadline(time.Time{})
 }
 
 func (c *voiceDAVECallbacks) writeBinary(opcode byte, payload []byte) error {
@@ -138,7 +145,13 @@ func (c *voiceDAVECallbacks) writeBinary(opcode byte, payload []byte) error {
 	}
 	c.voice.wsMutex.Lock()
 	defer c.voice.wsMutex.Unlock()
-	return conn.WriteMessage(websocket.BinaryMessage, message)
+	if err = conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
+		return err
+	}
+	if err = conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+		return err
+	}
+	return conn.SetWriteDeadline(time.Time{})
 }
 
 func (c *voiceDAVECallbacks) SendMLSKeyPackage(keyPackage []byte) error {
