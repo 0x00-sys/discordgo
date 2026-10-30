@@ -8,6 +8,15 @@ import (
 )
 
 func TestVoiceJoinTimeoutPreservesNewerJoin(t *testing.T) {
+	testVoiceJoinTimeoutPreservesNewerRequest(t, false)
+}
+
+func TestVoiceJoinTimeoutPreservesChannelChange(t *testing.T) {
+	testVoiceJoinTimeoutPreservesNewerRequest(t, true)
+}
+
+func testVoiceJoinTimeoutPreservesNewerRequest(t *testing.T, changeChannel bool) {
+	t.Helper()
 	gateway, peer := newGatewayTestConnection(t)
 	replacement, _ := newGatewayTestConnection(t)
 	session, err := New("Bot test")
@@ -42,7 +51,7 @@ func TestVoiceJoinTimeoutPreservesNewerJoin(t *testing.T) {
 			<-secondDone
 		}
 	}()
-	readJoin := func() {
+	readJoin := func(channelID string) {
 		t.Helper()
 		if err := peer.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 			t.Fatal(err)
@@ -51,11 +60,11 @@ func TestVoiceJoinTimeoutPreservesNewerJoin(t *testing.T) {
 		if err := peer.ReadJSON(&op); err != nil {
 			t.Fatal(err)
 		}
-		if op.Op != 4 || op.Data.ChannelID == nil || *op.Data.ChannelID != "channel" {
+		if op.Op != 4 || op.Data.ChannelID == nil || *op.Data.ChannelID != channelID {
 			t.Fatalf("unexpected voice join: %#v", op)
 		}
 	}
-	readJoin()
+	readJoin("channel")
 	select {
 	case <-paused:
 	case <-time.After(15 * time.Second):
@@ -64,13 +73,22 @@ func TestVoiceJoinTimeoutPreservesNewerJoin(t *testing.T) {
 	session.RLock()
 	voice := session.VoiceConnections["guild"]
 	session.RUnlock()
+	nextChannel := "channel"
+	if changeChannel {
+		nextChannel = "new-channel"
+	}
 	secondDone = make(chan struct{})
 	go func() {
 		defer close(secondDone)
-		secondVoice, secondErr = session.ChannelVoiceJoin("guild", "channel", false, false)
+		if changeChannel {
+			secondVoice = voice
+			secondErr = voice.ChangeChannel(nextChannel, false, false)
+		} else {
+			secondVoice, secondErr = session.ChannelVoiceJoin("guild", nextChannel, false, false)
+		}
 	}()
-	readJoin()
-	// Model completion of the later join after its real gateway request.
+	readJoin(nextChannel)
+	// Model completion of the later request after its real gateway send.
 	backend := &fakeVoiceDAVESession{maxVersion: 1}
 	installFakeDAVE(voice, backend, 1)
 	replacementClose := make(chan struct{})
@@ -82,10 +100,10 @@ func TestVoiceJoinTimeoutPreservesNewerJoin(t *testing.T) {
 	select {
 	case <-secondDone:
 	case <-time.After(3 * time.Second):
-		t.Fatal("second voice join did not finish")
+		t.Fatal("second voice request did not finish")
 	}
 	if secondErr != nil || secondVoice != voice {
-		t.Fatalf("second join = %p, %v; want the existing voice and success", secondVoice, secondErr)
+		t.Fatalf("second request = %p, %v; want the existing voice and success", secondVoice, secondErr)
 	}
 	close(release)
 	select {
@@ -97,12 +115,12 @@ func TestVoiceJoinTimeoutPreservesNewerJoin(t *testing.T) {
 		t.Fatalf("first join error = %v, want readiness timeout", firstErr)
 	}
 	voice.RLock()
-	preserved := voice.wsConn == replacement && voice.close == replacementClose && voice.Ready
+	preserved := voice.wsConn == replacement && voice.close == replacementClose && voice.Ready && voice.ChannelID == nextChannel
 	voice.RUnlock()
 	backend.mu.Lock()
 	closed := backend.closed
 	backend.mu.Unlock()
 	if !preserved || closed != 0 {
-		t.Errorf("old join cleanup changed successful newer join: transport preserved=%t, backend closes=%d", preserved, closed)
+		t.Errorf("old join cleanup changed successful newer request: transport preserved=%t, backend closes=%d", preserved, closed)
 	}
 }
