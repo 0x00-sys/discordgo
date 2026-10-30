@@ -1154,6 +1154,14 @@ func (s *State) ChannelAdd(channel *Channel) error {
 		if channelCopy.ThreadMetadata == nil && channelCopy.Flags&ChannelFlagObfuscated == 0 {
 			channelCopy.ThreadMetadata = c.ThreadMetadata
 		}
+		if s.TrackThreadMembers && channelCopy.IsThread() && channelCopy.Flags&ChannelFlagObfuscated == 0 {
+			if channelCopy.Member == nil {
+				channelCopy.Member = c.Member
+			}
+			if channelCopy.Members == nil {
+				channelCopy.Members = c.Members
+			}
+		}
 
 		channel = &channelCopy
 		s.channelMap[channel.ID] = channel
