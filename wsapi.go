@@ -1207,9 +1207,6 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		s.log(LogInformational, "sending heartbeat in response to Op1")
 
 		sentAt := time.Now()
-		s.RLock()
-		wsConn := s.wsConn
-		s.RUnlock()
 		if wsConn == nil {
 			return e, ErrWSNotFound
 		}
@@ -1271,6 +1268,10 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 
 	if e.Operation == 11 {
 		s.Lock()
+		if s.wsConn != wsConn {
+			s.Unlock()
+			return e, nil
+		}
 		s.lastHeartbeatAck = time.Now()
 		s.LastHeartbeatAck = s.lastHeartbeatAck.UTC()
 		s.Unlock()
