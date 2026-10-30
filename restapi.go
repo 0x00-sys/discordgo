@@ -3019,6 +3019,8 @@ func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend,
 	// TODO: Remove this when compatibility is not required.
 	if data.Embed != nil {
 		if data.Embeds == nil {
+			dataCopy := *data
+			data = &dataCopy
 			data.Embeds = []*MessageEmbed{data.Embed}
 		} else {
 			err = fmt.Errorf("cannot specify both Embed and Embeds")
@@ -3149,6 +3151,8 @@ func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOp
 	// TODO: Remove this when compatibility is not required.
 	if m.Embed != nil {
 		if m.Embeds == nil {
+			dataCopy := *m
+			m = &dataCopy
 			m.Embeds = &[]*MessageEmbed{m.Embed}
 		} else {
 			err = fmt.Errorf("cannot specify both Embed and Embeds")
@@ -4303,6 +4307,8 @@ func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadSt
 	// TODO: Remove this when compatibility is not required.
 	if messageData.Embed != nil {
 		if messageData.Embeds == nil {
+			dataCopy := *messageData
+			messageData = &dataCopy
 			messageData.Embeds = []*MessageEmbed{messageData.Embed}
 		} else {
 			err = fmt.Errorf("cannot specify both Embed and Embeds")
