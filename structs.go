@@ -3311,6 +3311,7 @@ const (
 	AuditLogActionChannelOverwriteCreate AuditLogAction = 13
 	AuditLogActionChannelOverwriteUpdate AuditLogAction = 14
 	AuditLogActionChannelOverwriteDelete AuditLogAction = 15
+	AuditLogActionChannelPositionUpdate  AuditLogAction = 16
 
 	AuditLogActionMemberKick       AuditLogAction = 20
 	AuditLogActionMemberPrune      AuditLogAction = 21
@@ -3322,9 +3323,10 @@ const (
 	AuditLogActionMemberDisconnect AuditLogAction = 27
 	AuditLogActionBotAdd           AuditLogAction = 28
 
-	AuditLogActionRoleCreate AuditLogAction = 30
-	AuditLogActionRoleUpdate AuditLogAction = 31
-	AuditLogActionRoleDelete AuditLogAction = 32
+	AuditLogActionRoleCreate         AuditLogAction = 30
+	AuditLogActionRoleUpdate         AuditLogAction = 31
+	AuditLogActionRoleDelete         AuditLogAction = 32
+	AuditLogActionRolePositionUpdate AuditLogAction = 33
 
 	AuditLogActionInviteCreate AuditLogAction = 40
 	AuditLogActionInviteUpdate AuditLogAction = 41
