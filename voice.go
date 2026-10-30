@@ -147,7 +147,11 @@ func (v *VoiceConnection) Speaking(b bool) (err error) {
 
 // SpeakingFlags sends a speaking notification with the provided audio flags.
 func (v *VoiceConnection) SpeakingFlags(flags VoiceSpeakingFlags) (err error) {
+	return v.speakingFlags(flags, nil, nil)
+}
 
+// A non-nil udpConn binds an audio sender's notification to its transport.
+func (v *VoiceConnection) speakingFlags(flags VoiceSpeakingFlags, udpConn *net.UDPConn, closeChan <-chan struct{}) (err error) {
 	v.log(LogDebug, "called (%d)", flags)
 
 	type voiceSpeakingData struct {
@@ -165,6 +169,10 @@ func (v *VoiceConnection) SpeakingFlags(flags VoiceSpeakingFlags) (err error) {
 	// the blocking websocket write; a stalled write must not wedge
 	// Close(), reconnect() and the heartbeat behind v.Lock.
 	v.RLock()
+	if udpConn != nil && (v.udpConn != udpConn || v.close != closeChan) {
+		v.RUnlock()
+		return ErrWSNotFound
+	}
 	wsConn := v.wsConn
 	ssrc := v.op2.SSRC
 	v.RUnlock()
@@ -1596,7 +1604,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		speaking := v.speaking
 		v.RUnlock()
 		if !speaking {
-			err := v.Speaking(true)
+			err := v.speakingFlags(VoiceSpeakingFlagMicrophone, udpConn, close)
 			if err != nil {
 				v.log(LogError, "error sending speaking packet, %s", err)
 			}
@@ -1699,7 +1707,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		if trailingSilence {
 			silenceFrames++
 			if silenceFrames == voiceOpusSilenceFrameCount {
-				if err := v.Speaking(false); err != nil {
+				if err := v.speakingFlags(0, udpConn, close); err != nil {
 					v.log(LogError, "error sending stop speaking packet, %s", err)
 				}
 			}

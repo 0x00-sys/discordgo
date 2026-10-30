@@ -374,6 +374,8 @@ func TestInterpolateVoiceTimestamp(t *testing.T) {
 }
 
 func TestOpusSenderSendsTrailingSilence(t *testing.T) {
+	wsConn, peer := newGatewayTestConnection(t)
+	closeChan := make(chan struct{})
 	server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatalf("net.ListenUDP() error = %v", err)
@@ -395,13 +397,19 @@ func TestOpusSenderSendsTrailingSilence(t *testing.T) {
 
 	voice := &VoiceConnection{
 		LogLevel: -1,
-		speaking: true,
+		wsConn:   wsConn,
+		udpConn:  client,
+		close:    closeChan,
 		aead:     aead,
 		op2:      voiceOP2{SSRC: 42},
 	}
 	done := make(chan struct{})
+	defer func() {
+		closeChannel(closeChan)
+		<-done
+	}()
 	go func() {
-		voice.opusSender(client, make(chan struct{}), opus, 48000, 960)
+		voice.opusSender(client, closeChan, opus, 48000, 960)
 		close(done)
 	}()
 
@@ -465,6 +473,21 @@ func TestOpusSenderSendsTrailingSilence(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("opusSender did not stop after trailing silence")
+	}
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, flags := range []VoiceSpeakingFlags{VoiceSpeakingFlagMicrophone, 0, VoiceSpeakingFlagMicrophone, 0} {
+		var notification struct {
+			Op   int                 `json:"op"`
+			Data VoiceSpeakingUpdate `json:"d"`
+		}
+		if err := peer.ReadJSON(&notification); err != nil {
+			t.Fatal(err)
+		}
+		if notification.Op != 5 || notification.Data.SpeakingFlags != flags || notification.Data.SSRC != 42 {
+			t.Fatalf("speaking notification = %+v, want flags=%d, ssrc=42", notification, flags)
+		}
 	}
 }
 
