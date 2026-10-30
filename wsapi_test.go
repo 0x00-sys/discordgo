@@ -1541,7 +1541,7 @@ func TestGatewaySendRateLimiterConcurrentReset(t *testing.T) {
 	results := make(chan bool, gatewaySendRateLimit+1)
 	for i := 0; i <= gatewaySendRateLimit; i++ {
 		go func() {
-			results <- limiter.acquire(oldConnection)
+			results <- limiter.acquire(oldConnection, false)
 		}()
 	}
 
@@ -1571,7 +1571,7 @@ func TestGatewaySendRateLimiterConcurrentReset(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("waiting write was not canceled by connection reset")
 	}
-	if !limiter.acquire(newConnection) {
+	if !limiter.acquire(newConnection, false) {
 		t.Fatal("first write on replacement connection was rate limited")
 	}
 }
@@ -1599,7 +1599,7 @@ func TestGatewayRateLimitWaitStopsOnClose(t *testing.T) {
 		return false
 	}
 	for i := 0; i < gatewaySendRateLimit; i++ {
-		if !session.gatewaySendRateLimiter.acquire(conn) {
+		if !session.gatewaySendRateLimiter.acquire(conn, false) {
 			t.Fatalf("acquire %d was unexpectedly rate limited", i)
 		}
 	}
@@ -1630,13 +1630,13 @@ func TestGatewayRateLimitWaitStopsOnClose(t *testing.T) {
 	if session.gatewaySendRateLimiter.connection != nil {
 		t.Fatal("gateway send limiter retained the closed websocket")
 	}
-	if session.gatewaySendRateLimiter.acquire(conn) {
+	if session.gatewaySendRateLimiter.acquire(conn, false) {
 		t.Fatal("stale gateway write rearmed the stopped limiter")
 	}
 
 	replacement := &websocket.Conn{}
 	session.gatewaySendRateLimiter.reset(replacement)
-	if !session.gatewaySendRateLimiter.acquire(replacement) {
+	if !session.gatewaySendRateLimiter.acquire(replacement, false) {
 		t.Fatal("reset did not rearm the limiter for a replacement connection")
 	}
 }
@@ -1685,7 +1685,7 @@ func TestGatewayStartupAndHeartbeatBypassSendRateLimit(t *testing.T) {
 					return false
 				}
 				for i := 0; i < gatewaySendRateLimit; i++ {
-					if !session.gatewaySendRateLimiter.acquire(session.wsConn) {
+					if !session.gatewaySendRateLimiter.acquire(session.wsConn, false) {
 						t.Fatalf("acquire %d was unexpectedly rate limited", i)
 					}
 				}
