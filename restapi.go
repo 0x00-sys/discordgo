@@ -2954,13 +2954,10 @@ func (s *Session) ChannelMessageSend(channelID string, content string, options .
 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "%0D", "\n", "%0A")
 
-func setEmbedTypes(embeds []*MessageEmbed) error {
+func validateEmbeds(embeds []*MessageEmbed) error {
 	for _, embed := range embeds {
 		if embed == nil {
 			return fmt.Errorf("message embed cannot be nil")
-		}
-		if embed.Type == "" {
-			embed.Type = "rich"
 		}
 	}
 	return nil
@@ -3014,7 +3011,7 @@ func (s *Session) ChannelMessageSendComplex(channelID string, data *MessageSend,
 		}
 	}
 
-	if err = setEmbedTypes(data.Embeds); err != nil {
+	if err = validateEmbeds(data.Embeds); err != nil {
 		return
 	}
 	s.applyAllowedMentionsToMessage(data)
@@ -3145,7 +3142,7 @@ func (s *Session) ChannelMessageEditComplex(m *MessageEdit, options ...RequestOp
 	}
 
 	if m.Embeds != nil {
-		if err = setEmbedTypes(*m.Embeds); err != nil {
+		if err = validateEmbeds(*m.Embeds); err != nil {
 			return
 		}
 	}
@@ -4298,7 +4295,7 @@ func (s *Session) ForumThreadStartComplex(channelID string, threadData *ThreadSt
 		}
 	}
 
-	if err = setEmbedTypes(messageData.Embeds); err != nil {
+	if err = validateEmbeds(messageData.Embeds); err != nil {
 		return
 	}
 	s.applyAllowedMentionsToMessage(messageData)
