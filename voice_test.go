@@ -2501,7 +2501,7 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 		close:    closeChan,
 		wsConn:   conn,
 	}
-	vc.updateSequence([]byte(`{"seq":10}`))
+	vc.updateSequence(vc.wsConn, vc.close, []byte(`{"seq":10}`))
 
 	vc.onEvent([]byte(`{"op":8,"d":{"heartbeat_interval":1}}`))
 
@@ -2644,7 +2644,7 @@ func TestVoiceHeartbeatIncludesUnsetSequence(t *testing.T) {
 
 func TestVoiceUpdateSequence(t *testing.T) {
 	vc := &VoiceConnection{}
-	vc.updateSequence([]byte(`{"op":5,"seq":65535,"d":{}}`))
+	vc.updateSequence(vc.wsConn, vc.close, []byte(`{"op":5,"seq":65535,"d":{}}`))
 	vc.RLock()
 	sequence, set := vc.sequence, vc.sequenceSet
 	vc.RUnlock()
@@ -2652,7 +2652,7 @@ func TestVoiceUpdateSequence(t *testing.T) {
 		t.Fatalf("sequence = %d/%t, want 65535/true", sequence, set)
 	}
 
-	vc.updateSequence([]byte(`{"op":5,"d":{}}`))
+	vc.updateSequence(vc.wsConn, vc.close, []byte(`{"op":5,"d":{}}`))
 	vc.RLock()
 	sequence = vc.sequence
 	vc.RUnlock()
@@ -2660,7 +2660,7 @@ func TestVoiceUpdateSequence(t *testing.T) {
 		t.Fatalf("sequence changed without seq: %d", sequence)
 	}
 
-	vc.updateSequence([]byte(`{"op":5,"seq":0,"d":{}}`))
+	vc.updateSequence(vc.wsConn, vc.close, []byte(`{"op":5,"seq":0,"d":{}}`))
 	vc.RLock()
 	sequence = vc.sequence
 	vc.RUnlock()

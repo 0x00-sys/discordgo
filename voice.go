@@ -779,21 +779,24 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 	}
 }
 
-func (v *VoiceConnection) updateSequence(message []byte) {
+func (v *VoiceConnection) updateSequence(wsConn *websocket.Conn, eventClose <-chan struct{}, message []byte) {
 	var payload struct {
 		Sequence *int64 `json:"seq"`
 	}
 	if err := json.Unmarshal(message, &payload); err != nil || payload.Sequence == nil {
 		return
 	}
-	v.updateVoiceSequence(*payload.Sequence)
+	v.updateVoiceSequence(wsConn, eventClose, *payload.Sequence)
 }
 
-func (v *VoiceConnection) updateVoiceSequence(sequence int64) {
+func (v *VoiceConnection) updateVoiceSequence(wsConn *websocket.Conn, eventClose <-chan struct{}, sequence int64) {
 	v.Lock()
+	defer v.Unlock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		return
+	}
 	v.sequence = sequence
 	v.sequenceSet = true
-	v.Unlock()
 }
 
 func (v *VoiceConnection) voiceSequenceAck() int64 {
@@ -946,7 +949,9 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 			v.log(LogError, "OP5 unmarshall error, %s, %s", err, redactedVoiceData(e.RawData))
 			return
 		}
-		v.onDAVESpeakingUpdate(voiceSpeakingUpdate)
+		if !v.onDAVESpeakingUpdate(wsConn, eventClose, voiceSpeakingUpdate) {
+			return
+		}
 
 		v.RLock()
 		handlers := append([]VoiceSpeakingUpdateHandler(nil), v.voiceSpeakingUpdateHandlers...)
@@ -968,23 +973,23 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 		return
 
 	case 11: // CLIENTS CONNECT
-		v.onDAVEClientsConnect(e.RawData)
+		v.onDAVEClientsConnect(wsConn, eventClose, e.RawData)
 		return
 
 	case 13: // CLIENT DISCONNECT
-		v.onDAVEClientDisconnect(e.RawData)
+		v.onDAVEClientDisconnect(wsConn, eventClose, e.RawData)
 		return
 
 	case voiceOpDAVEPrepareTransition:
-		v.onDAVEPrepareTransition(e.RawData)
+		v.onDAVEPrepareTransition(wsConn, eventClose, e.RawData)
 		return
 
 	case voiceOpDAVEExecuteTransition:
-		v.onDAVEExecuteTransition(e.RawData)
+		v.onDAVEExecuteTransition(wsConn, eventClose, e.RawData)
 		return
 
 	case voiceOpDAVEPrepareEpoch:
-		v.onDAVEPrepareEpoch(e.RawData)
+		v.onDAVEPrepareEpoch(wsConn, eventClose, e.RawData)
 		return
 
 	case 8:

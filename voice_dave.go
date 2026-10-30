@@ -307,18 +307,22 @@ func (v *VoiceConnection) onDAVELocalSSRC(wsConn *websocket.Conn, eventClose <-c
 	}
 }
 
-func (v *VoiceConnection) onDAVESpeakingUpdate(update *VoiceSpeakingUpdate) {
-	if update == nil || update.UserID == "" || update.SSRC <= 0 {
-		return
-	}
+func (v *VoiceConnection) onDAVESpeakingUpdate(wsConn *websocket.Conn, eventClose <-chan struct{}, update *VoiceSpeakingUpdate) bool {
 	v.Lock()
+	defer v.Unlock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		return false
+	}
+	if update == nil || update.UserID == "" || update.SSRC <= 0 {
+		return true
+	}
 	if v.daveSSRCToUserID != nil {
 		v.daveSSRCToUserID[uint32(update.SSRC)] = update.UserID
 	}
-	v.Unlock()
+	return true
 }
 
-func (v *VoiceConnection) onDAVEClientsConnect(data json.RawMessage) {
+func (v *VoiceConnection) onDAVEClientsConnect(wsConn *websocket.Conn, eventClose <-chan struct{}, data json.RawMessage) {
 	var payload struct {
 		UserIDs []string `json:"user_ids"`
 	}
@@ -330,6 +334,10 @@ func (v *VoiceConnection) onDAVEClientsConnect(data json.RawMessage) {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.Lock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.Unlock()
+		return
+	}
 	session := v.dave
 	selfID := v.UserID
 	if session == nil {
@@ -357,7 +365,7 @@ func (v *VoiceConnection) onDAVEClientsConnect(data json.RawMessage) {
 	}
 }
 
-func (v *VoiceConnection) onDAVEClientDisconnect(data json.RawMessage) {
+func (v *VoiceConnection) onDAVEClientDisconnect(wsConn *websocket.Conn, eventClose <-chan struct{}, data json.RawMessage) {
 	var payload struct {
 		UserID string `json:"user_id"`
 	}
@@ -372,6 +380,10 @@ func (v *VoiceConnection) onDAVEClientDisconnect(data json.RawMessage) {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.Lock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.Unlock()
+		return
+	}
 	session := v.dave
 	_, connected := v.daveUsers[payload.UserID]
 	delete(v.daveUsers, payload.UserID)
@@ -386,7 +398,7 @@ func (v *VoiceConnection) onDAVEClientDisconnect(data json.RawMessage) {
 	}
 }
 
-func (v *VoiceConnection) onDAVEPrepareTransition(data json.RawMessage) {
+func (v *VoiceConnection) onDAVEPrepareTransition(wsConn *websocket.Conn, eventClose <-chan struct{}, data json.RawMessage) {
 	var payload struct {
 		TransitionID    *uint16 `json:"transition_id"`
 		ProtocolVersion *uint16 `json:"protocol_version"`
@@ -403,6 +415,10 @@ func (v *VoiceConnection) onDAVEPrepareTransition(data json.RawMessage) {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.RLock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.RUnlock()
+		return
+	}
 	session := v.dave
 	v.RUnlock()
 	if session == nil {
@@ -423,7 +439,7 @@ func (v *VoiceConnection) onDAVEPrepareTransition(data json.RawMessage) {
 	v.Unlock()
 }
 
-func (v *VoiceConnection) onDAVEExecuteTransition(data json.RawMessage) {
+func (v *VoiceConnection) onDAVEExecuteTransition(wsConn *websocket.Conn, eventClose <-chan struct{}, data json.RawMessage) {
 	var payload struct {
 		TransitionID *uint16 `json:"transition_id"`
 	}
@@ -439,6 +455,10 @@ func (v *VoiceConnection) onDAVEExecuteTransition(data json.RawMessage) {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.RLock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.RUnlock()
+		return
+	}
 	session := v.dave
 	v.RUnlock()
 	if session == nil {
@@ -454,7 +474,7 @@ func (v *VoiceConnection) onDAVEExecuteTransition(data json.RawMessage) {
 	v.Unlock()
 }
 
-func (v *VoiceConnection) onDAVEPrepareEpoch(data json.RawMessage) {
+func (v *VoiceConnection) onDAVEPrepareEpoch(wsConn *websocket.Conn, eventClose <-chan struct{}, data json.RawMessage) {
 	var payload struct {
 		Epoch           *uint64 `json:"epoch"`
 		ProtocolVersion *uint16 `json:"protocol_version"`
@@ -471,6 +491,10 @@ func (v *VoiceConnection) onDAVEPrepareEpoch(data json.RawMessage) {
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.Lock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.Unlock()
+		return
+	}
 	session := v.dave
 	if session != nil {
 		v.davePreparedProtocolVersion = *payload.ProtocolVersion
@@ -488,17 +512,21 @@ func parseDAVEBinaryFrame(frame []byte) (sequence uint16, opcode byte, payload [
 	return binary.BigEndian.Uint16(frame[:2]), frame[2], frame[3:], nil
 }
 
-func (v *VoiceConnection) handleDAVEBinaryFrame(frame []byte) {
+func (v *VoiceConnection) handleDAVEBinaryFrame(wsConn *websocket.Conn, eventClose <-chan struct{}, frame []byte) {
 	sequence, opcode, payload, err := parseDAVEBinaryFrame(frame)
 	if err != nil {
 		v.log(LogError, "DAVE binary frame error, %s", err)
 		return
 	}
-	v.updateVoiceSequence(int64(sequence))
+	v.updateVoiceSequence(wsConn, eventClose, int64(sequence))
 
 	v.daveMu.Lock()
 	defer v.daveMu.Unlock()
 	v.RLock()
+	if v.wsConn != wsConn || v.close != eventClose {
+		v.RUnlock()
+		return
+	}
 	session := v.dave
 	v.RUnlock()
 	if session == nil {
@@ -698,11 +726,11 @@ func voiceMessageOperation(message []byte) (int, error) {
 
 func (v *VoiceConnection) dispatchVoiceMessage(wsConn *websocket.Conn, eventClose <-chan struct{}, messageType int, message []byte) {
 	if messageType == websocket.BinaryMessage {
-		v.handleDAVEBinaryFrame(message)
+		v.handleDAVEBinaryFrame(wsConn, eventClose, message)
 		return
 	}
 
-	v.updateSequence(message)
+	v.updateSequence(wsConn, eventClose, message)
 	// Keep queued handshake work bound to the transport that received it.
 	operation, err := voiceMessageOperation(message)
 	if err != nil {
