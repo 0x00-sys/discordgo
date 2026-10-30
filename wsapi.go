@@ -1471,10 +1471,10 @@ func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice 
 			s.Unlock()
 			continue
 		}
-		previousClose = nil
 		if voice.ChannelID != cID {
-			previousClose = voice.close
+			voice.joinPreviousClose = voice.close
 		}
+		previousClose = voice.joinPreviousClose
 		voice.GuildID = gID
 		voice.ChannelID = cID
 		voice.deaf = deaf
