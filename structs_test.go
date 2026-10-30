@@ -502,6 +502,8 @@ func TestCurrentAuditLogActionsAndStatus(t *testing.T) {
 		action AuditLogAction
 		want   AuditLogAction
 	}{
+		{"channel position update", AuditLogActionChannelPositionUpdate, 16},
+		{"role position update", AuditLogActionRolePositionUpdate, 33},
 		{"soundboard create", AuditLogActionSoundboardSoundCreate, 130},
 		{"soundboard update", AuditLogActionSoundboardSoundUpdate, 131},
 		{"soundboard delete", AuditLogActionSoundboardSoundDelete, 132},
