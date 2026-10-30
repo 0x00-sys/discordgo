@@ -734,13 +734,15 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 				v.lifecycleMu.Lock()
 				v.RLock()
 				current := v.close == close && v.wsConn == nil && v.opening == nil
+				session := v.session
+				guildID := v.GuildID
 				v.RUnlock()
 				if current {
-					v.session.Lock()
-					if v.session.VoiceConnections[v.GuildID] == v {
-						delete(v.session.VoiceConnections, v.GuildID)
+					session.Lock()
+					if session.VoiceConnections[guildID] == v {
+						delete(session.VoiceConnections, guildID)
 					}
-					v.session.Unlock()
+					session.Unlock()
 					v.closeLocked()
 				}
 				v.lifecycleMu.Unlock()
