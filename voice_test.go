@@ -236,6 +236,7 @@ func TestUDPKeepAliveWriteErrorInterruptsReconnect(t *testing.T) {
 	voice := &VoiceConnection{
 		LogLevel:     -1,
 		Ready:        true,
+		joinVersion:  1,
 		reconnecting: true,
 		udpConn:      udpConn,
 		close:        closeChan,
