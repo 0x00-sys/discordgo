@@ -453,6 +453,17 @@ func (v *VoiceConnection) waitUntilConnected() error {
 
 	v.log(LogInformational, "called")
 
+	v.Lock()
+	if v.disconnecting {
+		v.Unlock()
+		return ErrWSNotFound
+	}
+	if v.disconnectCancel == nil {
+		v.disconnectCancel = make(chan struct{})
+	}
+	disconnectCancel := v.disconnectCancel
+	v.Unlock()
+
 	i := 0
 	for {
 		v.RLock()
@@ -466,7 +477,13 @@ func (v *VoiceConnection) waitUntilConnected() error {
 			return fmt.Errorf("timeout waiting for voice")
 		}
 
-		time.Sleep(1 * time.Second)
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-timer.C:
+		case <-disconnectCancel:
+			timer.Stop()
+			return ErrWSNotFound
+		}
 		i++
 	}
 }
