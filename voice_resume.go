@@ -135,6 +135,10 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 					return fmt.Errorf("clearing voice resume deadline: %w", err)
 				}
 				v.Lock()
+				if v.wsConn != conn || v.close != closeChan {
+					v.Unlock()
+					return ErrWSNotFound
+				}
 				v.speaking = false
 				v.Unlock()
 				resumed = true
