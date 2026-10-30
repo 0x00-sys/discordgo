@@ -799,6 +799,10 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			return
 		}
 		s.Lock()
+		if s.wsConn != wsConn {
+			s.Unlock()
+			return
+		}
 		s.DataReady = true
 		s.Unlock()
 
