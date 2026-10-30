@@ -1674,6 +1674,7 @@ func redactedIdentify(op identifyOp) identifyOp {
 }
 
 func (s *Session) reconnectVoiceConnections() {
+	cancel := s.reconnectCancelSignal()
 	s.RLock()
 	voiceConnections := make([]*VoiceConnection, 0, len(s.VoiceConnections))
 	for _, voice := range s.VoiceConnections {
@@ -1684,6 +1685,9 @@ func (s *Session) reconnectVoiceConnections() {
 	s.RUnlock()
 
 	for i, voice := range voiceConnections {
+		if reconnectCanceled(cancel) {
+			return
+		}
 		voice.RLock()
 		guildID := voice.GuildID
 		voice.RUnlock()
@@ -1693,7 +1697,13 @@ func (s *Session) reconnectVoiceConnections() {
 		// This is here just to prevent violently spamming the
 		// voice reconnects.
 		if i < len(voiceConnections)-1 {
-			time.Sleep(1 * time.Second)
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-timer.C:
+			case <-cancel:
+				timer.Stop()
+				return
+			}
 		}
 	}
 }
