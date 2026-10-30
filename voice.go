@@ -952,6 +952,10 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 		err = v.udpOpen(wsConn, eventClose)
 		if err != nil {
 			v.log(LogError, "error opening udp connection, %s", err)
+			// Wake the listener's existing cleanup and reconnect path.
+			if wsConn != nil {
+				_ = wsConn.Close()
+			}
 			return
 		}
 
