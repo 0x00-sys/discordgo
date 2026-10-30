@@ -117,8 +117,17 @@ func TestVoiceResumeDialCanceledOnClose(t *testing.T) {
 }
 
 func TestVoiceDialSuccessfulConnectionSurvivesContextCleanup(t *testing.T) {
+	for _, customTLS := range []bool{false, true} {
+		t.Run(fmt.Sprintf("customTLS=%t", customTLS), func(t *testing.T) {
+			testWebsocketConnectionSurvivesContextCleanup(t, customTLS)
+		})
+	}
+}
+
+func testWebsocketConnectionSurvivesContextCleanup(t *testing.T, customTLS bool) {
+	t.Helper()
 	peers := make(chan *websocket.Conn, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -127,10 +136,18 @@ func TestVoiceDialSuccessfulConnectionSurvivesContextCleanup(t *testing.T) {
 		}
 		peers <- conn
 	}))
+	dialer := &websocket.Dialer{HandshakeTimeout: time.Second}
+	if customTLS {
+		server.StartTLS()
+		tlsDialer := &tls.Dialer{Config: server.Client().Transport.(*http.Transport).TLSClientConfig}
+		dialer.NetDialTLSContext = tlsDialer.DialContext
+	} else {
+		server.Start()
+	}
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conn, err := dialWebsocket(ctx, &websocket.Dialer{HandshakeTimeout: time.Second}, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	conn, err := dialWebsocket(ctx, dialer, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
