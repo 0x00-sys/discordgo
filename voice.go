@@ -67,7 +67,7 @@ type VoiceConnection struct {
 
 	// Assigned in gateway receive order before server-update workers run.
 	serverUpdateVersion uint64
-	// Identifies the latest public join configuring this voice connection.
+	// Identifies the latest join or successful channel change.
 	joinVersion uint64
 
 	// Used to send a close signal to goroutines
@@ -247,6 +247,7 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 		err = session.channelVoiceJoinManual(guildID, channelID, mute, deaf)
 		if err == nil {
 			v.Lock()
+			v.joinVersion++
 			v.ChannelID = channelID
 			v.deaf = deaf
 			v.mute = mute
