@@ -1243,12 +1243,27 @@ func (s *State) ChannelRemove(channel *Channel) error {
 				break
 			}
 		}
+		s.removeChildThreads(&updated, cached.ID)
 	}
 
 	delete(s.channelMap, channel.ID)
 	s.replaceGuild(guild, &updated)
 
 	return nil
+}
+
+// removeChildThreads requires the state write lock and a private guild copy.
+func (s *State) removeChildThreads(guild *Guild, parentID string) {
+	// Drop both cache references, including messages retained by the threads.
+	threads := guild.Threads
+	guild.Threads = make([]*Channel, 0, len(threads))
+	for _, thread := range threads {
+		if thread != nil && thread.ParentID == parentID {
+			delete(s.channelMap, thread.ID)
+			continue
+		}
+		guild.Threads = append(guild.Threads, thread)
+	}
 }
 
 func replaceThreadInGuild(guild *Guild, oldThread, newThread *Channel) bool {
@@ -2722,6 +2737,20 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				t.BeforeDelete = &oldCopy
 			}
 			err = s.ChannelRemove(t.Channel)
+		} else if s.TrackThreads {
+			if t == nil || t.Channel == nil || t.ID == "" {
+				return ErrStateInvalidData
+			}
+			// Thread tracking can be enabled without caching parent channels.
+			s.Lock()
+			if guild, ok := s.guildMap[t.GuildID]; ok {
+				updated := *guild
+				s.removeChildThreads(&updated, t.ID)
+				s.replaceGuild(guild, &updated)
+			} else {
+				err = ErrStateNotFound
+			}
+			s.Unlock()
 		}
 	case *ChannelPinsUpdate:
 		if s.TrackChannels {
