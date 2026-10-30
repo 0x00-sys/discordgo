@@ -443,6 +443,19 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 	}
 	defer closeResponseBody()
 
+	// Publish a known cooldown before releasing the bucket or reading a body
+	// that may stall or fail. Later body-derived deadlines can only extend it.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if retryAfter, parseErr := retryAfterHeader(resp.Header); parseErr == nil && retryAfter > 0 {
+			reset := time.Now().Add(retryAfter)
+			if strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
+				bucket.setGlobalReset(reset)
+			} else {
+				bucket.setRetryReset(reset)
+			}
+		}
+	}
+
 	err = bucket.Release(resp.Header)
 	if err != nil {
 		return
