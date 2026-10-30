@@ -364,8 +364,7 @@ func (b *Bucket) Release(headers http.Header) error {
 			return err
 		}
 
-		whole, frac := math.Modf(parsedAfter)
-		resetAt := time.Now().Add(time.Duration(whole) * time.Second).Add(time.Duration(frac*1000) * time.Millisecond)
+		resetAt := time.Now().Add(time.Duration(math.Ceil(parsedAfter * float64(time.Second))))
 
 		// Lock either this single bucket or all buckets
 		if global != "" {
