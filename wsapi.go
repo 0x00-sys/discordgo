@@ -1558,9 +1558,21 @@ func (s *Session) onVoiceStateUpdateLocked(st *VoiceStateUpdate) {
 	voice.Unlock()
 }
 
+// The caller holds the session lock so voice selection follows receive order.
 func (s *Session) queueVoiceServerUpdate(wsConn *websocket.Conn, update *VoiceServerUpdate) {
+	if update == nil {
+		return
+	}
+	voice := s.VoiceConnections[update.GuildID]
+	var version uint64
+	if voice != nil {
+		voice.Lock()
+		voice.serverUpdateVersion++
+		version = voice.serverUpdateVersion
+		voice.Unlock()
+	}
 	go s.callEventHandler(&eventHandlerInstance{voiceServerUpdateEventHandler(func(s *Session, update *VoiceServerUpdate) {
-		s.onVoiceServerUpdate(wsConn, update)
+		s.onVoiceServerUpdate(wsConn, update, voice, version)
 	})}, update)
 }
 
@@ -1569,7 +1581,7 @@ func (s *Session) queueVoiceServerUpdate(wsConn *websocket.Conn, update *VoiceSe
 // This is also fired if the Guild's voice region changes while connected
 // to a voice channel.  In that case, need to re-establish connection to
 // the new region endpoint.
-func (s *Session) onVoiceServerUpdate(wsConn *websocket.Conn, st *VoiceServerUpdate) {
+func (s *Session) onVoiceServerUpdate(wsConn *websocket.Conn, st *VoiceServerUpdate, voice *VoiceConnection, version uint64) {
 	if st == nil {
 		return
 	}
@@ -1583,24 +1595,17 @@ func (s *Session) onVoiceServerUpdate(wsConn *websocket.Conn, st *VoiceServerUpd
 		s.RUnlock()
 		return
 	}
-	voice, exists := s.VoiceConnections[st.GuildID]
+	registered := s.VoiceConnections[st.GuildID] == voice
 	s.RUnlock()
 
 	// If no VoiceConnection exists, just skip this
-	if !exists || voice == nil {
+	if !registered || voice == nil {
 		return
 	}
 
-	// If currently connected to voice ws/udp, then disconnect.
-	// Has no effect if not connected.
-	voice.Close()
-
-	// Store values for later use
-	voice.Lock()
-	voice.token = st.Token
-	voice.endpoint = st.Endpoint
-	voice.GuildID = st.GuildID
-	voice.Unlock()
+	if !voice.applyVoiceServerUpdate(st, version) {
+		return
+	}
 
 	// Open a connection to the voice server
 	err := voice.open()

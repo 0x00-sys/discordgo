@@ -286,8 +286,8 @@ func (s *Session) onInterface(i interface{}) {
 	if update, ok := i.(*VoiceServerUpdate); ok {
 		s.RLock()
 		wsConn := s.wsConn
-		s.RUnlock()
 		s.queueVoiceServerUpdate(wsConn, update)
+		s.RUnlock()
 	}
 	if update, ok := i.(*VoiceStateUpdate); ok {
 		s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdate)}, update)
