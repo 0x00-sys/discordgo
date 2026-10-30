@@ -289,13 +289,16 @@ func (s *Session) onInterface(i interface{}) {
 		s.RUnlock()
 		s.queueVoiceServerUpdate(wsConn, update)
 	}
+	if update, ok := i.(*VoiceStateUpdate); ok {
+		s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdate)}, update)
+	}
 	if err := s.onInterfaceData(i); err != nil {
 		s.log(LogDebug, "error dispatching internal event, %s", err)
 	}
 }
 
-// onInterfaceData updates cached event data and queues internal voice handlers.
-// The caller applies READY session fields separately, under the session lock.
+// onInterfaceData updates cached event data.
+// The caller applies session and voice connection fields separately.
 func (s *Session) onInterfaceData(i interface{}) error {
 	switch t := i.(type) {
 	case *Ready:
@@ -313,8 +316,6 @@ func (s *Session) onInterfaceData(i interface{}) error {
 		if t != nil {
 			setGuildIds(t.Guild)
 		}
-	case *VoiceStateUpdate:
-		go s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdate)}, t)
 	}
 	return s.State.OnInterface(s, i)
 }

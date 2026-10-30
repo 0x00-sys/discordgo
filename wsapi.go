@@ -1316,6 +1316,9 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		if update, ok := e.Struct.(*VoiceServerUpdate); ok {
 			s.queueVoiceServerUpdate(wsConn, update)
 		}
+		if update, ok := e.Struct.(*VoiceStateUpdate); ok {
+			s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdateLocked)}, update)
+		}
 		stateErr = s.onInterfaceData(e.Struct)
 	}
 	s.Unlock()
@@ -1510,6 +1513,14 @@ func (s *Session) channelVoiceJoinManual(gID, cID string, mute, deaf bool) (err 
 
 // onVoiceStateUpdate handles Voice State Update events on the data websocket.
 func (s *Session) onVoiceStateUpdate(st *VoiceStateUpdate) {
+	s.RLock()
+	defer s.RUnlock()
+	s.onVoiceStateUpdateLocked(st)
+}
+
+// onVoiceStateUpdateLocked applies voice fields in dispatch order. The caller
+// holds the session lock so a replacement cannot change the selected connection.
+func (s *Session) onVoiceStateUpdateLocked(st *VoiceStateUpdate) {
 	if st == nil || st.VoiceState == nil {
 		return
 	}
@@ -1520,10 +1531,8 @@ func (s *Session) onVoiceStateUpdate(st *VoiceStateUpdate) {
 	}
 
 	// Check if we have a voice connection to update
-	s.RLock()
 	voice, exists := s.VoiceConnections[st.GuildID]
 	state := s.State
-	s.RUnlock()
 	if !exists || voice == nil || state == nil {
 		return
 	}
