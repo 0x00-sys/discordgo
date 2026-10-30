@@ -1466,7 +1466,7 @@ func TestVoiceReconnectSnapshotsJoinState(t *testing.T) {
 
 	reconnectDone := make(chan struct{})
 	go func() {
-		voice.reconnectWithResume(false)
+		voice.reconnectWithResume(false, nil, nil)
 		close(reconnectDone)
 	}()
 

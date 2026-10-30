@@ -102,8 +102,9 @@ func TestVoiceResumeResultDoesNotChangeReplacement(t *testing.T) {
 			session.VoiceConnections[voice.GuildID] = voice
 			newConn, _ := newGatewayTestConnection(t)
 			done := make(chan struct{})
+			oldClose := voice.close
 			go func() {
-				voice.reconnectWithResume(true)
+				voice.reconnectWithResume(true, nil, oldClose)
 				close(done)
 			}()
 			defer func() {
