@@ -766,7 +766,7 @@ func (v *VoiceConnection) open() (err error) {
 
 // wsListen listens on the voice websocket for messages and passes them
 // to the voice event handler.  This is automatically called by the Open func
-func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}) {
+func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, closeChan <-chan struct{}) {
 
 	v.log(LogInformational, "called")
 	defer wsConn.Close()
@@ -775,7 +775,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 		messageType, message, err := wsConn.ReadMessage()
 		if err != nil {
 			select {
-			case <-close:
+			case <-closeChan:
 				return
 			default:
 			}
@@ -792,7 +792,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 
 				// Abandon the voice WS connection
 				v.Lock()
-				if v.wsConn != wsConn || v.close != close {
+				if v.wsConn != wsConn || v.close != closeChan {
 					v.Unlock()
 					return
 				}
@@ -807,7 +807,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 						timer := time.NewTimer(time.Second)
 						select {
 						case <-timer.C:
-						case <-close:
+						case <-closeChan:
 							timer.Stop()
 							return
 						}
@@ -831,7 +831,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 				// Serialize the ownership check and teardown with open/Close.
 				v.lifecycleMu.Lock()
 				v.RLock()
-				current := v.close == close && v.wsConn == nil && v.opening == nil
+				current := v.close == closeChan && v.wsConn == nil && v.opening == nil
 				session := v.session
 				guildID := v.GuildID
 				v.RUnlock()
@@ -841,6 +841,12 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 						delete(session.VoiceConnections, guildID)
 					}
 					session.Unlock()
+					v.Lock()
+					if !v.disconnecting && v.disconnectCancel != nil {
+						close(v.disconnectCancel)
+					}
+					v.disconnecting = true
+					v.Unlock()
 					v.closeLocked(nil)
 				}
 				v.lifecycleMu.Unlock()
@@ -864,17 +870,17 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 
 				// Start reconnect goroutine then exit.
 				canResume := !isCloseErr || closeErr.Code == 4015 || closeErr.Code < 4000
-				go v.reconnectWithResume(canResume, nil, close)
+				go v.reconnectWithResume(canResume, nil, closeChan)
 			}
 			return
 		}
 
 		// Pass received message to voice event handler
 		select {
-		case <-close:
+		case <-closeChan:
 			return
 		default:
-			v.dispatchVoiceMessage(wsConn, close, messageType, message)
+			v.dispatchVoiceMessage(wsConn, closeChan, messageType, message)
 		}
 	}
 }
