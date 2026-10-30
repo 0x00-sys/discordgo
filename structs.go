@@ -679,7 +679,7 @@ type Channel struct {
 	// Thread-specific fields not needed by other channels
 	ThreadMetadata *ThreadMetadata `json:"thread_metadata,omitempty"`
 	// Thread member object for the current user, if they have joined the thread, only included on certain API endpoints
-	Member *ThreadMember `json:"thread_member"`
+	Member *ThreadMember `json:"member"`
 
 	// All thread members. State channels only.
 	Members []*ThreadMember `json:"-"`
