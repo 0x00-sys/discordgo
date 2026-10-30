@@ -764,7 +764,7 @@ func (v *VoiceConnection) wsListen(wsConn *websocket.Conn, close <-chan struct{}
 
 				// Start reconnect goroutine then exit.
 				canResume := !isCloseErr || closeErr.Code == 4015 || closeErr.Code < 4000
-				go v.reconnectWithResume(canResume)
+				go v.reconnectWithResume(canResume, nil, close)
 			}
 			return
 		}
@@ -1789,14 +1789,24 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 // It will be cleaned up once a proven stable option is flushed out.
 // aka: this is ugly shit code, please don't judge too harshly.
 func (v *VoiceConnection) reconnect() {
-	v.reconnectWithResume(true)
+	v.RLock()
+	wsConn := v.wsConn
+	closeChan := v.close
+	v.RUnlock()
+	v.reconnectWithResume(true, wsConn, closeChan)
 }
 
-func (v *VoiceConnection) reconnectWithResume(canResume bool) {
+func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.Conn, closeChan <-chan struct{}) {
 
 	v.log(LogInformational, "called")
 
 	v.Lock()
+	// The listener may have queued this work before a replacement was installed.
+	// A resumed websocket retains the close signal, so check both identities.
+	if v.wsConn != wsConn || v.close != closeChan {
+		v.Unlock()
+		return
+	}
 	if v.reconnecting {
 		if !canResume {
 			v.reconnectAgain = true
@@ -1807,7 +1817,6 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool) {
 	}
 	v.reconnecting = true
 	v.reconnectAgain = false
-	closeChan := v.close
 	v.Unlock()
 
 	if canResume && v.canResumeVoice() && v.isSessionVoiceConnection() {
