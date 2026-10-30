@@ -508,6 +508,8 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 		}
 		if rl.Global || strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
 			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
+		} else if rl.RetryAfter > 0 {
+			bucket.setRetryReset(time.Now().Add(rl.RetryAfter))
 		}
 
 		rateLimit := &RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}

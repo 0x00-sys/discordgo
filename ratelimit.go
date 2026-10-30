@@ -110,7 +110,7 @@ func (r *RateLimiter) cleanupStaleBuckets(now time.Time) {
 		if atomic.LoadInt32(&bucket.activeRequests) != 0 {
 			continue
 		}
-		if reset := bucket.resetAt.Load(); reset > nowUnix {
+		if bucket.resetAt.Load() > nowUnix || bucket.retryUntil.Load() > nowUnix {
 			continue
 		}
 		ttl := rateLimitBucketTTL
@@ -133,6 +133,10 @@ func (r *RateLimiter) GetWaitTime(b *Bucket, minRemaining int) time.Duration {
 	// then we need to take it easy and relax a little
 	if b.Remaining < minRemaining && b.reset.After(now) {
 		wait = b.reset.Sub(now)
+	}
+	// A resource limit can require a longer wait even when route quota remains.
+	if retryWait := time.Unix(0, b.retryUntil.Load()).Sub(now); retryWait > wait {
+		wait = retryWait
 	}
 
 	// Check for global ratelimits
@@ -245,6 +249,7 @@ type Bucket struct {
 	lockQueue       chan struct{}
 	lastReset       time.Time
 	resetAt         atomic.Int64
+	retryUntil      atomic.Int64
 	lastUsed        atomic.Int64
 	activeRequests  int32
 	ttl             time.Duration
@@ -297,6 +302,17 @@ func (b *Bucket) setGlobalReset(reset time.Time) {
 	deadline := reset.UnixNano()
 	for previous := atomic.LoadInt64(b.global); previous < deadline; previous = atomic.LoadInt64(b.global) {
 		if atomic.CompareAndSwapInt64(b.global, previous, deadline) {
+			return
+		}
+	}
+}
+
+func (b *Bucket) setRetryReset(reset time.Time) {
+	// Bodies can finish out of order after Release has unlocked the bucket.
+	// Publish without taking the lock held by requests already waiting on it.
+	deadline := reset.UnixNano()
+	for previous := b.retryUntil.Load(); previous < deadline; previous = b.retryUntil.Load() {
+		if b.retryUntil.CompareAndSwap(previous, deadline) {
 			return
 		}
 	}
