@@ -283,6 +283,12 @@ func (s *Session) onInterface(i interface{}) {
 		s.onReadyLocked(r)
 		s.Unlock()
 	}
+	if update, ok := i.(*VoiceServerUpdate); ok {
+		s.RLock()
+		wsConn := s.wsConn
+		s.RUnlock()
+		s.queueVoiceServerUpdate(wsConn, update)
+	}
 	if err := s.onInterfaceData(i); err != nil {
 		s.log(LogDebug, "error dispatching internal event, %s", err)
 	}
@@ -307,8 +313,6 @@ func (s *Session) onInterfaceData(i interface{}) error {
 		if t != nil {
 			setGuildIds(t.Guild)
 		}
-	case *VoiceServerUpdate:
-		go s.callEventHandler(&eventHandlerInstance{voiceServerUpdateEventHandler((*Session).onVoiceServerUpdate)}, t)
 	case *VoiceStateUpdate:
 		go s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdate)}, t)
 	}
