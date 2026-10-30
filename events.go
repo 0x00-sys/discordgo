@@ -201,12 +201,28 @@ func (e *GuildMemberAdd) UnmarshalJSON(b []byte) error {
 type GuildMemberUpdate struct {
 	*Member
 	BeforeUpdate *Member `json:"-"`
+
+	// Omission is distinct from an explicit nickname clear or pending=false.
+	nickMissing    bool
+	pendingMissing bool
 }
 
 // UnmarshalJSON is a helper function to unmarshal GuildMemberUpdate object.
 // It keeps the embedded Member's UnmarshalJSON from being promoted onto a nil Member.
 func (e *GuildMemberUpdate) UnmarshalJSON(b []byte) error {
-	return json.Unmarshal(b, &e.Member)
+	if err := json.Unmarshal(b, &e.Member); err != nil {
+		return err
+	}
+	var fields struct {
+		Nick    json.RawMessage `json:"nick"`
+		Pending json.RawMessage `json:"pending"`
+	}
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return err
+	}
+	e.nickMissing = len(fields.Nick) == 0
+	e.pendingMissing = len(fields.Pending) == 0
+	return nil
 }
 
 // GuildMemberRemove is the data for a GuildMemberRemove event.
