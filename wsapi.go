@@ -635,11 +635,12 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 			// the current session.
 			s.RLock()
 			sameConnection := s.wsConn == wsConn
+			gateway := s.gateway
 			s.RUnlock()
 
 			if sameConnection {
 
-				s.log(LogWarning, "error reading from gateway %s websocket, %s", s.gateway, readErr)
+				s.log(LogWarning, "error reading from gateway %s websocket, %s", gateway, readErr)
 				closeCode := websocket.CloseNormalClosure
 				if shouldReconnectOnGatewayClose(readErr) {
 					closeCode = websocket.CloseServiceRestart
@@ -765,6 +766,7 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 		s.RLock()
 		lastAck := s.lastHeartbeatAck
 		lastSent := s.lastHeartbeatSent
+		gateway := s.gateway
 		s.RUnlock()
 		missedAck := lastAck.Before(lastSent)
 		if !missedAck {
@@ -787,7 +789,7 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 				return
 			}
 			if err != nil {
-				s.log(LogError, "error sending heartbeat to gateway %s, %s", s.gateway, err)
+				s.log(LogError, "error sending heartbeat to gateway %s, %s", gateway, err)
 			} else {
 				s.log(LogError, "haven't gotten a heartbeat ACK for heartbeat sent %v ago, triggering a reconnection", time.Since(lastSent))
 			}
