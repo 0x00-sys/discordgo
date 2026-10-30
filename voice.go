@@ -69,6 +69,8 @@ type VoiceConnection struct {
 	serverUpdateVersion uint64
 	// Identifies the latest join or successful channel change.
 	joinVersion uint64
+	// Keep the old transport excluded across requests for a pending channel change.
+	joinPreviousClose <-chan struct{}
 
 	// Used to send a close signal to goroutines
 	close chan struct{}
@@ -234,6 +236,10 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 			return ErrWSNotFound
 		}
 		guildID := v.GuildID
+		previousClose := v.joinPreviousClose
+		if v.ChannelID != channelID {
+			previousClose = v.close
+		}
 		v.RUnlock()
 
 		session.RLock()
@@ -248,6 +254,7 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 		if err == nil {
 			v.Lock()
 			v.joinVersion++
+			v.joinPreviousClose = previousClose
 			v.ChannelID = channelID
 			v.deaf = deaf
 			v.mute = mute
@@ -366,6 +373,7 @@ func (v *VoiceConnection) closeLocked(joinVersion *uint64) {
 
 	v.Ready = false
 	v.speaking = false
+	v.joinPreviousClose = nil
 
 	if v.close != nil {
 		v.log(LogInformational, "closing v.close")
