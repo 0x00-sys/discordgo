@@ -907,6 +907,7 @@ func newUpdateStatusData(idle int, activityType ActivityType, name, url string) 
 
 	if idle > 0 {
 		usd.IdleSince = &idle
+		usd.Status = "idle"
 	}
 
 	if name != "" {
