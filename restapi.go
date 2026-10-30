@@ -1081,8 +1081,7 @@ const (
 		PermissionVoiceUseVAD |
 		PermissionUseEmbeddedActivities |
 		PermissionUseSoundboard |
-		PermissionUseExternalSounds |
-		PermissionSetVoiceChannelStatus
+		PermissionUseExternalSounds
 )
 
 func finalizeChannelPermissions(apermissions int64, member *Member, channelType ChannelType, thread bool) int64 {
@@ -3594,6 +3593,9 @@ func (s *Session) inviteTargetUsersBulk(endpoint string, userIDs []string, optio
 }
 
 // ChannelVoiceStatusSet sets or clears a voice channel status.
+// Members connected to the channel need PermissionSetVoiceChannelStatus; a
+// denied PermissionVoiceConnect does not remove it. Members not connected to
+// the channel also need PermissionManageChannels.
 // channelID : The ID of a voice Channel.
 // status    : New status text, or nil to clear the status.
 func (s *Session) ChannelVoiceStatusSet(channelID string, status *string, options ...RequestOption) (err error) {
