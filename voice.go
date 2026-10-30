@@ -69,6 +69,8 @@ type VoiceConnection struct {
 	serverUpdateVersion uint64
 	// Identifies the latest join or successful channel change.
 	joinVersion uint64
+	// Identifies the join request that queued another recovery.
+	reconnectAgainVersion uint64
 	// Keep the old transport excluded across requests for a pending channel change.
 	joinPreviousClose <-chan struct{}
 
@@ -1922,6 +1924,7 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.
 	if v.reconnecting {
 		if !canResume {
 			v.reconnectAgain = true
+			v.reconnectAgainVersion = v.joinVersion
 		}
 		v.log(LogInformational, "already reconnecting to channel %s, exiting", v.ChannelID)
 		v.Unlock()
@@ -1970,6 +1973,7 @@ func (v *VoiceConnection) reconnectUDPIfCurrent(udpConn *net.UDPConn, close <-ch
 	}
 	if v.reconnecting {
 		v.reconnectAgain = true
+		v.reconnectAgainVersion = v.joinVersion
 		v.Unlock()
 		v.closeLocked(nil)
 		v.lifecycleMu.Unlock()
@@ -1999,7 +2003,9 @@ func (v *VoiceConnection) continueReconnect() bool {
 	defer v.Unlock()
 	if v.reconnectAgain {
 		v.reconnectAgain = false
-		return true
+		if v.reconnectAgainVersion == v.joinVersion {
+			return true
+		}
 	}
 	v.reconnecting = false
 	return false
