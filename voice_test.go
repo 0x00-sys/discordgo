@@ -1591,6 +1591,7 @@ func TestVoiceChangeChannelNilSessionWsConn(t *testing.T) {
 		GuildID: "guild",
 		session: &Session{},
 	}
+	v.session.VoiceConnections = map[string]*VoiceConnection{v.GuildID: v}
 
 	err := v.ChangeChannel("channel", false, false)
 	if !errors.Is(err, ErrWSNotFound) {
