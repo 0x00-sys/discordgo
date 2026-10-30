@@ -1434,6 +1434,7 @@ func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice 
 	s.log(LogInformational, "called")
 	s.voiceMutex.Lock()
 
+	var previousClose <-chan struct{}
 	// A disconnect unregisters its connection before writing to the
 	// gateway. Select and configure a registered connection in a loop
 	// so a join racing that teardown switches to a replacement.
@@ -1470,6 +1471,10 @@ func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice 
 			s.Unlock()
 			continue
 		}
+		previousClose = nil
+		if voice.ChannelID != cID {
+			previousClose = voice.close
+		}
 		voice.GuildID = gID
 		voice.ChannelID = cID
 		voice.deaf = deaf
@@ -1499,7 +1504,7 @@ func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice 
 	}
 
 	// doesn't exactly work perfect yet.. TODO
-	err = voice.waitUntilConnected()
+	err = voice.waitUntilConnected(previousClose)
 	if err != nil {
 		s.log(LogWarning, "error waiting for voice to connect, %s", err)
 		voice.closeWithJoinVersion(&joinVersion)

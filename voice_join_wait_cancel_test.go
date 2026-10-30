@@ -36,7 +36,7 @@ func TestVoiceJoinWaitCancellation(t *testing.T) {
 					}
 				}
 				result := make(chan error, 1)
-				go func() { result <- voice.waitUntilConnected() }()
+				go func() { result <- voice.waitUntilConnected(nil) }()
 				synctest.Wait()
 				closedAt := time.Now()
 				if !tc.beforeWait {
