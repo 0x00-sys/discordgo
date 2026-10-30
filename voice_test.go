@@ -1613,6 +1613,7 @@ func TestVoiceDisconnectNilSessionWsConn(t *testing.T) {
 		sessionID: "session",
 		session:   &Session{},
 	}
+	v.session.VoiceConnections = map[string]*VoiceConnection{v.GuildID: v}
 
 	err := v.Disconnect()
 	if !errors.Is(err, ErrWSNotFound) {
