@@ -1559,7 +1559,7 @@ func TestVoiceReconnectResetSkipsReplacement(t *testing.T) {
 	}
 	done := make(chan resetResult, 1)
 	go func() {
-		sent, err := stale.sendDisconnectIfCurrent()
+		sent, err := stale.sendDisconnectIfCurrent(0)
 		done <- resetResult{sent: sent, err: err}
 	}()
 	time.Sleep(50 * time.Millisecond)

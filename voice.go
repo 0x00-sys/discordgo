@@ -2058,7 +2058,7 @@ func (v *VoiceConnection) reconnectAfterClose() {
 
 		v.log(LogInformational, "trying to reconnect to channel %s", channelID)
 
-		_, err := session.channelVoiceJoin(guildID, channelID, mute, deaf, v)
+		_, joinVersion, err := session.channelVoiceJoin(guildID, channelID, mute, deaf, v)
 		if err == nil {
 			v.log(LogInformational, "successfully reconnected to channel %s", channelID)
 			return
@@ -2068,7 +2068,7 @@ func (v *VoiceConnection) reconnectAfterClose() {
 
 		// if the reconnect above didn't work lets just send a disconnect
 		// packet to reset things.
-		sent, err := v.sendDisconnectIfCurrent()
+		sent, err := v.sendDisconnectIfCurrent(joinVersion)
 		if !sent {
 			return
 		}
@@ -2080,9 +2080,9 @@ func (v *VoiceConnection) reconnectAfterClose() {
 }
 
 // sendDisconnectIfCurrent sends a voice state reset only while this
-// connection still owns its guild entry. The ownership check and OP4
+// connection and join attempt still own its guild entry. The check and OP4
 // write are serialized with joins and permanent disconnects.
-func (v *VoiceConnection) sendDisconnectIfCurrent() (sent bool, err error) {
+func (v *VoiceConnection) sendDisconnectIfCurrent(joinVersion uint64) (sent bool, err error) {
 	v.RLock()
 	session := v.session
 	guildID := v.GuildID
@@ -2093,7 +2093,7 @@ func (v *VoiceConnection) sendDisconnectIfCurrent() (sent bool, err error) {
 
 	session.voiceMutex.Lock()
 	v.RLock()
-	current := v.session == session && v.GuildID == guildID && !v.disconnecting
+	current := v.session == session && v.GuildID == guildID && !v.disconnecting && v.joinVersion == joinVersion
 	v.RUnlock()
 	if current {
 		session.RLock()
