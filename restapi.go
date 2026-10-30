@@ -1697,6 +1697,9 @@ func (s *Session) GuildMemberEdit(guildID, userID string, data *GuildMemberParam
 	}
 
 	err = unmarshal(body, &st)
+	if err == nil && st != nil {
+		st.GuildID = guildID
+	}
 	return
 }
 
