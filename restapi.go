@@ -5187,6 +5187,9 @@ func (s *Session) GuildScheduledEventUsers(guildID, eventID string, limit int, w
 	}
 
 	err = unmarshal(body, &st)
+	if err == nil {
+		linkScheduledEventMembers(guildID, st)
+	}
 	return
 }
 
@@ -5218,7 +5221,22 @@ func (s *Session) GuildScheduledEventExceptionUsers(guildID, eventID, exceptionI
 	}
 
 	err = unmarshal(body, &users)
+	if err == nil {
+		linkScheduledEventMembers(guildID, users)
+	}
 	return
+}
+
+func linkScheduledEventMembers(guildID string, users []*GuildScheduledEventUser) {
+	for _, user := range users {
+		if user == nil || user.Member == nil {
+			continue
+		}
+		user.Member.GuildID = guildID
+		if user.Member.User == nil {
+			user.Member.User = user.User
+		}
+	}
 }
 
 // GuildScheduledEventUserCounts returns subscriber counts for an event and up to 10 exceptions.
