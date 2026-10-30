@@ -1141,6 +1141,9 @@ func (s *State) ChannelAdd(channel *Channel) error {
 
 	s.Lock()
 	defer s.Unlock()
+	if channel.IsThread() && !s.TrackThreadMembers {
+		channel = threadWithoutMembers(channel)
+	}
 
 	// If the channel exists, replace it
 	if c, ok := s.channelMap[channel.ID]; ok {
