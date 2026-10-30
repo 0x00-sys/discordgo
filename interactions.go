@@ -335,6 +335,7 @@ func (i *Interaction) UnmarshalJSON(raw []byte) error {
 
 	*i = Interaction(tmp.interaction)
 
+	var members map[string]*Member
 	switch tmp.Type {
 	case InteractionApplicationCommand, InteractionApplicationCommandAutocomplete:
 		v := ApplicationCommandInteractionData{}
@@ -343,6 +344,9 @@ func (i *Interaction) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		i.Data = v
+		if v.Resolved != nil {
+			members = v.Resolved.Members
+		}
 	case InteractionMessageComponent:
 		v := MessageComponentInteractionData{}
 		err = json.Unmarshal(tmp.Data, &v)
@@ -350,6 +354,7 @@ func (i *Interaction) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		i.Data = v
+		members = v.Resolved.Members
 	case InteractionModalSubmit:
 		v := ModalSubmitInteractionData{}
 		err = json.Unmarshal(tmp.Data, &v)
@@ -357,6 +362,16 @@ func (i *Interaction) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		i.Data = v
+		members = v.Resolved.Members
+	}
+	// Member objects omit the guild ID supplied by the outer interaction.
+	if i.Member != nil {
+		i.Member.GuildID = i.GuildID
+	}
+	for _, member := range members {
+		if member != nil {
+			member.GuildID = i.GuildID
+		}
 	}
 	return nil
 }
