@@ -4868,7 +4868,7 @@ func (s *Session) interactionRespond(interaction *Interaction, resp *Interaction
 	bucketID := interactionResponseBucketID(interaction.ID)
 	options = withoutAuthorizationOptions(options)
 
-	if resp.Data != nil {
+	if resp.Data != nil && (resp.Type != InteractionResponseUpdateMessage || !resp.Data.AllowedMentionsSet) {
 		respCopy := *resp
 		respCopy.Data = s.applyAllowedMentionsToInteractionResponse(resp.Data)
 		resp = &respCopy
