@@ -1895,14 +1895,24 @@ func (v *VoiceConnection) continueReconnect() bool {
 
 func (v *VoiceConnection) reconnectAfterClose() {
 
-	if !v.isSessionVoiceConnection() {
+	v.RLock()
+	session := v.session
+	v.RUnlock()
+	if session == nil || !v.isSessionVoiceConnection() {
 		return
 	}
+	cancel := session.reconnectCancelSignal()
 
 	wait := time.Duration(1)
 	for {
 
-		<-time.After(wait * time.Second)
+		timer := time.NewTimer(wait * time.Second)
+		select {
+		case <-timer.C:
+		case <-cancel:
+			timer.Stop()
+			return
+		}
 		wait *= 2
 		if wait > 600 {
 			wait = 600
