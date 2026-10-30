@@ -1405,6 +1405,16 @@ func (s *State) ThreadMembersUpdate(tmu *ThreadMembersUpdate) error {
 		for _, removedMember := range tmu.RemovedMembers {
 			removedMembers[removedMember] = struct{}{}
 		}
+		if updated.Member != nil {
+			userID := updated.Member.UserID
+			// GUILD_CREATE omits the current member's user ID.
+			if userID == "" && s.User != nil {
+				userID = s.User.ID
+			}
+			if _, removed := removedMembers[userID]; removed {
+				updated.Member = nil
+			}
+		}
 
 		members := updated.Members[:0]
 		for _, member := range updated.Members {
