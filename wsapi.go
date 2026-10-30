@@ -1673,8 +1673,8 @@ func redactedIdentify(op identifyOp) identifyOp {
 	return op
 }
 
-func (s *Session) reconnectVoiceConnections() {
-	cancel := s.reconnectCancelSignal()
+// Keep the batch bound to its caller's session lifetime if Close/Open races it.
+func (s *Session) reconnectVoiceConnections(cancel <-chan struct{}) {
 	s.RLock()
 	voiceConnections := make([]*VoiceConnection, 0, len(s.VoiceConnections))
 	for _, voice := range s.VoiceConnections {
@@ -1762,7 +1762,7 @@ func (s *Session) reconnect() {
 				// happens.  So we're doing this for now just to improve
 				// stability in those edge cases.
 				if s.ShouldReconnectVoiceOnSessionError {
-					s.reconnectVoiceConnections()
+					s.reconnectVoiceConnections(cancel)
 				}
 				return
 			}
