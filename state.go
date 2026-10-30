@@ -2521,18 +2521,20 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				return ErrStateInvalidData
 			}
 
-			var old *Member
-			old, err = s.Member(t.GuildID, t.User.ID)
-			if err == nil {
-				oldCopy := *old
-				if oldCopy.User != nil {
-					oldUser := *oldCopy.User
-					oldCopy.User = &oldUser
+			s.Lock()
+			defer s.Unlock()
+			member := *t.Member
+			if old := s.memberMap[t.GuildID][t.User.ID]; old != nil {
+				t.BeforeUpdate = copyMember(old)
+				if t.nickMissing {
+					member.Nick = old.Nick
 				}
-				t.BeforeUpdate = &oldCopy
+				if t.pendingMissing {
+					member.Pending = old.Pending
+				}
 			}
 
-			err = s.MemberAdd(t.Member)
+			err = s.memberAdd(&member)
 		}
 	case *GuildMemberRemove:
 		if t == nil || t.Member == nil || t.Member.GuildID == "" {
