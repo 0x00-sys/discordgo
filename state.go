@@ -1765,6 +1765,10 @@ func mergeMessageUpdate(cached, update *Message, fields map[string]json.RawMessa
 		}
 	}
 
+	if merged.Member != nil {
+		member := *merged.Member
+		merged.Member = &member
+	}
 	linkMessageMemberUser(&merged)
 	linkMessageInteractionMemberUser(&merged)
 	return &merged
