@@ -77,16 +77,20 @@ const (
 	// slots available for Heartbeat, Identify, and Resume payloads.
 	gatewaySendRateLimit       = 115
 	gatewaySendRateLimitWindow = time.Minute
+	gatewayPresenceRateLimit   = 5
+	gatewayPresenceWindow      = 20 * time.Second
 )
 
 type gatewaySendRateLimiter struct {
-	mu         sync.Mutex
-	connection *websocket.Conn
-	cancel     chan struct{}
-	sent       int
-	resetAt    time.Time
-	now        func() time.Time
-	wait       func(time.Duration, <-chan struct{}) bool
+	mu             sync.Mutex
+	connection     *websocket.Conn
+	cancel         chan struct{}
+	sent           int
+	resetAt        time.Time
+	presenceSentAt [gatewayPresenceRateLimit]time.Time
+	presenceNext   int
+	now            func() time.Time
+	wait           func(time.Duration, <-chan struct{}) bool
 }
 
 func (r *gatewaySendRateLimiter) reset(connection *websocket.Conn) {
@@ -98,6 +102,8 @@ func (r *gatewaySendRateLimiter) reset(connection *websocket.Conn) {
 	r.cancel = make(chan struct{})
 	r.sent = 0
 	r.resetAt = r.timeNow().Add(gatewaySendRateLimitWindow)
+	r.presenceSentAt = [gatewayPresenceRateLimit]time.Time{}
+	r.presenceNext = 0
 }
 
 func (r *gatewaySendRateLimiter) stop(connection *websocket.Conn) {
@@ -110,7 +116,7 @@ func (r *gatewaySendRateLimiter) stop(connection *websocket.Conn) {
 	}
 }
 
-func (r *gatewaySendRateLimiter) acquire(connection *websocket.Conn) bool {
+func (r *gatewaySendRateLimiter) acquire(connection *websocket.Conn, presence bool) bool {
 	for {
 		r.mu.Lock()
 		if r.connection == nil {
@@ -133,13 +139,28 @@ func (r *gatewaySendRateLimiter) acquire(connection *websocket.Conn) bool {
 			r.sent = 0
 			r.resetAt = now.Add(gatewaySendRateLimitWindow)
 		}
-		if r.sent < gatewaySendRateLimit {
+		delay := time.Duration(0)
+		if r.sent >= gatewaySendRateLimit {
+			delay = r.resetAt.Sub(now)
+		}
+		if presence {
+			// The oldest of the last five updates must be at least 20 seconds
+			// old; a fixed window would allow bursts across its boundary.
+			presenceDelay := r.presenceSentAt[r.presenceNext].Add(gatewayPresenceWindow).Sub(now)
+			if presenceDelay > delay {
+				delay = presenceDelay
+			}
+		}
+		if delay <= 0 {
 			r.sent++
+			if presence {
+				r.presenceSentAt[r.presenceNext] = now
+				r.presenceNext = (r.presenceNext + 1) % gatewayPresenceRateLimit
+			}
 			r.mu.Unlock()
 			return true
 		}
 
-		delay := r.resetAt.Sub(now)
 		cancel := r.cancel
 		wait := r.wait
 		r.mu.Unlock()
@@ -1125,7 +1146,8 @@ func (s *Session) gatewayWriteJSON(data interface{}) (err error) {
 	if wsConn == nil {
 		return ErrWSNotFound
 	}
-	if !s.gatewaySendRateLimiter.acquire(wsConn) {
+	_, presence := data.(updateStatusOp)
+	if !s.gatewaySendRateLimiter.acquire(wsConn, presence) {
 		return ErrWSNotFound
 	}
 
