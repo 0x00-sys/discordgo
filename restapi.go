@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -474,7 +475,7 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 	case http.StatusBadGateway:
 		// Retry sending request if possible. Avoid replaying non-idempotent
 		// requests because Discord may have already committed the write.
-		if !shouldRetryRESTRequest(method) {
+		if !shouldRetryRESTRequest(method, req.Header.Get("Content-Type")) {
 			err = newRestError(req, resp, response)
 		} else if sequence < cfg.MaxRestRetries {
 
@@ -552,10 +553,14 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 	return
 }
 
-func shouldRetryRESTRequest(method string) bool {
+func shouldRetryRESTRequest(method, contentType string) bool {
 	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete:
 		return true
+	case http.MethodPatch:
+		// Multipart message edits append files, so replay can duplicate uploads.
+		mediaType, _, _ := mime.ParseMediaType(contentType)
+		return mediaType != "multipart/form-data"
 	default:
 		return false
 	}
