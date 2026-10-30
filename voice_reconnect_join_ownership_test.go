@@ -44,7 +44,7 @@ func TestVoiceReconnectDoesNotRejoinAfterDisconnect(t *testing.T) {
 	}()
 	go func() {
 		defer close(done)
-		voice.reconnect()
+		voice.reconnectWithResume(true, nil, nil)
 	}()
 	select {
 	case <-paused:

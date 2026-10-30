@@ -44,7 +44,7 @@ func testVoiceReconnectBackoffCancellation(t *testing.T, disconnect func(*Sessio
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			voice.reconnect()
+			voice.reconnectWithResume(true, nil, nil)
 		}()
 		synctest.Wait()
 		// The unavailable gateway makes recovery back off through 1, 2,

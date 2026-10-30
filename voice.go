@@ -1898,14 +1898,6 @@ func (v *VoiceConnection) opusReceiver(udpConn *net.UDPConn, close <-chan struct
 // NOTE : This func is messy and a WIP while I find what works.
 // It will be cleaned up once a proven stable option is flushed out.
 // aka: this is ugly shit code, please don't judge too harshly.
-func (v *VoiceConnection) reconnect() {
-	v.RLock()
-	wsConn := v.wsConn
-	closeChan := v.close
-	v.RUnlock()
-	v.reconnectWithResume(true, wsConn, closeChan)
-}
-
 func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.Conn, closeChan <-chan struct{}) {
 
 	v.log(LogInformational, "called")
