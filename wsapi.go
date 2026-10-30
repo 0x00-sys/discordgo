@@ -1289,9 +1289,6 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		return e, nil
 	}
 
-	// Store the message sequence
-	atomic.StoreInt64(s.sequence, e.Sequence)
-
 	// Map event to registered event handlers and pass it along to any registered handlers.
 	if eh, ok := registeredInterfaceProviders[e.Type]; ok {
 		e.Struct = eh.New()
@@ -1300,7 +1297,30 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		if err = json.Unmarshal(e.RawData, e.Struct); err != nil {
 			s.log(LogError, "error unmarshalling %s event, %s", e.Type, err)
 		}
+	}
 
+	// Decode before locking, then apply sequence and internal state atomically
+	// with the connection ownership check. Close/Open may replace the socket
+	// while an old reader is decoding its final dispatch.
+	s.Lock()
+	if s.wsConn != wsConn {
+		s.Unlock()
+		return e, nil
+	}
+	atomic.StoreInt64(s.sequence, e.Sequence)
+	var stateErr error
+	if e.Struct != nil {
+		if r, ok := e.Struct.(*Ready); ok && r != nil {
+			s.onReadyLocked(r)
+		}
+		stateErr = s.onInterfaceData(e.Struct)
+	}
+	s.Unlock()
+	if stateErr != nil {
+		s.log(LogDebug, "error dispatching internal event, %s", stateErr)
+	}
+
+	if e.Struct != nil {
 		// Send event to any registered event handlers for it's type.
 		// Because the above doesn't cancel this, in case of an error
 		// the struct could be partially populated or at default values.
@@ -1308,7 +1328,9 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		// it's better to pass along what we received than nothing at all.
 		// TODO: Think about that decision :)
 		// Either way, READY events must fire, even with errors.
-		s.handleEvent(e.Type, e.Struct)
+		// Application callbacks may acquire the session lock or call Close.
+		s.handle(interfaceEventType, e.Struct)
+		s.handle(e.Type, e.Struct)
 	} else if s.LogLevel >= LogWarning {
 		s.log(LogWarning, "unknown event: Op: %d, Seq: %d, Type: %s, Data: %s", e.Operation, e.Sequence, e.Type, redactedGatewayData(e.RawData))
 	}

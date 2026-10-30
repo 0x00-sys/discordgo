@@ -278,6 +278,19 @@ func setGuildIds(g *Guild) {
 
 // onInterface handles all internal events and routes them to the appropriate internal handler.
 func (s *Session) onInterface(i interface{}) {
+	if r, ok := i.(*Ready); ok && r != nil {
+		s.Lock()
+		s.onReadyLocked(r)
+		s.Unlock()
+	}
+	if err := s.onInterfaceData(i); err != nil {
+		s.log(LogDebug, "error dispatching internal event, %s", err)
+	}
+}
+
+// onInterfaceData updates cached event data and queues internal voice handlers.
+// The caller applies READY session fields separately, under the session lock.
+func (s *Session) onInterfaceData(i interface{}) error {
 	switch t := i.(type) {
 	case *Ready:
 		if t == nil {
@@ -286,7 +299,6 @@ func (s *Session) onInterface(i interface{}) {
 		for _, g := range t.Guilds {
 			setGuildIds(g)
 		}
-		s.onReady(t)
 	case *GuildCreate:
 		if t != nil {
 			setGuildIds(t.Guild)
@@ -300,20 +312,15 @@ func (s *Session) onInterface(i interface{}) {
 	case *VoiceStateUpdate:
 		go s.callEventHandler(&eventHandlerInstance{voiceStateUpdateEventHandler((*Session).onVoiceStateUpdate)}, t)
 	}
-	err := s.State.OnInterface(s, i)
-	if err != nil {
-		s.log(LogDebug, "error dispatching internal event, %s", err)
-	}
+	return s.State.OnInterface(s, i)
 }
 
-// onReady handles the ready event.
-func (s *Session) onReady(r *Ready) {
+// onReadyLocked handles the ready event with the session lock held.
+func (s *Session) onReadyLocked(r *Ready) {
 
 	// Store the SessionID within the Session struct.
-	s.Lock()
 	s.sessionID = r.SessionID
 
 	// Store the ResumeGatewayURL within the Session struct.
 	s.resumeGatewayURL = r.ResumeGatewayURL
-	s.Unlock()
 }
