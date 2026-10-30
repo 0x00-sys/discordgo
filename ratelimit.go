@@ -292,7 +292,14 @@ func (b *Bucket) setReset(reset time.Time) {
 }
 
 func (b *Bucket) setGlobalReset(reset time.Time) {
-	atomic.StoreInt64(b.global, reset.UnixNano())
+	// Responses from different in-flight buckets may arrive out of order.
+	// A shorter limit must not undo a longer deadline already observed.
+	deadline := reset.UnixNano()
+	for previous := atomic.LoadInt64(b.global); previous < deadline; previous = atomic.LoadInt64(b.global) {
+		if atomic.CompareAndSwapInt64(b.global, previous, deadline) {
+			return
+		}
+	}
 }
 
 func (b *Bucket) touch(now time.Time) {
