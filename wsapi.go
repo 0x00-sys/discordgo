@@ -225,11 +225,21 @@ type resumePacket struct {
 // Open creates a websocket connection to Discord.
 // See: https://discord.com/developers/docs/topics/gateway#connecting
 func (s *Session) Open() error {
+	return s.open(nil)
+}
+
+// open keeps automatic retries bound to their original cancellation signal.
+// A nil signal lets an explicit Open start a new session after Close.
+func (s *Session) open(retryCancel <-chan struct{}) error {
 	s.log(LogInformational, "called")
 
 	var err error
 
 	s.Lock()
+	if reconnectCanceled(retryCancel) {
+		s.Unlock()
+		return ErrWSNotFound
+	}
 
 	s.ensureReconnectCancelLocked()
 
@@ -1750,7 +1760,7 @@ func (s *Session) reconnect() {
 
 			s.log(LogInformational, "trying to reconnect to gateway")
 
-			err = s.Open()
+			err = s.open(cancel)
 			if err == nil {
 				if reconnectCanceled(cancel) {
 					// Close() cancels the reconnect and tears down the
