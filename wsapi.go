@@ -1422,6 +1422,12 @@ type voiceChannelJoinOp struct {
 //	mute    : If true, you will be set to muted upon joining.
 //	deaf    : If true, you will be set to deafened upon joining.
 func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *VoiceConnection, err error) {
+	return s.channelVoiceJoin(gID, cID, mute, deaf, nil)
+}
+
+// channelVoiceJoin limits automatic recovery to its registered connection.
+// A nil retryVoice allows an explicit join to create a replacement.
+func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice *VoiceConnection) (voice *VoiceConnection, err error) {
 
 	s.log(LogInformational, "called")
 	s.voiceMutex.Lock()
@@ -1432,6 +1438,11 @@ func (s *Session) ChannelVoiceJoin(gID, cID string, mute, deaf bool) (voice *Voi
 	// so a join racing that teardown switches to a replacement.
 	for {
 		s.Lock()
+		if retryVoice != nil && s.VoiceConnections[gID] != retryVoice {
+			s.Unlock()
+			s.voiceMutex.Unlock()
+			return nil, ErrWSNotFound
+		}
 		if s.VoiceConnections == nil {
 			s.VoiceConnections = make(map[string]*VoiceConnection)
 		}
