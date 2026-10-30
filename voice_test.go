@@ -858,7 +858,7 @@ func TestUDPOpenDiscoveryDoesNotBlockClose(t *testing.T) {
 	voice := newUDPOpenTestVoice(wsConn, addr)
 
 	openDone := make(chan error, 1)
-	go func() { openDone <- voice.udpOpen() }()
+	go func() { openDone <- voice.udpOpen(voice.wsConn, voice.close) }()
 	select {
 	case <-requestReceived:
 	case <-time.After(time.Second):
@@ -901,7 +901,7 @@ func TestUDPOpenSelectProtocolWriteDoesNotBlockClose(t *testing.T) {
 	voice := newUDPOpenTestVoice(wsConn, addr)
 
 	openDone := make(chan error, 1)
-	go func() { openDone <- voice.udpOpen() }()
+	go func() { openDone <- voice.udpOpen(voice.wsConn, voice.close) }()
 	select {
 	case <-blocking.entered:
 	case <-time.After(time.Second):
@@ -1009,7 +1009,7 @@ func TestUDPOpenSendsSelectedEncryptionMode(t *testing.T) {
 		vc.Unlock()
 	}()
 
-	if err = vc.udpOpen(); err != nil {
+	if err = vc.udpOpen(vc.wsConn, vc.close); err != nil {
 		t.Fatalf("udpOpen() error = %v", err)
 	}
 	if err = <-udpResult; err != nil {
@@ -1220,7 +1220,7 @@ func TestUDPOpenReadTimeout(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err = v.udpOpen()
+	err = v.udpOpen(v.wsConn, v.close)
 	if err == nil {
 		t.Fatal("expected udpOpen to time out waiting for discovery response")
 	}

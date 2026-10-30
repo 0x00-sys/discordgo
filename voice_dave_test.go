@@ -375,7 +375,7 @@ func TestVoiceDAVESessionDescriptionValidation(t *testing.T) {
 	voice := &VoiceConnection{LogLevel: -1}
 	installFakeDAVE(voice, fake, 0)
 
-	if err := voice.onDAVESessionDescription(2); err == nil {
+	if err := voice.onDAVESessionDescription(nil, nil, 2); err == nil {
 		t.Fatal("unsupported protocol version error = nil")
 	}
 	voice.RLock()
@@ -391,7 +391,7 @@ func TestVoiceDAVESessionDescriptionValidation(t *testing.T) {
 		t.Fatalf("rejected session descriptions = %v", descriptions)
 	}
 
-	if err := (&VoiceConnection{}).onDAVESessionDescription(1); err == nil {
+	if err := (&VoiceConnection{}).onDAVESessionDescription(nil, nil, 1); err == nil {
 		t.Fatal("selected DAVE without a backend error = nil")
 	}
 }
@@ -474,7 +474,7 @@ func TestVoiceDAVEInboundProtocolLifecycle(t *testing.T) {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	voice.onEvent(description)
-	voice.onDAVELocalSSRC(42)
+	voice.onDAVELocalSSRC(nil, nil, 42)
 	voice.onEvent([]byte(`{"op":11,"d":{"user_ids":["self","remote","remote"]}}`))
 	voice.onEvent([]byte(`{"op":11,"d":{"user_ids":["remote"]}}`))
 	voice.onEvent([]byte(`{"op":5,"d":{"user_id":"remote","ssrc":55,"speaking":1}}`))

@@ -143,6 +143,6 @@ func (v *VoiceConnection) resumeVoice() (err error) {
 			}
 		}
 
-		v.dispatchVoiceMessage(messageType, message)
+		v.dispatchVoiceMessage(conn, closeChan, messageType, message)
 	}
 }
