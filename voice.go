@@ -942,9 +942,13 @@ func (v *VoiceConnection) onEvent(message []byte) {
 			return
 		}
 
-		for _, h := range handlers {
-			v.callVoiceSpeakingUpdateHandler(h, voiceSpeakingUpdate)
-		}
+		// Participant state is updated in wire order, but user callbacks
+		// must not block the reader from processing later voice events.
+		go func() {
+			for _, h := range handlers {
+				v.callVoiceSpeakingUpdateHandler(h, voiceSpeakingUpdate)
+			}
+		}()
 
 	case 9: // RESUMED
 		return

@@ -688,18 +688,6 @@ func voiceMessageOperation(message []byte) (int, error) {
 	return payload.Operation, nil
 }
 
-func (v *VoiceConnection) updateDAVESpeakingMessage(message []byte) {
-	var event Event
-	if err := json.Unmarshal(message, &event); err != nil {
-		return
-	}
-	var update VoiceSpeakingUpdate
-	if err := json.Unmarshal(event.RawData, &update); err != nil {
-		return
-	}
-	v.onDAVESpeakingUpdate(&update)
-}
-
 func (v *VoiceConnection) dispatchVoiceMessage(messageType int, message []byte) {
 	if messageType == websocket.BinaryMessage {
 		v.handleDAVEBinaryFrame(message)
@@ -712,12 +700,8 @@ func (v *VoiceConnection) dispatchVoiceMessage(messageType int, message []byte) 
 		go v.onEvent(message)
 		return
 	}
-	if operation == 5 {
-		v.updateDAVESpeakingMessage(message)
-	}
-
 	switch operation {
-	case 4, 11, 13,
+	case 4, 5, 11, 13,
 		voiceOpDAVEPrepareTransition,
 		voiceOpDAVEExecuteTransition,
 		voiceOpDAVEPrepareEpoch:
