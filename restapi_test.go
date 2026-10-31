@@ -1152,7 +1152,26 @@ func TestThreadsSearchDefaultsOmitQuery(t *testing.T) {
 	}
 }
 
-func TestThreadsSearchResponseErrors(t *testing.T) {
+func TestSearchResponseErrors(t *testing.T) {
+	searches := []struct {
+		name string
+		call func(*Session) (interface{}, error)
+	}{
+		{"threads", func(s *Session) (interface{}, error) {
+			result, err := s.ThreadsSearch("channel", nil)
+			if result == nil {
+				return nil, err
+			}
+			return result, err
+		}},
+		{"guild messages", func(s *Session) (interface{}, error) {
+			result, err := s.GuildMessagesSearch("guild", nil)
+			if result == nil {
+				return nil, err
+			}
+			return result, err
+		}},
+	}
 	tests := []struct {
 		name          string
 		status        int
@@ -1174,61 +1193,67 @@ func TestThreadsSearchResponseErrors(t *testing.T) {
 		{name: "null success response", status: http.StatusOK, body: `null`, wantUnmarshal: true},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			session, err := New("Bot test")
-			if err != nil {
-				t.Fatalf("New returned error: %v", err)
-			}
-			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				return &http.Response{
-					StatusCode: tt.status,
-					Status:     strconv.Itoa(tt.status) + " " + http.StatusText(tt.status),
-					Body:       io.NopCloser(strings.NewReader(tt.body)),
-					Request:    r,
-				}, nil
+	for _, search := range searches {
+		for _, tt := range tests {
+			t.Run(search.name+"/"+tt.name, func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatalf("New returned error: %v", err)
+				}
+				session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: tt.status,
+						Status:     strconv.Itoa(tt.status) + " " + http.StatusText(tt.status),
+						Body:       io.NopCloser(strings.NewReader(tt.body)),
+						Request:    r,
+					}, nil
+				})
+
+				result, err := search.call(session)
+				if result != nil {
+					t.Fatalf("result = %#v, want nil", result)
+				}
+
+				if tt.wantIndex {
+					var indexErr *SearchIndexNotReadyError
+					if !errors.As(err, &indexErr) {
+						t.Fatalf("error = %T %v, want *SearchIndexNotReadyError", err, err)
+					}
+					var legacyErr *ThreadSearchIndexNotReadyError
+					if !errors.As(err, &legacyErr) || legacyErr != indexErr {
+						t.Fatalf("error = %T %v, want ThreadSearchIndexNotReadyError alias to match", err, err)
+					}
+					if indexErr.Message != "Index not yet available. Try again later" || indexErr.Code != ErrCodeIndexNotYetAvailable || indexErr.DocumentsIndexed != 7 || indexErr.RetryAfter != 2 {
+						t.Fatalf("index error = %#v", indexErr)
+					}
+					var restErr *RESTError
+					if !errors.As(err, &restErr) || restErr.Response.StatusCode != http.StatusAccepted {
+						t.Fatalf("error = %T %v, want wrapped 202 RESTError", err, err)
+					}
+					return
+				}
+				if tt.wantREST {
+					var restErr *RESTError
+					if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+						t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+					}
+					var indexErr *SearchIndexNotReadyError
+					if errors.As(err, &indexErr) {
+						t.Fatalf("error = %T %v, do not want typed index error", err, err)
+					}
+					return
+				}
+				if tt.wantUnmarshal {
+					if !errors.Is(err, ErrJSONUnmarshal) {
+						t.Fatalf("error = %T %v, want ErrJSONUnmarshal", err, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("search returned error: %v", err)
+				}
 			})
-
-			result, err := session.ThreadsSearch("channel", nil)
-			if result != nil {
-				t.Fatalf("result = %#v, want nil", result)
-			}
-
-			if tt.wantIndex {
-				var indexErr *ThreadSearchIndexNotReadyError
-				if !errors.As(err, &indexErr) {
-					t.Fatalf("error = %T %v, want *ThreadSearchIndexNotReadyError", err, err)
-				}
-				if indexErr.Message != "Index not yet available. Try again later" || indexErr.Code != 110000 || indexErr.DocumentsIndexed != 7 || indexErr.RetryAfter != 2 {
-					t.Fatalf("index error = %#v", indexErr)
-				}
-				var restErr *RESTError
-				if !errors.As(err, &restErr) || restErr.Response.StatusCode != http.StatusAccepted {
-					t.Fatalf("error = %T %v, want wrapped 202 RESTError", err, err)
-				}
-				return
-			}
-			if tt.wantREST {
-				var restErr *RESTError
-				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
-					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
-				}
-				var indexErr *ThreadSearchIndexNotReadyError
-				if errors.As(err, &indexErr) {
-					t.Fatalf("error = %T %v, do not want typed index error", err, err)
-				}
-				return
-			}
-			if tt.wantUnmarshal {
-				if !errors.Is(err, ErrJSONUnmarshal) {
-					t.Fatalf("error = %T %v, want ErrJSONUnmarshal", err, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ThreadsSearch returned error: %v", err)
-			}
-		})
+		}
 	}
 }
 
