@@ -327,6 +327,10 @@ func (s *Session) onInterfaceData(i interface{}) error {
 		if t != nil && t.VoiceState != nil {
 			setVoiceStateGuildID(t.VoiceState, t.GuildID)
 		}
+	case *MessageReactionAdd:
+		if t != nil && t.MessageReaction != nil && t.Member != nil {
+			t.Member.GuildID = t.GuildID
+		}
 	}
 	return s.State.OnInterface(s, i)
 }
