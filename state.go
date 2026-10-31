@@ -1594,6 +1594,31 @@ func (s *State) EmojisAdd(guildID string, emojis []*Emoji) error {
 	return nil
 }
 
+// channelLastMessageIDUpdate applies create events without requiring message caching.
+// A newly created thread changes its parent's last_message_id only for forum/media channels.
+func (s *State) channelLastMessageIDUpdate(channelID, messageID string, threadCreated bool) {
+	if messageID == "" {
+		return
+	}
+	s.Lock()
+	defer s.Unlock()
+	channel, ok := s.channelMap[channelID]
+	if !ok {
+		return
+	}
+	track := s.TrackChannels
+	if channel.IsThread() {
+		track = s.TrackThreads
+	}
+	if !track || (threadCreated && channel.Type != ChannelTypeGuildForum && channel.Type != ChannelTypeGuildMedia) {
+		return
+	}
+	updated := *channel
+	updated.LastMessageID = messageID
+	s.channelMap[updated.ID] = &updated
+	s.replaceChannel(channel, &updated)
+}
+
 // MessageAdd adds a message to the current world state, or updates it if it exists.
 // If the channel cannot be found, the message is discarded.
 // Messages are kept in state up to s.MaxMessageCount per channel.
@@ -2827,6 +2852,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			}
 			err = s.ChannelAdd(t.Channel)
 		}
+		if err == nil && t != nil && t.Channel != nil && t.NewlyCreated {
+			s.channelLastMessageIDUpdate(t.ParentID, t.ID, true)
+		}
 	case *ThreadUpdate:
 		if s.TrackThreads {
 			if t == nil || t.Channel == nil {
@@ -2877,6 +2905,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		s.fillMessageGuildID(t.Message)
 		if s.MaxMessageCount != 0 {
 			err = s.MessageAdd(t.Message)
+		}
+		if err == nil {
+			s.channelLastMessageIDUpdate(t.ChannelID, t.ID, false)
 		}
 	case *MessageUpdate:
 		if t == nil || t.Message == nil {
