@@ -67,6 +67,8 @@ type VoiceConnection struct {
 
 	// Assigned in gateway receive order before server-update workers run.
 	serverUpdateVersion uint64
+	// Counts accepted self voice-state updates so local sends cannot overwrite them.
+	voiceStateVersion uint64
 	// Identifies the latest join or successful channel change.
 	joinVersion uint64
 	// Identifies the join request that queued another recovery.
@@ -238,6 +240,7 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 			return ErrWSNotFound
 		}
 		guildID := v.GuildID
+		stateVersion := v.voiceStateVersion
 		previousClose := v.joinPreviousClose
 		if v.ChannelID != channelID {
 			previousClose = v.close
@@ -257,7 +260,9 @@ func (v *VoiceConnection) ChangeChannel(channelID string, mute, deaf bool) (err 
 			v.Lock()
 			v.joinVersion++
 			v.joinPreviousClose = previousClose
-			v.ChannelID = channelID
+			if v.voiceStateVersion == stateVersion {
+				v.ChannelID = channelID
+			}
 			v.deaf = deaf
 			v.mute = mute
 			v.speaking = false

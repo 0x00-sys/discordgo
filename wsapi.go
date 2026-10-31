@@ -1613,6 +1613,7 @@ func (s *Session) onVoiceStateUpdateLocked(st *VoiceStateUpdate) {
 	voice.UserID = st.UserID
 	voice.sessionID = st.SessionID
 	voice.ChannelID = st.ChannelID
+	voice.voiceStateVersion++
 	voice.Unlock()
 }
 
