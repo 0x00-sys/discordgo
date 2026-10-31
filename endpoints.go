@@ -98,6 +98,8 @@ var (
 	EndpointGuildRoles               = func(gID string) string { return EndpointGuilds + gID + "/roles" }
 	EndpointGuildRole                = func(gID, rID string) string { return EndpointGuilds + gID + "/roles/" + rID }
 	EndpointGuildRoleMemberCounts    = func(gID string) string { return EndpointGuildRoles(gID) + "/member-counts" }
+	EndpointGuildMemberPermissions   = func(gID, uID string) string { return EndpointGuild(gID) + "/permissions/member/" + uID }
+	EndpointGuildRolePermissions     = func(gID, rID string) string { return EndpointGuild(gID) + "/permissions/role/" + rID }
 	EndpointGuildInvites             = func(gID string) string { return EndpointGuilds + gID + "/invites" }
 	EndpointGuildVanityURL           = func(gID string) string { return EndpointGuilds + gID + "/vanity-url" }
 	EndpointGuildWidget              = func(gID string) string { return EndpointGuilds + gID + "/widget" }
@@ -172,6 +174,8 @@ var (
 	EndpointChannelJoinedPrivateArchivedThreads = func(cID string) string { return EndpointChannel(cID) + "/users/@me/threads/archived/private" }
 	EndpointChannelPermissions                  = func(cID string) string { return EndpointChannels + cID + "/permissions" }
 	EndpointChannelPermission                   = func(cID, tID string) string { return EndpointChannels + cID + "/permissions/" + tID }
+	EndpointChannelMemberPermissions            = func(cID, uID string) string { return EndpointChannelPermissions(cID) + "/member/" + uID }
+	EndpointChannelRolePermissions              = func(cID, rID string) string { return EndpointChannelPermissions(cID) + "/role/" + rID }
 	EndpointChannelInvites                      = func(cID string) string { return EndpointChannels + cID + "/invites" }
 	EndpointChannelVoiceStatus                  = func(cID string) string { return EndpointChannel(cID) + "/voice-status" }
 	EndpointChannelTyping                       = func(cID string) string { return EndpointChannels + cID + "/typing" }

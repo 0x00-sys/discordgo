@@ -847,6 +847,14 @@ type PermissionOverwrite struct {
 	Allow int64                   `json:"allow,string"`
 }
 
+// ChannelPermissionsOptions stores query parameters for the computed channel permission endpoints.
+type ChannelPermissionsOptions struct {
+	// Implicit controls implicit permission masking for a missing VIEW_CHANNEL,
+	// or CONNECT in voice and stage channels. Discord applies it when nil.
+	// https://docs.discord.com/developers/topics/permissions#implicit-permissions
+	Implicit *bool
+}
+
 // ThreadStart stores all parameters you can use with MessageThreadStartComplex or ThreadStartComplex
 type ThreadStart struct {
 	Name                string      `json:"name"`
