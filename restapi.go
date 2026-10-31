@@ -62,9 +62,11 @@ type RESTError struct {
 	Message *APIErrorMessage // Message may be nil.
 }
 
-// ThreadSearchIndexNotReadyError is returned when Discord is still indexing
-// the channel for thread search.
-type ThreadSearchIndexNotReadyError struct {
+// SearchIndexNotReadyError is returned by ThreadsSearch and GuildMessagesSearch
+// when Discord has not finished indexing the channel or guild. Discord answers
+// with 202 Accepted and code ErrCodeIndexNotYetAvailable; retry after
+// RetryAfter seconds, or after a short delay when it is 0.
+type SearchIndexNotReadyError struct {
 	RESTError        *RESTError `json:"-"`
 	Message          string     `json:"message"`
 	Code             int        `json:"code"`
@@ -72,8 +74,11 @@ type ThreadSearchIndexNotReadyError struct {
 	RetryAfter       int        `json:"retry_after"`
 }
 
+// ThreadSearchIndexNotReadyError is the original name of SearchIndexNotReadyError.
+type ThreadSearchIndexNotReadyError = SearchIndexNotReadyError
+
 // Error returns the underlying REST error when available.
-func (e *ThreadSearchIndexNotReadyError) Error() string {
+func (e *SearchIndexNotReadyError) Error() string {
 	if e.RESTError != nil {
 		return e.RESTError.Error()
 	}
@@ -81,8 +86,22 @@ func (e *ThreadSearchIndexNotReadyError) Error() string {
 }
 
 // Unwrap returns the underlying REST error.
-func (e *ThreadSearchIndexNotReadyError) Unwrap() error {
+func (e *SearchIndexNotReadyError) Unwrap() error {
 	return e.RESTError
+}
+
+// searchIndexNotReady converts a 202 Accepted search response into a
+// SearchIndexNotReadyError, returning other errors unchanged.
+func searchIndexNotReady(err error) error {
+	var restErr *RESTError
+	if errors.As(err, &restErr) && restErr.Response != nil && restErr.Response.StatusCode == http.StatusAccepted {
+		var indexErr *SearchIndexNotReadyError
+		if decodeErr := unmarshal(restErr.ResponseBody, &indexErr); decodeErr == nil && indexErr != nil {
+			indexErr.RESTError = restErr
+			return indexErr
+		}
+	}
+	return err
 }
 
 // newRestError returns a new REST API error.
@@ -1617,11 +1636,16 @@ func (s *Session) GuildMessagesSearch(guildID string, opts *GuildMessagesSearchO
 
 	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
 	if err != nil {
-		return
+		return nil, searchIndexNotReady(err)
 	}
 
-	err = unmarshal(body, &st)
-	return
+	if err = unmarshal(body, &st); err != nil {
+		return nil, err
+	}
+	if st == nil {
+		return nil, fmt.Errorf("%w: guild message search response is null", ErrJSONUnmarshal)
+	}
+	return st, nil
 }
 
 // GuildMember returns a member of a guild.
@@ -4661,15 +4685,7 @@ func (s *Session) ThreadsSearch(channelID string, opts *ThreadSearchOptions, opt
 
 	body, err := s.RequestWithBucketID("GET", uri, nil, endpoint, options...)
 	if err != nil {
-		var restErr *RESTError
-		if errors.As(err, &restErr) && restErr.Response != nil && restErr.Response.StatusCode == http.StatusAccepted {
-			var indexErr *ThreadSearchIndexNotReadyError
-			if decodeErr := unmarshal(restErr.ResponseBody, &indexErr); decodeErr == nil && indexErr != nil {
-				indexErr.RESTError = restErr
-				return nil, indexErr
-			}
-		}
-		return nil, err
+		return nil, searchIndexNotReady(err)
 	}
 
 	if err = unmarshal(body, &result); err != nil {
