@@ -1936,12 +1936,15 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.
 	v.reconnectAgain = false
 	v.Unlock()
 
+	var joinVersion *uint64
 	if canResume && v.canResumeVoice() && v.isSessionVoiceConnection() {
 		if err := v.resumeVoice(); err == nil {
 			v.log(LogInformational, "successfully resumed voice websocket")
-			if _, again := v.continueReconnect(); !again {
+			version, again := v.continueReconnect()
+			if !again {
 				return
 			}
+			joinVersion = &version
 		} else {
 			v.log(LogWarning, "could not resume voice websocket, %s", err)
 		}
@@ -1960,9 +1963,9 @@ func (v *VoiceConnection) reconnectWithResume(canResume bool, wsConn *websocket.
 		return
 	}
 	v.Unlock()
-	v.closeLocked(nil)
+	closed := v.closeLocked(joinVersion)
 	v.lifecycleMu.Unlock()
-	v.reconnectAfterCloseUntilStable()
+	v.reconnectUntilStable(closed)
 }
 
 func (v *VoiceConnection) reconnectUDPIfCurrent(udpConn *net.UDPConn, close <-chan struct{}) {
@@ -1987,23 +1990,21 @@ func (v *VoiceConnection) reconnectUDPIfCurrent(udpConn *net.UDPConn, close <-ch
 	v.closeLocked(nil)
 	v.lifecycleMu.Unlock()
 
-	v.reconnectAfterCloseUntilStable()
+	v.reconnectUntilStable(true)
 }
 
-func (v *VoiceConnection) reconnectAfterCloseUntilStable() {
+func (v *VoiceConnection) reconnectUntilStable(closed bool) {
 	for {
-		v.reconnectAfterClose()
-		for {
-			version, again := v.continueReconnect()
-			if !again {
-				return
-			}
-			// A public join can supersede the queued request while teardown
-			// waits for lifecycle ownership. Recheck under the close lock.
-			if v.closeWithJoinVersion(&version) {
-				break
-			}
+		if closed {
+			v.reconnectAfterClose()
 		}
+		version, again := v.continueReconnect()
+		if !again {
+			return
+		}
+		// A public join can supersede queued work before teardown. If its
+		// version no longer owns the close, recheck without starting recovery.
+		closed = v.closeWithJoinVersion(&version)
 	}
 }
 
