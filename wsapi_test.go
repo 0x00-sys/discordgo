@@ -1003,7 +1003,7 @@ func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 		close(done)
 	}()
 
@@ -1061,7 +1061,7 @@ func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 		close(done)
 	}()
 
@@ -2354,7 +2354,7 @@ func TestReconnectCanceledAfterOpenKeepsNewerSession(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 		close(done)
 	}()
 
@@ -2398,7 +2398,7 @@ func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 		close(done)
 	}()
 
@@ -2446,7 +2446,7 @@ func TestReconnectDoesNotStartAfterClose(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 		close(done)
 	}()
 

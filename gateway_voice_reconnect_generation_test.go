@@ -66,7 +66,7 @@ func TestCanceledGatewayReconnectPreservesNewVoice(t *testing.T) {
 	defer closeChannel(release)
 	go func() {
 		defer close(done)
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 	}()
 	select {
 	case <-paused:
