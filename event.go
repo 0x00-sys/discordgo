@@ -323,6 +323,14 @@ func (s *Session) onInterfaceData(i interface{}) error {
 		if t != nil {
 			setGuildIds(t.Guild)
 		}
+	case *GuildMembersChunk:
+		if t != nil {
+			for _, member := range t.Members {
+				if member != nil {
+					member.GuildID = t.GuildID
+				}
+			}
+		}
 	case *VoiceStateUpdate:
 		if t != nil && t.VoiceState != nil {
 			setVoiceStateGuildID(t.VoiceState, t.GuildID)
