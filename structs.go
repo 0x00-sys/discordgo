@@ -4337,6 +4337,7 @@ const (
 	ErrCodeUnknownWebhook                        = 10015
 	ErrCodeUnknownWebhookService                 = 10016
 	ErrCodeUnknownSession                        = 10020
+	ErrCodeUnknownAsset                          = 10021
 	ErrCodeUnknownBan                            = 10026
 	ErrCodeUnknownSKU                            = 10027
 	ErrCodeUnknownStoreListing                   = 10028
@@ -4352,6 +4353,7 @@ const (
 	ErrCodeUnknownGuildTemplate                  = 10057
 	ErrCodeUnknownDiscoveryCategory              = 10059
 	ErrCodeUnknownSticker                        = 10060
+	ErrCodeUnknownStickerPack                    = 10061
 	ErrCodeUnknownInteraction                    = 10062
 	ErrCodeUnknownApplicationCommand             = 10063
 	ErrCodeUnknownVoiceState                     = 10065
@@ -4361,27 +4363,36 @@ const (
 	ErrCodeUnknownGuildWelcomeScreen             = 10069
 	ErrCodeUnknownGuildScheduledEvent            = 10070
 	ErrCodeUnknownGuildScheduledEventUser        = 10071
-	ErrUnknownTag                                = 10087
+	ErrCodeUnknownTag                            = 10087
+	// Deprecated: use ErrCodeUnknownTag instead.
+	ErrUnknownTag                      = 10087
+	ErrCodeUnknownSound                = 10097
+	ErrCodeUnknownInviteTargetUsersJob = 10124
+	ErrCodeUnknownInviteTargetUsers    = 10129
 
 	ErrCodeBotsCannotUseEndpoint                                            = 20001
 	ErrCodeOnlyBotsCanUseEndpoint                                           = 20002
 	ErrCodeExplicitContentCannotBeSentToTheDesiredRecipients                = 20009
 	ErrCodeYouAreNotAuthorizedToPerformThisActionOnThisApplication          = 20012
+	ErrCodeThisActionRequiresAPremiumSubscription                           = 20015
 	ErrCodeThisActionCannotBePerformedDueToSlowmodeRateLimit                = 20016
 	ErrCodeOnlyTheOwnerOfThisAccountCanPerformThisAction                    = 20018
 	ErrCodeMessageCannotBeEditedDueToAnnouncementRateLimits                 = 20022
+	ErrCodeUnderMinimumAge                                                  = 20024
 	ErrCodeChannelHasHitWriteRateLimit                                      = 20028
 	ErrCodeTheWriteActionYouArePerformingOnTheServerHasHitTheWriteRateLimit = 20029
 	ErrCodeStageTopicContainsNotAllowedWordsForPublicStages                 = 20031
 	ErrCodeGuildPremiumSubscriptionLevelTooLow                              = 20035
 
 	ErrCodeMaximumGuildsReached                                     = 30001
+	ErrCodeMaximumNumberOfFriendsReached                            = 30002
 	ErrCodeMaximumPinsReached                                       = 30003
 	ErrCodeMaximumNumberOfRecipientsReached                         = 30004
 	ErrCodeMaximumGuildRolesReached                                 = 30005
 	ErrCodeMaximumNumberOfWebhooksReached                           = 30007
 	ErrCodeMaximumNumberOfEmojisReached                             = 30008
 	ErrCodeTooManyReactions                                         = 30010
+	ErrCodeMaximumNumberOfGroupDMsReached                           = 30011
 	ErrCodeMaximumNumberOfGuildChannelsReached                      = 30013
 	ErrCodeMaximumNumberOfAttachmentsInAMessageReached              = 30015
 	ErrCodeMaximumNumberOfInvitesReached                            = 30016
@@ -4389,86 +4400,150 @@ const (
 	ErrCodeMaximumNumberOfServerMembersReached                      = 30019
 	ErrCodeMaximumNumberOfGuildDiscoverySubcategoriesReached        = 30030
 	ErrCodeGuildAlreadyHasATemplate                                 = 30031
+	ErrCodeMaximumNumberOfApplicationCommandsReached                = 30032
 	ErrCodeMaximumNumberOfThreadParticipantsReached                 = 30033
+	ErrCodeMaximumNumberOfDailyApplicationCommandCreatesReached     = 30034
 	ErrCodeMaximumNumberOfBansForNonGuildMembersHaveBeenExceeded    = 30035
 	ErrCodeMaximumNumberOfBansFetchesHasBeenReached                 = 30037
 	ErrCodeMaximumNumberOfUncompletedGuildScheduledEventsReached    = 30038
 	ErrCodeMaximumNumberOfStickersReached                           = 30039
 	ErrCodeMaximumNumberOfPruneRequestsHasBeenReached               = 30040
 	ErrCodeMaximumNumberOfGuildWidgetSettingsUpdatesHasBeenReached  = 30042
+	ErrCodeMaximumNumberOfSoundboardSoundsReached                   = 30045
 	ErrCodeMaximumNumberOfEditsToMessagesOlderThanOneHourReached    = 30046
 	ErrCodeMaximumNumberOfPinnedThreadsInForumChannelHasBeenReached = 30047
 	ErrCodeMaximumNumberOfTagsInForumChannelHasBeenReached          = 30048
+	ErrCodeBitrateIsTooHighForChannelOfThisType                     = 30052
+	ErrCodeMaximumNumberOfPremiumEmojisReached                      = 30056
+	ErrCodeMaximumNumberOfWebhooksPerGuildReached                   = 30058
+	ErrCodeMaximumNumberOfChannelPermissionOverwritesReached        = 30060
+	ErrCodeTheChannelsForThisGuildAreTooLarge                       = 30061
+	ErrCodeTargetUsersLimitForThisGuildReached                      = 30084
 
-	ErrCodeUnauthorized                           = 40001
-	ErrCodeActionRequiredVerifiedAccount          = 40002
-	ErrCodeOpeningDirectMessagesTooFast           = 40003
-	ErrCodeSendMessagesHasBeenTemporarilyDisabled = 40004
-	ErrCodeRequestEntityTooLarge                  = 40005
-	ErrCodeFeatureTemporarilyDisabledServerSide   = 40006
-	ErrCodeUserIsBannedFromThisGuild              = 40007
-	ErrCodeTargetIsNotConnectedToVoice            = 40032
-	ErrCodeMessageAlreadyCrossposted              = 40033
-	ErrCodeAnApplicationWithThatNameAlreadyExists = 40041
-	ErrCodeInteractionHasAlreadyBeenAcknowledged  = 40060
-	ErrCodeTagNamesMustBeUnique                   = 40061
+	ErrCodeUnauthorized                                            = 40001
+	ErrCodeActionRequiredVerifiedAccount                           = 40002
+	ErrCodeOpeningDirectMessagesTooFast                            = 40003
+	ErrCodeSendMessagesHasBeenTemporarilyDisabled                  = 40004
+	ErrCodeRequestEntityTooLarge                                   = 40005
+	ErrCodeFeatureTemporarilyDisabledServerSide                    = 40006
+	ErrCodeUserIsBannedFromThisGuild                               = 40007
+	ErrCodeOnlyOneChannelCanHaveAParentIDModifiedAtATime           = 40009
+	ErrCodeConnectionHasBeenRevoked                                = 40012
+	ErrCodeOnlyConsumableSKUsCanBeConsumed                         = 40018
+	ErrCodeYouCanOnlyDeleteSandboxEntitlements                     = 40019
+	ErrCodeTargetIsNotConnectedToVoice                             = 40032
+	ErrCodeMessageAlreadyCrossposted                               = 40033
+	ErrCodeAnApplicationWithThatNameAlreadyExists                  = 40041
+	ErrCodeApplicationInteractionFailedToSend                      = 40043
+	ErrCodeCannotSendAMessageInAForumChannel                       = 40058
+	ErrCodeInteractionHasAlreadyBeenAcknowledged                   = 40060
+	ErrCodeTagNamesMustBeUnique                                    = 40061
+	ErrCodeServiceResourceIsBeingRateLimited                       = 40062
+	ErrCodeThereAreNoTagsAvailableThatCanBeSetByNonModerators      = 40066
+	ErrCodeATagIsRequiredToCreateAForumPostInThisChannel           = 40067
+	ErrCodeAnEntitlementHasAlreadyBeenGrantedForThisResource       = 40074
+	ErrCodeThisInteractionHasHitTheMaximumNumberOfFollowUpMessages = 40094
+	ErrCodeTargetUsersAreAlreadyBeingProcessedForThisInvite        = 40114
+	ErrCodeTargetUsersFileHasNotBeenProcessed                      = 40115
+	ErrCodeCloudflareIsBlockingYourRequest                         = 40333
 
-	ErrCodeMissingAccess                                                = 50001
-	ErrCodeInvalidAccountType                                           = 50002
-	ErrCodeCannotExecuteActionOnDMChannel                               = 50003
-	ErrCodeEmbedDisabled                                                = 50004
-	ErrCodeGuildWidgetDisabled                                          = 50004
-	ErrCodeCannotEditFromAnotherUser                                    = 50005
-	ErrCodeCannotSendEmptyMessage                                       = 50006
-	ErrCodeCannotSendMessagesToThisUser                                 = 50007
-	ErrCodeCannotSendMessagesInVoiceChannel                             = 50008
-	ErrCodeChannelVerificationLevelTooHigh                              = 50009
-	ErrCodeOAuth2ApplicationDoesNotHaveBot                              = 50010
-	ErrCodeOAuth2ApplicationLimitReached                                = 50011
-	ErrCodeInvalidOAuthState                                            = 50012
-	ErrCodeMissingPermissions                                           = 50013
-	ErrCodeInvalidAuthenticationToken                                   = 50014
-	ErrCodeTooFewOrTooManyMessagesToDelete                              = 50016
-	ErrCodeCanOnlyPinMessageToOriginatingChannel                        = 50019
-	ErrCodeInviteCodeWasEitherInvalidOrTaken                            = 50020
-	ErrCodeCannotExecuteActionOnSystemMessage                           = 50021
-	ErrCodeCannotExecuteActionOnThisChannelType                         = 50024
-	ErrCodeInvalidOAuth2AccessTokenProvided                             = 50025
-	ErrCodeMissingRequiredOAuth2Scope                                   = 50026
-	ErrCodeInvalidWebhookTokenProvided                                  = 50027
-	ErrCodeInvalidRole                                                  = 50028
-	ErrCodeInvalidRecipients                                            = 50033
-	ErrCodeMessageProvidedTooOldForBulkDelete                           = 50034
-	ErrCodeInvalidFormBody                                              = 50035
-	ErrCodeInviteAcceptedToGuildApplicationsBotNotIn                    = 50036
-	ErrCodeInvalidAPIVersionProvided                                    = 50041
-	ErrCodeFileUploadedExceedsTheMaximumSize                            = 50045
-	ErrCodeInvalidFileUploaded                                          = 50046
-	ErrCodeInvalidGuild                                                 = 50055
-	ErrCodeInvalidMessageType                                           = 50068
-	ErrCodeCannotDeleteAChannelRequiredForCommunityGuilds               = 50074
-	ErrCodeInvalidStickerSent                                           = 50081
-	ErrCodePerformedOperationOnArchivedThread                           = 50083
-	ErrCodeBeforeValueIsEarlierThanThreadCreationDate                   = 50085
-	ErrCodeCommunityServerChannelsMustBeTextChannels                    = 50086
-	ErrCodeThisServerIsNotAvailableInYourLocation                       = 50095
-	ErrCodeThisServerNeedsMonetizationEnabledInOrderToPerformThisAction = 50097
-	ErrCodeThisServerNeedsMoreBoostsToPerformThisAction                 = 50101
-	ErrCodeTheRequestBodyContainsInvalidJSON                            = 50109
+	ErrCodeMissingAccess                                                  = 50001
+	ErrCodeInvalidAccountType                                             = 50002
+	ErrCodeCannotExecuteActionOnDMChannel                                 = 50003
+	ErrCodeEmbedDisabled                                                  = 50004
+	ErrCodeGuildWidgetDisabled                                            = 50004
+	ErrCodeCannotEditFromAnotherUser                                      = 50005
+	ErrCodeCannotSendEmptyMessage                                         = 50006
+	ErrCodeCannotSendMessagesToThisUser                                   = 50007
+	ErrCodeCannotSendMessagesInVoiceChannel                               = 50008
+	ErrCodeChannelVerificationLevelTooHigh                                = 50009
+	ErrCodeOAuth2ApplicationDoesNotHaveBot                                = 50010
+	ErrCodeOAuth2ApplicationLimitReached                                  = 50011
+	ErrCodeInvalidOAuthState                                              = 50012
+	ErrCodeMissingPermissions                                             = 50013
+	ErrCodeInvalidAuthenticationToken                                     = 50014
+	ErrCodeNoteWasTooLong                                                 = 50015
+	ErrCodeTooFewOrTooManyMessagesToDelete                                = 50016
+	ErrCodeInvalidMFALevel                                                = 50017
+	ErrCodeCanOnlyPinMessageToOriginatingChannel                          = 50019
+	ErrCodeInviteCodeWasEitherInvalidOrTaken                              = 50020
+	ErrCodeCannotExecuteActionOnSystemMessage                             = 50021
+	ErrCodeCannotExecuteActionOnThisChannelType                           = 50024
+	ErrCodeInvalidOAuth2AccessTokenProvided                               = 50025
+	ErrCodeMissingRequiredOAuth2Scope                                     = 50026
+	ErrCodeInvalidWebhookTokenProvided                                    = 50027
+	ErrCodeInvalidRole                                                    = 50028
+	ErrCodeInvalidRecipients                                              = 50033
+	ErrCodeMessageProvidedTooOldForBulkDelete                             = 50034
+	ErrCodeInvalidFormBody                                                = 50035
+	ErrCodeInviteAcceptedToGuildApplicationsBotNotIn                      = 50036
+	ErrCodeInvalidActivityAction                                          = 50039
+	ErrCodeInvalidAPIVersionProvided                                      = 50041
+	ErrCodeFileUploadedExceedsTheMaximumSize                              = 50045
+	ErrCodeInvalidFileUploaded                                            = 50046
+	ErrCodeCannotSelfRedeemThisGift                                       = 50054
+	ErrCodeInvalidGuild                                                   = 50055
+	ErrCodeInvalidSKU                                                     = 50057
+	ErrCodeInvalidRequestOrigin                                           = 50067
+	ErrCodeInvalidMessageType                                             = 50068
+	ErrCodePaymentSourceRequiredToRedeemGift                              = 50070
+	ErrCodeCannotModifyASystemWebhook                                     = 50073
+	ErrCodeCannotDeleteAChannelRequiredForCommunityGuilds                 = 50074
+	ErrCodeCannotEditStickersWithinAMessage                               = 50080
+	ErrCodeInvalidStickerSent                                             = 50081
+	ErrCodePerformedOperationOnArchivedThread                             = 50083
+	ErrCodeInvalidThreadNotificationSettings                              = 50084
+	ErrCodeBeforeValueIsEarlierThanThreadCreationDate                     = 50085
+	ErrCodeCommunityServerChannelsMustBeTextChannels                      = 50086
+	ErrCodeEventEntityTypeDiffersFromEntityToStart                        = 50091
+	ErrCodeThisServerIsNotAvailableInYourLocation                         = 50095
+	ErrCodeThisServerNeedsMonetizationEnabledInOrderToPerformThisAction   = 50097
+	ErrCodeThisServerNeedsMoreBoostsToPerformThisAction                   = 50101
+	ErrCodeTheRequestBodyContainsInvalidJSON                              = 50109
+	ErrCodeTheProvidedFileIsInvalid                                       = 50110
+	ErrCodeTheProvidedFileTypeIsInvalid                                   = 50123
+	ErrCodeTheProvidedFileDurationExceedsMaximum                          = 50124
+	ErrCodeOwnerCannotBePendingMember                                     = 50131
+	ErrCodeOwnershipCannotBeTransferredToABotUser                         = 50132
+	ErrCodeFailedToResizeAssetBelowTheMaximumSize                         = 50138
+	ErrCodeCannotMixSubscriptionAndNonSubscriptionRolesForAnEmoji         = 50144
+	ErrCodeCannotConvertBetweenPremiumEmojiAndNormalEmoji                 = 50145
+	ErrCodeUploadedFileNotFound                                           = 50146
+	ErrCodeTheSpecifiedEmojiIsInvalid                                     = 50151
+	ErrCodeVoiceMessagesDoNotSupportAdditionalContent                     = 50159
+	ErrCodeVoiceMessagesMustHaveASingleAudioAttachment                    = 50160
+	ErrCodeVoiceMessagesMustHaveSupportingMetadata                        = 50161
+	ErrCodeVoiceMessagesCannotBeEdited                                    = 50162
+	ErrCodeCannotDeleteGuildSubscriptionIntegration                       = 50163
+	ErrCodeCannotSendVoiceEffectWhenUserIsServerMutedDeafenedOrSuppressed = 50167
+	ErrCodeYouCannotSendVoiceMessagesInThisChannel                        = 50173
+	ErrCodeTheUserAccountMustFirstBeVerified                              = 50178
+	ErrCodeTheProvidedFileDoesNotHaveAValidDuration                       = 50192
+	ErrCodeCannotSendMessagesToThisUserDueToHavingNoMutualGuilds          = 50278
+	ErrCodeYouDoNotHavePermissionToSendThisSticker                        = 50600
+
+	ErrCodeTwoFactorIsRequiredForThisOperation = 60003
 
 	ErrCodeNoUsersWithDiscordTagExist = 80004
 
-	ErrCodeReactionBlocked = 90001
+	ErrCodeReactionBlocked             = 90001
+	ErrCodeUserCannotUseBurstReactions = 90002
+
+	ErrCodeIndexNotYetAvailable       = 110000
+	ErrCodeApplicationNotYetAvailable = 110001
 
 	ErrCodeAPIResourceIsCurrentlyOverloaded = 130000
 
 	ErrCodeTheStageIsAlreadyOpen = 150006
 
-	ErrCodeCannotReplyWithoutPermissionToReadMessageHistory = 160002
-	ErrCodeThreadAlreadyCreatedForThisMessage               = 160004
-	ErrCodeThreadIsLocked                                   = 160005
-	ErrCodeMaximumNumberOfActiveThreadsReached              = 160006
-	ErrCodeMaximumNumberOfActiveAnnouncementThreadsReached  = 160007
+	ErrCodeCannotReplyWithoutPermissionToReadMessageHistory             = 160002
+	ErrCodeThreadAlreadyCreatedForThisMessage                           = 160004
+	ErrCodeThreadIsLocked                                               = 160005
+	ErrCodeMaximumNumberOfActiveThreadsReached                          = 160006
+	ErrCodeMaximumNumberOfActiveAnnouncementThreadsReached              = 160007
+	ErrCodeCannotReferenceAMessageWithoutPermissionToReadMessageHistory = 160009
+	ErrCodeNSFWChannelMessageReferenceNotAllowed                        = 160010
+	ErrCodeCannotForwardAMessageWhoseContentYouCannotRead               = 160014
 
 	ErrCodeInvalidJSONForUploadedLottieFile                    = 170001
 	ErrCodeUploadedLottiesCannotContainRasterizedImages        = 170002
@@ -4481,8 +4556,39 @@ const (
 	ErrCodeCannotUpdateAFinishedEvent             = 180000
 	ErrCodeFailedToCreateStageNeededForStageEvent = 180002
 
+	ErrCodeMessageWasBlockedByAutomaticModeration = 200000
+	ErrCodeTitleWasBlockedByAutomaticModeration   = 200001
+
+	ErrCodeWebhooksPostedToForumChannelsMustHaveAThreadNameOrThreadID        = 220001
+	ErrCodeWebhooksPostedToForumChannelsCannotHaveBothAThreadNameAndThreadID = 220002
+	ErrCodeWebhooksCanOnlyCreateThreadsInForumChannels                       = 220003
+	ErrCodeWebhookServicesCannotBeUsedInForumChannels                        = 220004
+
+	ErrCodeMessageBlockedByHarmfulLinksFilter = 240000
+
+	ErrCodeAccessToJoiningNewServersHasBeenLimitedForTheUser = 340015
+
 	ErrCodeCannotEnableOnboardingRequirementsAreNotMet  = 350000
 	ErrCodeCannotUpdateOnboardingWhileBelowRequirements = 350001
+
+	ErrCodeAccessToFileUploadsHasBeenLimitedForThisGuild = 400001
+
+	ErrCodeFailedToBanUsers = 500000
+
+	ErrCodePollVotingBlocked                   = 520000
+	ErrCodePollExpired                         = 520001
+	ErrCodeInvalidChannelTypeForPollCreation   = 520002
+	ErrCodeCannotEditAPollMessage              = 520003
+	ErrCodeCannotUseAnEmojiIncludedWithThePoll = 520004
+	ErrCodeCannotExpireANonPollMessage         = 520006
+
+	ErrCodeProvisionalAccountsPermissionNotGranted = 530000
+	ErrCodeIDTokenExpired                          = 530001
+	ErrCodeIDTokenIssuerMismatch                   = 530002
+	ErrCodeIDTokenAudienceMismatch                 = 530003
+	ErrCodeIDTokenIssuedTooLongAgo                 = 530004
+	ErrCodeFailedToGenerateUniqueUsername          = 530006
+	ErrCodeInvalidClientSecret                     = 530007
 )
 
 // Intent is the type of a Gateway Intent
