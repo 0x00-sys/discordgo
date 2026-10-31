@@ -331,6 +331,14 @@ func (s *Session) onInterfaceData(i interface{}) error {
 		if t != nil && t.MessageReaction != nil && t.Member != nil {
 			t.Member.GuildID = t.GuildID
 		}
+	case *ThreadMembersUpdate:
+		if t != nil {
+			for _, added := range t.AddedMembers {
+				if added.Member != nil {
+					added.Member.GuildID = t.GuildID
+				}
+			}
+		}
 	}
 	return s.State.OnInterface(s, i)
 }
