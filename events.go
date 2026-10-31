@@ -480,6 +480,28 @@ type PresenceUpdate struct {
 	GuildID string `json:"guild_id"`
 }
 
+// UnmarshalJSON retains whether the partial user supplied its avatar.
+func (p *PresenceUpdate) UnmarshalJSON(data []byte) error {
+	type presenceUpdate PresenceUpdate
+	var decoded presenceUpdate
+	err := json.Unmarshal(data, &decoded)
+	// Gateway handlers also receive partially decoded events after a type error.
+	*p = PresenceUpdate(decoded)
+	if err != nil {
+		return err
+	}
+	var fields struct {
+		User struct {
+			Avatar json.RawMessage `json:"avatar"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	p.avatarPresent = len(fields.User.Avatar) != 0
+	return nil
+}
+
 // Resumed is the data for a Resumed event.
 type Resumed struct {
 	Trace []string `json:"_trace"`

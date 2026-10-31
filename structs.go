@@ -2618,6 +2618,9 @@ type Presence struct {
 	Activities   []*Activity  `json:"activities"`
 	Since        *int         `json:"since"`
 	ClientStatus ClientStatus `json:"client_status"`
+
+	// Decoded presence updates distinguish an omitted avatar from a null clear.
+	avatarPresent bool
 }
 
 // A TimeStamps struct contains start and end times used in the rich presence "playing .." Game
