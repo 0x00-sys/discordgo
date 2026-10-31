@@ -1197,3 +1197,28 @@ func TestGuildFeaturePruneRequiresAdmin(t *testing.T) {
 		t.Fatalf("features JSON = %s", data)
 	}
 }
+
+func TestDocumentedErrorCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+		want int
+	}{
+		{"search index not ready", ErrCodeIndexNotYetAvailable, 110000},
+		{"forward unreadable message", ErrCodeCannotForwardAMessageWhoseContentYouCannotRead, 160014},
+		{"target users job", ErrCodeUnknownInviteTargetUsersJob, 10124},
+		{"target users", ErrCodeUnknownInviteTargetUsers, 10129},
+		{"target users processing", ErrCodeTargetUsersAreAlreadyBeingProcessedForThisInvite, 40114},
+		{"target users file", ErrCodeTargetUsersFileHasNotBeenProcessed, 40115},
+		{"target users limit", ErrCodeTargetUsersLimitForThisGuildReached, 30084},
+		{"poll expired", ErrCodePollExpired, 520001},
+		{"harmful links", ErrCodeMessageBlockedByHarmfulLinksFilter, 240000},
+		{"deprecated unknown tag alias", ErrUnknownTag, ErrCodeUnknownTag},
+		{"unknown tag", ErrCodeUnknownTag, 10087},
+	}
+	for _, tt := range tests {
+		if tt.code != tt.want {
+			t.Errorf("%s = %d, want %d", tt.name, tt.code, tt.want)
+		}
+	}
+}
