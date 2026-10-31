@@ -499,10 +499,10 @@ type voiceOP8 struct {
 	HeartbeatInterval time.Duration `json:"heartbeat_interval"`
 }
 
-// WaitUntilConnected waits for the Voice Connection to
-// become ready, if it does not become ready it returns an err
+// waitUntilConnected waits for the requested channel to become ready.
+// If it does not become ready, it returns an error.
 // A non-nil previousClose excludes the previous channel's transport.
-func (v *VoiceConnection) waitUntilConnected(previousClose <-chan struct{}) error {
+func (v *VoiceConnection) waitUntilConnected(channelID string, previousClose <-chan struct{}) error {
 
 	v.log(LogInformational, "called")
 
@@ -520,7 +520,7 @@ func (v *VoiceConnection) waitUntilConnected(previousClose <-chan struct{}) erro
 	i := 0
 	for {
 		v.RLock()
-		ready := v.Ready && (previousClose == nil || v.close != previousClose)
+		ready := v.Ready && v.ChannelID == channelID && (previousClose == nil || v.close != previousClose)
 		v.RUnlock()
 		if ready {
 			return nil

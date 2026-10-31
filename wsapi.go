@@ -1527,7 +1527,7 @@ func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice 
 	}
 
 	// doesn't exactly work perfect yet.. TODO
-	err = voice.waitUntilConnected(previousClose)
+	err = voice.waitUntilConnected(cID, previousClose)
 	if err != nil {
 		s.log(LogWarning, "error waiting for voice to connect, %s", err)
 		voice.closeWithJoinVersion(&joinVersion)
