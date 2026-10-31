@@ -3,9 +3,15 @@ package discordgo
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/gorilla/websocket"
@@ -8071,5 +8077,3600 @@ func TestChannelUpdateObfuscation(t *testing.T) {
 				t.Fatal("guild channel list does not contain the current channel")
 			}
 		})
+	}
+}
+
+func TestChannelDeleteEvictsChildThreads(t *testing.T) {
+	for _, trackChannels := range []bool{true, false} {
+		for _, kind := range []ChannelType{ChannelTypeGuildText, ChannelTypeGuildNews, ChannelTypeGuildForum, ChannelTypeGuildMedia} {
+			t.Run(fmt.Sprintf("type=%d/trackChannels=%t", kind, trackChannels), func(t *testing.T) {
+				session, err := New("")
+				if err != nil {
+					t.Fatal(err)
+				}
+				state := session.State
+				state.TrackChannels = trackChannels
+				parent := &Channel{ID: "parent", GuildID: "guild", Type: kind}
+				child := &Channel{ID: "child", GuildID: "guild", ParentID: parent.ID, Type: ChannelTypeGuildPublicThread,
+					Messages: []*Message{{ID: "message", Content: "retained message"}}}
+				sibling := &Channel{ID: "sibling", GuildID: "guild", ParentID: "other", Type: ChannelTypeGuildPublicThread}
+				if err := state.GuildAdd(&Guild{ID: "guild", Channels: []*Channel{parent}, Threads: []*Channel{child, sibling}}); err != nil {
+					t.Fatal(err)
+				}
+				before, err := state.Guild("guild")
+				if err != nil {
+					t.Fatal(err)
+				}
+				payload := fmt.Sprintf(`{"op":0,"t":"CHANNEL_DELETE","s":1,"d":{"id":"parent","guild_id":"guild","type":%d}}`, kind)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+				for _, id := range []string{parent.ID, child.ID} {
+					if _, err := state.Channel(id); !errors.Is(err, ErrStateNotFound) {
+						t.Errorf("Channel(%q) error = %v, want ErrStateNotFound", id, err)
+					}
+				}
+				after, err := state.Guild("guild")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(after.Threads) != 1 || after.Threads[0] != sibling {
+					t.Errorf("remaining threads = %v, want only sibling", after.Threads)
+				}
+				if len(before.Threads) != 2 || before.Threads[0] != child {
+					t.Error("old guild snapshot was mutated")
+				}
+				if _, err := state.Message(child.ID, "message"); !errors.Is(err, ErrStateNotFound) {
+					t.Errorf("deleted child's messages remain cached: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestGatewayCreatesUpdateChannelLastMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		channelType   ChannelType
+		threadEvent   bool
+		newThread     bool
+		trackChannels bool
+		trackThreads  bool
+		stateEnabled  bool
+		wantUpdate    bool
+	}{
+		{"text message", ChannelTypeGuildText, false, false, true, true, true, true},
+		{"thread message", ChannelTypeGuildPublicThread, false, false, false, true, true, true},
+		{"DM message", ChannelTypeDM, false, false, true, false, true, true},
+		{"forum post without thread cache", ChannelTypeGuildForum, true, true, true, false, true, true},
+		{"media post", ChannelTypeGuildMedia, true, true, true, true, true, true},
+		{"existing forum thread", ChannelTypeGuildForum, true, false, true, true, true, false},
+		{"ordinary parent thread", ChannelTypeGuildText, true, true, true, true, true, false},
+		{"untracked channel", ChannelTypeGuildText, false, false, false, true, true, false},
+		{"untracked thread", ChannelTypeGuildPublicThread, false, false, true, false, true, false},
+		{"disabled state", ChannelTypeGuildText, false, false, true, true, false, false},
+	} {
+		for _, maxMessages := range []int{0, 2} {
+			t.Run(fmt.Sprintf("%s/messages=%d", tc.name, maxMessages), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				session.StateEnabled = tc.stateEnabled
+				session.State.MaxMessageCount = maxMessages
+				if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+					t.Fatal(err)
+				}
+				channel := &Channel{ID: "300", GuildID: "100", Type: tc.channelType, LastMessageID: "400"}
+				if tc.channelType == ChannelTypeDM {
+					channel.GuildID = ""
+				}
+				if err := session.State.ChannelAdd(channel); err != nil {
+					t.Fatal(err)
+				}
+				session.State.TrackChannels = tc.trackChannels
+				session.State.TrackThreads = tc.trackThreads
+				before, err := session.State.Channel("300")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var callbackChannel *Channel
+				capture := func() {
+					callbackChannel, err = session.State.Channel("300")
+					if err != nil {
+						t.Error(err)
+					}
+				}
+				session.AddHandler(func(_ *Session, _ *MessageCreate) { capture() })
+				session.AddHandler(func(_ *Session, _ *ThreadCreate) { capture() })
+				eventType := "MESSAGE_CREATE"
+				payload := `{"id":"500","channel_id":"300","author":{"id":"200"},"content":"new message","timestamp":"2026-10-31T00:00:00Z","type":0}`
+				if channel.GuildID != "" {
+					payload = fmt.Sprintf(`{"guild_id":%q,`, channel.GuildID) + payload[1:]
+				}
+				if tc.threadEvent {
+					eventType = "THREAD_CREATE"
+					payload = fmt.Sprintf(`{"id":"500","guild_id":"100","parent_id":"300","type":11,"name":"post","newly_created":%t,"thread_metadata":{"archived":false,"auto_archive_duration":60,"archive_timestamp":"2026-10-31T00:00:00Z","locked":false}}`, tc.newThread)
+				}
+				if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":%q,"d":%s}`, eventType, payload))); err != nil {
+					t.Fatal(err)
+				}
+				after, err := session.State.Channel("300")
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "400"
+				if tc.wantUpdate {
+					want = "500"
+				}
+				if after.LastMessageID != want || callbackChannel == nil || callbackChannel.LastMessageID != want {
+					t.Errorf("last message = %q, want %q before callback", after.LastMessageID, want)
+				}
+				if before.LastMessageID != "400" {
+					t.Error("create event mutated a retained channel snapshot")
+				}
+				var indexed *Channel
+				if tc.channelType == ChannelTypeDM {
+					indexed = session.State.PrivateChannels[0]
+				} else {
+					guild, err := session.State.Guild("100")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if channel.IsThread() {
+						indexed = guild.Threads[0]
+					} else {
+						indexed = guild.Channels[0]
+					}
+				}
+				if indexed != after || callbackChannel != after {
+					t.Error("channel cache indexes and callback disagree")
+				}
+				if maxMessages == 0 && len(after.Messages) != 0 {
+					t.Error("channel metadata update retained message bodies with caching disabled")
+				}
+			})
+		}
+	}
+}
+
+func TestChannelLastMessagePreservesNonCreationAndErrorBehavior(t *testing.T) {
+	state := NewState()
+	state.MaxMessageCount = 2
+	if err := state.ChannelAdd(&Channel{ID: "300", Type: ChannelTypeDM, LastMessageID: "500"}); err != nil {
+		t.Fatal(err)
+	}
+	// Explicit cache insertion can contain historical messages.
+	if err := state.MessageAdd(&Message{ID: "400", ChannelID: "300"}); err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{StateEnabled: true}
+	for _, event := range []interface{}{
+		&MessageUpdate{Message: &Message{ID: "400", ChannelID: "300", Content: "edited"}},
+		&MessageDelete{Message: &Message{ID: "500", ChannelID: "300"}},
+		&MessageCreate{Message: &Message{ChannelID: "300"}},
+	} {
+		_ = state.OnInterface(session, event)
+		channel, err := state.Channel("300")
+		if err != nil || channel.LastMessageID != "500" {
+			t.Fatalf("%T changed last message: %v", event, err)
+		}
+	}
+	state.MaxMessageCount = -1
+	before, _ := state.Channel("300")
+	err := state.OnInterface(session, &MessageCreate{Message: &Message{ID: "600", ChannelID: "300"}})
+	if !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("negative message limit error = %v", err)
+	}
+	after, _ := state.Channel("300")
+	if after != before {
+		t.Fatal("rejected message create changed the channel snapshot")
+	}
+}
+
+func TestChannelPinsUpdateState(t *testing.T) {
+	oldTimestamp := time.Date(2026, time.July, 12, 8, 0, 0, 0, time.UTC)
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{{
+			ID:               "guild-channel",
+			GuildID:          "guild",
+			Type:             ChannelTypeGuildText,
+			LastPinTimestamp: &oldTimestamp,
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.ChannelAdd(&Channel{
+		ID:               "dm-channel",
+		Type:             ChannelTypeDM,
+		LastPinTimestamp: &oldTimestamp,
+	}); err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+
+	session := &Session{StateEnabled: true}
+	wantTimestamp := time.Date(2026, time.July, 13, 9, 10, 11, 123000000, time.UTC)
+	t.Run("guild channel timestamp", func(t *testing.T) {
+		beforeGuild, err := state.Guild("guild")
+		if err != nil {
+			t.Fatalf("Guild returned error: %v", err)
+		}
+		beforeChannel, err := state.Channel("guild-channel")
+		if err != nil {
+			t.Fatalf("Channel returned error: %v", err)
+		}
+
+		var event ChannelPinsUpdate
+		if err := json.Unmarshal([]byte(`{"channel_id":"guild-channel","guild_id":"guild","last_pin_timestamp":"2026-07-13T09:10:11.123Z"}`), &event); err != nil {
+			t.Fatalf("Unmarshal returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &event); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+
+		channel, err := state.Channel("guild-channel")
+		if err != nil {
+			t.Fatalf("Channel returned error: %v", err)
+		}
+		guild, err := state.Guild("guild")
+		if err != nil {
+			t.Fatalf("Guild returned error: %v", err)
+		}
+		if channel.LastPinTimestamp == nil || !channel.LastPinTimestamp.Equal(wantTimestamp) {
+			t.Fatalf("LastPinTimestamp = %v, want %v", channel.LastPinTimestamp, wantTimestamp)
+		}
+		if event.LastPinTimestamp != "2026-07-13T09:10:11.123Z" {
+			t.Fatalf("event LastPinTimestamp = %q, want original value", event.LastPinTimestamp)
+		}
+		if guild == beforeGuild || channel == beforeChannel || guild.Channels[0] != channel {
+			t.Fatal("channel pins update did not replace the guild channel snapshot")
+		}
+		if beforeChannel.LastPinTimestamp == nil || !beforeChannel.LastPinTimestamp.Equal(oldTimestamp) {
+			t.Fatal("channel pins update mutated a held channel snapshot")
+		}
+	})
+
+	t.Run("null clears guild timestamp", func(t *testing.T) {
+		var event ChannelPinsUpdate
+		if err := json.Unmarshal([]byte(`{"channel_id":"guild-channel","guild_id":"guild","last_pin_timestamp":null}`), &event); err != nil {
+			t.Fatalf("Unmarshal returned error: %v", err)
+		}
+		if err := state.OnInterface(session, &event); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+		channel, err := state.Channel("guild-channel")
+		if err != nil {
+			t.Fatalf("Channel returned error: %v", err)
+		}
+		if channel.LastPinTimestamp != nil {
+			t.Fatalf("LastPinTimestamp = %v, want nil", channel.LastPinTimestamp)
+		}
+		if event.LastPinTimestamp != "" {
+			t.Fatalf("event LastPinTimestamp = %q, want empty null representation", event.LastPinTimestamp)
+		}
+	})
+
+	t.Run("private channel timestamp", func(t *testing.T) {
+		before := state.PrivateChannels[0]
+		event := &ChannelPinsUpdate{
+			ChannelID:        "dm-channel",
+			LastPinTimestamp: "2026-07-13T09:10:11.123Z",
+		}
+		if err := state.OnInterface(session, event); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+		channel, err := state.Channel("dm-channel")
+		if err != nil {
+			t.Fatalf("Channel returned error: %v", err)
+		}
+		if channel.LastPinTimestamp == nil || !channel.LastPinTimestamp.Equal(wantTimestamp) {
+			t.Fatalf("LastPinTimestamp = %v, want %v", channel.LastPinTimestamp, wantTimestamp)
+		}
+		if channel == before || state.PrivateChannels[0] != channel {
+			t.Fatal("channel pins update did not replace the private channel snapshot")
+		}
+	})
+}
+
+func TestChannelPinsUpdateStateErrors(t *testing.T) {
+	state := NewState()
+	oldTimestamp := time.Date(2026, time.July, 12, 8, 0, 0, 0, time.UTC)
+	if err := state.ChannelAdd(&Channel{ID: "dm", Type: ChannelTypeDM, LastPinTimestamp: &oldTimestamp}); err != nil {
+		t.Fatalf("ChannelAdd returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	if err := state.OnInterface(session, &ChannelPinsUpdate{ChannelID: "missing"}); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("missing channel returned error %v, want %v", err, ErrStateNotFound)
+	}
+	for _, event := range []*ChannelPinsUpdate{nil, &ChannelPinsUpdate{}} {
+		if err := state.OnInterface(session, event); !errors.Is(err, ErrStateInvalidData) {
+			t.Fatalf("invalid event returned error %v, want %v", err, ErrStateInvalidData)
+		}
+	}
+
+	before, err := state.Channel("dm")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	event := &ChannelPinsUpdate{ChannelID: "dm", LastPinTimestamp: "not-a-timestamp"}
+	if err := state.OnInterface(session, event); !errors.Is(err, ErrStateInvalidData) {
+		t.Fatalf("malformed timestamp returned error %v, want %v", err, ErrStateInvalidData)
+	}
+	after, err := state.Channel("dm")
+	if err != nil {
+		t.Fatalf("Channel returned error: %v", err)
+	}
+	if after != before || after.LastPinTimestamp == nil || !after.LastPinTimestamp.Equal(oldTimestamp) {
+		t.Fatal("malformed timestamp changed cached channel state")
+	}
+	if event.LastPinTimestamp != "not-a-timestamp" {
+		t.Fatal("malformed timestamp event was mutated")
+	}
+}
+
+func TestChannelPinsUpdateStateConcurrentAccess(t *testing.T) {
+	state := NewState()
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	session := &Session{StateEnabled: true}
+
+	var readers sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-start
+			for j := 0; j < 1000; j++ {
+				channel, err := state.Channel("channel")
+				if err == nil && channel.LastPinTimestamp != nil {
+					_ = channel.LastPinTimestamp.UnixNano()
+				}
+				_, _ = state.Guild("guild")
+			}
+		}()
+	}
+	close(start)
+	for i := 0; i < 1000; i++ {
+		timestamp := ""
+		if i%2 == 0 {
+			timestamp = "2026-07-13T09:10:11.123Z"
+		}
+		if err := state.OnInterface(session, &ChannelPinsUpdate{
+			ChannelID:        "channel",
+			GuildID:          "guild",
+			LastPinTimestamp: timestamp,
+		}); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	}
+	readers.Wait()
+}
+
+const channelWithThreadMember = `{
+	"id":"200", "guild_id":"100", "parent_id":"150", "type":12,
+	"name":"private-thread", "owner_id":"300",
+	"thread_metadata":{"archived":false,"auto_archive_duration":60,"archive_timestamp":"2026-10-30T10:00:00Z","locked":false,"invitable":true},
+	"member":{"id":"200","user_id":"300","join_timestamp":"2026-10-30T10:00:00Z","flags":1}
+}`
+
+func checkCurrentThreadMember(t *testing.T, channel *Channel) {
+	t.Helper()
+	if channel == nil || channel.Member == nil {
+		t.Fatal("channel lost the current user's thread membership")
+	}
+	member := channel.Member
+	if member.ID != "200" || member.UserID != "300" || member.Flags != 1 || !member.JoinTimestamp.Equal(time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected thread member: %+v", member)
+	}
+}
+
+func TestChannelIncludesCurrentThreadMember(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/api/v"+APIVersion+"/channels/200" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(channelWithThreadMember)), Request: req}, nil
+	})
+	channel, err := session.Channel("200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCurrentThreadMember(t, channel)
+}
+
+func TestThreadCreateIncludesCurrentMember(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+	if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+		t.Fatal(err)
+	}
+	var received *ThreadCreate
+	session.AddHandler(func(_ *Session, event *ThreadCreate) { received = event })
+	_, err = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"THREAD_CREATE","d":`+channelWithThreadMember+`}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if received == nil {
+		t.Fatal("THREAD_CREATE handler was not called")
+	}
+	t.Run("callback", func(t *testing.T) { checkCurrentThreadMember(t, received.Channel) })
+	cached, err := session.State.Channel("200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("cache", func(t *testing.T) { checkCurrentThreadMember(t, cached) })
+}
+
+func TestGuildMemberAddCountsOnlyNewCachedMembers(t *testing.T) {
+	for _, initiallyCached := range []bool{false, true} {
+		t.Run(fmt.Sprintf("initially_cached=%t", initiallyCached), func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel, session.SyncEvents = -1, true
+			sequence := 0
+			dispatch := func(eventType, data string) {
+				t.Helper()
+				sequence++
+				payload := fmt.Sprintf(`{"op":0,"s":%d,"t":%q,"d":%s}`, sequence, eventType, data)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			member := func(nick string) string {
+				return fmt.Sprintf(`{"user":{"id":"200","username":"member"},"nick":%q,"roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false}`, nick)
+			}
+			members, initialCount := "[]", 0
+			if initiallyCached {
+				members, initialCount = "["+member("initial")+"]", 1
+			}
+			dispatch("GUILD_CREATE", fmt.Sprintf(`{"id":"100","name":"guild","member_count":%d,"members":%s}`, initialCount, members))
+			original, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			callbacks := 0
+			session.AddHandler(func(s *Session, event *GuildMemberAdd) {
+				callbacks++
+				guild, err := s.State.Guild(event.GuildID)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				cached, err := s.State.Member(event.GuildID, event.User.ID)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if guild.MemberCount != 1 || len(guild.Members) != 1 {
+					t.Errorf("member add callback sees count=%d, cached members=%d; want 1 each", guild.MemberCount, len(guild.Members))
+				}
+				if cached.Nick != event.Nick || guild.Members[0] != cached {
+					t.Error("member add did not refresh both cache indexes before its callback")
+				}
+			})
+			add := func(nick string) {
+				t.Helper()
+				data := member(nick)
+				dispatch("GUILD_MEMBER_ADD", `{"guild_id":"100",`+data[1:])
+			}
+			add("first")
+			beforeRepeated, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			previousCount := beforeRepeated.MemberCount
+			// Discord also sends GUILD_MEMBER_ADD for existing guild members.
+			add("refreshed")
+			add("refreshed again")
+			if original.MemberCount != initialCount || (initiallyCached && original.Members[0].Nick != "initial") || beforeRepeated.MemberCount != previousCount || beforeRepeated.Members[0].Nick != "first" {
+				t.Error("later member adds changed an earlier guild snapshot")
+			}
+			dispatch("GUILD_MEMBER_REMOVE", `{"guild_id":"100","user":{"id":"200","username":"member"}}`)
+			afterRemove, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterRemove.MemberCount != 0 || len(afterRemove.Members) != 0 {
+				t.Errorf("after removal: count=%d, cached members=%d; want 0 each", afterRemove.MemberCount, len(afterRemove.Members))
+			}
+			add("rejoined")
+			if callbacks != 4 {
+				t.Errorf("member add callbacks=%d, want 4", callbacks)
+			}
+		})
+	}
+}
+
+func TestGuildMemberEditPreservesGuildIdentity(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "GuildMemberEdit"
+		if legacy {
+			name = "GuildMemberEditComplex"
+		}
+		t.Run(name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+				t.Fatal(err)
+			}
+			body := `{"user":{"id":"200","username":"member","discriminator":"0"},"nick":"renamed","avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0}`
+			session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodPatch || req.URL.String() != EndpointGuildMember("100", "200") {
+					t.Errorf("request = %s %s, want member PATCH", req.Method, req.URL)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})
+			nick := "renamed"
+			edit := func() (*Member, error) {
+				params := &GuildMemberParams{Nick: nick}
+				if legacy {
+					return session.GuildMemberEditComplex("100", "200", params)
+				}
+				return session.GuildMemberEdit("100", "200", params)
+			}
+			member, err := edit()
+			if err != nil || member == nil {
+				t.Fatalf("edit returned %v, %v", member, err)
+			}
+			if member.GuildID != "100" || member.Nick != nick {
+				t.Errorf("edited member identity = guild %q, nick %q", member.GuildID, member.Nick)
+			}
+			if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+				t.Errorf("AvatarURL = %q, want %q", got, want)
+			}
+			if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+				t.Errorf("BannerURL = %q, want %q", got, want)
+			}
+			if err := session.State.MemberAdd(member); err != nil {
+				t.Errorf("caching edited member failed: %v", err)
+			} else if cached, err := session.State.Member("100", "200"); err != nil || cached.Nick != nick {
+				t.Errorf("edited member was not retrievable from its guild: %v", err)
+			}
+
+			// Preserve the existing nil result for a null response without a panic.
+			body = `null`
+			if member, err := edit(); err != nil || member != nil {
+				t.Fatalf("null response returned %v, %v", member, err)
+			}
+		})
+	}
+}
+
+func TestGuildMemberUpdatePreservesOmittedNickAndPending(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		fields       string
+		eventNick    string
+		wantNick     string
+		wantPending  bool
+		programmatic bool
+	}{
+		{name: "omitted", wantNick: "nickname", wantPending: true},
+		{name: "clear_nick", fields: `,"nick":null`, wantPending: true},
+		{name: "complete_screening", fields: `,"pending":false`, wantNick: "nickname"},
+		{name: "replace_both", fields: `,"nick":"new nickname","pending":false`, eventNick: "new nickname", wantNick: "new nickname"},
+		{name: "programmatic_zero_values", programmatic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel, session.SyncEvents = -1, true
+			dispatch := func(sequence int, event, data string) {
+				t.Helper()
+				payload := fmt.Sprintf(`{"op":0,"s":%d,"t":%q,"d":%s}`, sequence, event, data)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dispatch(1, "GUILD_CREATE", `{"id":"100","member_count":1,"members":[{"user":{"id":"200","username":"member"},"nick":"nickname","pending":true,"roles":["300"],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false}]}`)
+			before, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := before.Members[0]
+			var callback *GuildMemberUpdate
+			session.AddHandler(func(s *Session, update *GuildMemberUpdate) {
+				callback = update
+				cached, err := s.State.Member("100", "200")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if cached.Nick != tc.wantNick || cached.Pending != tc.wantPending {
+					t.Errorf("callback cache nick=%q pending=%t, want %q %t", cached.Nick, cached.Pending, tc.wantNick, tc.wantPending)
+				}
+				guild, err := s.State.Guild("100")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if guild.Members[0] != cached || cached == original || len(cached.Roles) != 0 || cached.User.Username != "updated" {
+					t.Error("member update did not replace both cache indexes and apply supplied fields")
+				}
+			})
+			if tc.programmatic {
+				session.handleEvent(guildMemberUpdateEventType, &GuildMemberUpdate{Member: &Member{
+					GuildID: "100", User: &User{ID: "200", Username: "updated"}, Roles: []string{},
+				}})
+			} else {
+				dispatch(2, "GUILD_MEMBER_UPDATE", `{"guild_id":"100","user":{"id":"200","username":"updated"},"roles":[],"avatar":null,"banner":null,"joined_at":"2026-10-30T10:00:00Z"`+tc.fields+`}`)
+			}
+			if callback == nil || callback.BeforeUpdate == nil {
+				t.Fatal("member update callback or BeforeUpdate missing")
+			}
+			if callback.Nick != tc.eventNick || callback.Pending {
+				t.Error("cache merging modified the incoming event")
+			}
+			if original.Nick != "nickname" || !original.Pending || original.User.Username != "member" || len(original.Roles) != 1 ||
+				callback.BeforeUpdate.Nick != "nickname" || !callback.BeforeUpdate.Pending {
+				t.Error("member update changed an earlier snapshot")
+			}
+		})
+	}
+}
+
+func TestGuildMembersChunkIdentityWithoutCache(t *testing.T) {
+	for _, mode := range []string{"tracked", "state_disabled", "members_disabled", "guild_uncached"} {
+		for _, gateway := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/gateway=%t", mode, gateway), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				session.StateEnabled = mode != "state_disabled"
+				session.State.TrackMembers = mode != "members_disabled"
+				if mode != "guild_uncached" {
+					if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cache := NewState()
+				if err := cache.GuildAdd(&Guild{ID: "100"}); err != nil {
+					t.Fatal(err)
+				}
+				payload := []byte(`{"guild_id":"100","chunk_index":0,"chunk_count":1,"nonce":"lookup","members":[{
+					"user":{"id":"200","username":"member","discriminator":"0"},"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0,"pending":false}]}`)
+				called := false
+				session.AddHandler(func(_ *Session, event *GuildMembersChunk) {
+					called = true
+					if len(event.Members) != 1 || event.Members[0] == nil || event.Nonce != "lookup" {
+						t.Error("callback did not receive the requested member chunk")
+						return
+					}
+					member := event.Members[0]
+					if member.GuildID != "100" {
+						t.Errorf("member guild = %q, want 100", member.GuildID)
+					}
+					if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+						t.Errorf("AvatarURL = %q, want %q", got, want)
+					}
+					if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+						t.Errorf("BannerURL = %q, want %q", got, want)
+					}
+					if err := cache.MemberAdd(member); err != nil {
+						t.Errorf("caching callback member: %v", err)
+					} else if cached, err := cache.Member("100", "200"); err != nil || cached.GuildID != "100" {
+						t.Errorf("retrieving callback member: %v", err)
+					}
+				})
+				if gateway {
+					if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":"GUILD_MEMBERS_CHUNK","d":%s}`, payload))); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					var event GuildMembersChunk
+					if err := json.Unmarshal(payload, &event); err != nil {
+						t.Fatal(err)
+					}
+					session.handleEvent(guildMembersChunkEventType, &event)
+				}
+				if !called {
+					t.Fatal("member chunk callback did not run")
+				}
+			})
+		}
+	}
+}
+
+func TestGuildMembersChunkIdentityAbsentMembers(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+	var received *GuildMembersChunk
+	session.AddHandler(func(_ *Session, event *GuildMembersChunk) { received = event })
+	for _, members := range []string{`[]`, `null`, `[null]`} {
+		received = nil
+		payload := fmt.Sprintf(`{"op":0,"s":1,"t":"GUILD_MEMBERS_CHUNK","d":{"guild_id":"100","chunk_index":0,"chunk_count":1,"members":%s}}`, members)
+		if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		if received == nil {
+			t.Fatal("callback did not run")
+		}
+		for _, member := range received.Members {
+			if member != nil {
+				t.Fatal("absent member was not preserved")
+			}
+		}
+	}
+}
+
+func TestGuildUpdatePreservesCreateOnlyFields(t *testing.T) {
+	state := NewState()
+	session := &Session{StateEnabled: true}
+	joined := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
+	if err := state.OnInterface(session, &GuildCreate{Guild: &Guild{
+		ID: "guild", Name: "before", JoinedAt: joined, Large: true, MemberCount: 300,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := state.Guild("guild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var update GuildUpdate
+	if err := json.Unmarshal([]byte(`{"id":"guild","name":"after"}`), &update); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.OnInterface(session, &update); err != nil {
+		t.Fatal(err)
+	}
+	current, err := state.Guild("guild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.JoinedAt != joined || !current.Large || current.MemberCount != 300 {
+		t.Errorf("guild update lost create fields: joined=%v, large=%v, members=%d", current.JoinedAt, current.Large, current.MemberCount)
+	}
+	if current.Name != "after" || before.Name != "before" || before.JoinedAt != joined || !before.Large {
+		t.Error("guild update failed to replace the snapshot")
+	}
+	if !update.JoinedAt.IsZero() || update.Large {
+		t.Error("cached fields were copied into the event payload")
+	}
+
+	// Only a new GUILD_CREATE signals recovery and refreshes these fields.
+	if err := state.OnInterface(session, &GuildDelete{Guild: &Guild{ID: "guild", Unavailable: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.OnInterface(session, &update); err != nil {
+		t.Fatal(err)
+	}
+	current, err = state.Guild("guild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.Unavailable {
+		t.Error("guild update cleared unavailable state before recovery")
+	}
+	rejoined := joined.Add(time.Hour)
+	if err := state.OnInterface(session, &GuildCreate{Guild: &Guild{
+		ID: "guild", Name: "recovered", JoinedAt: rejoined, Large: false, MemberCount: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = state.Guild("guild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.JoinedAt != rejoined || current.Large || current.Unavailable || current.MemberCount != 10 {
+		t.Errorf("guild create did not refresh metadata: %+v", current)
+	}
+}
+
+func TestInteractionMembersPreserveGuildIdentity(t *testing.T) {
+	for _, kind := range []InteractionType{InteractionApplicationCommand, InteractionMessageComponent, InteractionApplicationCommandAutocomplete, InteractionModalSubmit} {
+		for _, gateway := range []bool{false, true} {
+			t.Run(fmt.Sprintf("type_%d/gateway_%t", kind, gateway), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+					t.Fatal(err)
+				}
+				data := `"id":"300","name":"inspect","type":1,"options":[{"name":"user","type":6,"value":"201"}]`
+				switch kind {
+				case InteractionMessageComponent:
+					data = `"custom_id":"select","component_type":5,"values":["201"]`
+				case InteractionApplicationCommandAutocomplete:
+					data = `"id":"300","name":"inspect","type":1,"options":[{"name":"user","type":6,"value":"201"},{"name":"query","type":3,"value":"abc","focused":true}]`
+				case InteractionModalSubmit:
+					data = `"custom_id":"modal","components":[{"type":18,"label":"User","component":{"type":5,"custom_id":"select","values":["201"]}}]`
+				}
+				payload := []byte(fmt.Sprintf(`{"id":"400","application_id":"500","type":%d,"guild_id":"100","channel_id":"600","token":"test","version":1,
+					"member":{"user":{"id":"200","username":"invoker","discriminator":"0"},"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0},
+					"data":{%s,"resolved":{"users":{"201":{"id":"201","username":"selected","discriminator":"0"}},"members":{"201":{"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","flags":0}}}}}`, kind, data))
+				var interaction *Interaction
+				if gateway {
+					session.AddHandler(func(_ *Session, event *InteractionCreate) { interaction = event.Interaction })
+					if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":"INTERACTION_CREATE","d":%s}`, payload))); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := json.Unmarshal(payload, &interaction); err != nil {
+					t.Fatal(err)
+				}
+				if interaction == nil || interaction.Member == nil {
+					t.Fatal("interaction or invoking member missing")
+				}
+				members := []*Member{interaction.Member}
+				switch data := interaction.Data.(type) {
+				case ApplicationCommandInteractionData:
+					members = append(members, data.Resolved.Members["201"])
+				case MessageComponentInteractionData:
+					members = append(members, data.Resolved.Members["201"])
+				case ModalSubmitInteractionData:
+					members = append(members, data.Resolved.Members["201"])
+				default:
+					t.Fatalf("unexpected interaction data %T", interaction.Data)
+				}
+				for _, member := range members {
+					if member == nil || member.User == nil {
+						t.Fatal("member or linked user missing")
+					}
+					if member.GuildID != "100" {
+						t.Errorf("member %s guild = %q, want 100", member.User.ID, member.GuildID)
+					}
+					if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", member.User.ID, "guild-avatar"); got != want {
+						t.Errorf("AvatarURL = %q, want %q", got, want)
+					}
+					if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", member.User.ID, "guild-banner"); got != want {
+						t.Errorf("BannerURL = %q, want %q", got, want)
+					}
+					if err := session.State.MemberAdd(member); err != nil {
+						t.Errorf("caching interaction member failed: %v", err)
+					} else if cached, err := session.State.Member("100", member.User.ID); err != nil || cached.User.ID != member.User.ID {
+						t.Errorf("member not retrievable from its guild: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestInteractionMemberGuildIdentityOptionalData(t *testing.T) {
+	for _, payload := range []string{
+		`{"type":1}`,
+		`{"type":2,"user":{"id":"200"},"data":{"id":"300","name":"inspect","type":1}}`,
+		`{"type":2,"guild_id":"100","data":{"resolved":{"members":{"200":null}}}}`,
+	} {
+		var interaction Interaction
+		if err := json.Unmarshal([]byte(payload), &interaction); err != nil {
+			t.Fatal(err)
+		}
+		if interaction.Member != nil {
+			t.Fatal("decoder invented an invoking member")
+		}
+	}
+}
+
+func TestMessageCacheRejectsNegativeLimit(t *testing.T) {
+	for _, event := range []string{"create", "update", "direct"} {
+		t.Run(event, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := session.State
+			if err := state.ChannelAdd(&Channel{ID: "channel", Type: ChannelTypeDM}); err != nil {
+				t.Fatal(err)
+			}
+			state.MaxMessageCount = -1
+			message := &Message{ID: "message", ChannelID: "channel"}
+			switch event {
+			case "create":
+				err = state.OnInterface(session, &MessageCreate{Message: message})
+			case "update":
+				err = state.OnInterface(session, &MessageUpdate{Message: message})
+			case "direct":
+				err = state.MessageAdd(message)
+			}
+			if !errors.Is(err, ErrStateInvalidData) {
+				t.Fatalf("error = %v, want ErrStateInvalidData", err)
+			}
+			channel, err := state.Channel("channel")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(channel.Messages) != 0 {
+				t.Fatal("invalid limit changed the message cache")
+			}
+		})
+	}
+}
+
+func TestMessageUpdatePreservesInteractionMemberSnapshot(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+	session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/api/v"+APIVersion+"/channels/channel/messages/message" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		}
+		// guild_id is a gateway extra field, absent from this REST message.
+		body := `{
+			"id":"message","channel_id":"channel","author":{"id":"bot","username":"Bot","bot":true},
+			"content":"before","timestamp":"2026-10-30T10:00:00Z","edited_timestamp":null,
+			"tts":false,"mention_everyone":false,"mentions":[],"mention_roles":[],
+			"attachments":[],"embeds":[],"pinned":false,"type":20,
+			"interaction":{
+				"id":"interaction","type":2,"name":"command","user":{"id":"user","username":"User"},
+				"member":{"nick":"Nick","roles":[],"joined_at":"2025-01-01T00:00:00Z"}
+			}
+		}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})
+	message, err := session.ChannelMessage("channel", "message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.State = newMessageUpdateState(t, message)
+	before, err := session.State.Message("channel", "message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Interaction == nil || before.Interaction.Member == nil || before.Interaction.Member.GuildID != "" {
+		t.Fatalf("unexpected initial interaction: %#v", before.Interaction)
+	}
+	var event *MessageUpdate
+	session.AddHandler(func(_ *Session, update *MessageUpdate) { event = update })
+	start := make(chan struct{})
+	readDone := make(chan int, 1)
+	go func() {
+		<-start
+		observed := 0
+		for range 1000 {
+			if before.Interaction.Member.GuildID != "" {
+				observed++
+			}
+		}
+		readDone <- observed
+	}()
+	close(start)
+	_, updateErr := session.onEvent(websocket.TextMessage, []byte(`{"op":0,"t":"MESSAGE_UPDATE","s":1,"d":{"id":"message","channel_id":"channel","guild_id":"guild","content":"after"}}`))
+	observed := <-readDone
+	if updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	after, err := session.State.Message("channel", "message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed != 0 || before.Interaction.Member.GuildID != "" || message.Interaction.Member.GuildID != "" {
+		t.Fatal("message update mutated the earlier interaction member snapshot")
+	}
+	if event == nil || event.BeforeUpdate == nil || event.BeforeUpdate.Interaction == nil || event.BeforeUpdate.Interaction.Member == nil || event.BeforeUpdate.Interaction.Member.GuildID != "" {
+		t.Fatal("BeforeUpdate lost the original interaction member")
+	}
+	if event.Interaction != nil {
+		t.Fatal("gateway event was populated with omitted interaction data")
+	}
+	if after.Content != "after" || after.GuildID != "guild" || after.Interaction == nil || after.Interaction.Member == nil {
+		t.Fatalf("unexpected updated message: %#v", after)
+	}
+	if after.Interaction.Member.GuildID != "guild" || after.Interaction.Member.User != after.Interaction.User || after.Interaction.Member.Nick != "Nick" {
+		t.Fatalf("updated interaction member was not preserved and linked: %#v", after.Interaction.Member)
+	}
+}
+
+func TestMessageUpdatePreservesMemberSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+		author bool
+	}{
+		{name: "author still omitted", fields: `"content":"edited"`},
+		{name: "author arrives", fields: `"author":{"id":"author","username":"Author"}`, author: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.SyncEvents = true
+			session.State = newMessageUpdateState(t, nil)
+			// An update for an uncached message can carry a partial member
+			// before the cache knows the message's author.
+			initial := `{"op":0,"t":"MESSAGE_UPDATE","s":1,"d":{"id":"message","channel_id":"channel","guild_id":"guild","member":{"nick":"Nick","roles":[],"joined_at":"2025-01-01T00:00:00Z"}}}`
+			if _, err := session.onEvent(websocket.TextMessage, []byte(initial)); err != nil {
+				t.Fatal(err)
+			}
+			before, err := session.State.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.Member == nil || before.Member.User != nil || before.Member.GuildID != "guild" {
+				t.Fatalf("unexpected initial member: %#v", before.Member)
+			}
+			var event *MessageUpdate
+			session.AddHandler(func(_ *Session, update *MessageUpdate) { event = update })
+
+			// Cached messages are snapshots. Reading an earlier member must
+			// remain safe while another gateway update fills omitted fields.
+			start := make(chan struct{})
+			readDone := make(chan int, 1)
+			go func() {
+				<-start
+				observed := 0
+				for range 1000 {
+					if before.Member.User != nil {
+						observed++
+					}
+				}
+				readDone <- observed
+			}()
+			close(start)
+			payload := `{"op":0,"t":"MESSAGE_UPDATE","s":2,"d":{"id":"message","channel_id":"channel","guild_id":"guild",` + tc.fields + `}}`
+			_, updateErr := session.onEvent(websocket.TextMessage, []byte(payload))
+			observed := <-readDone
+			if updateErr != nil {
+				t.Fatal(updateErr)
+			}
+			after, err := session.State.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observed != 0 || before.Member.User != nil || event == nil || event.BeforeUpdate == nil || event.BeforeUpdate.Member == nil || event.BeforeUpdate.Member.User != nil {
+				t.Fatal("message update mutated the member in an earlier snapshot")
+			}
+			if after.Member == nil || after.Member.Nick != "Nick" || after.Member.GuildID != "guild" {
+				t.Fatalf("updated message lost member data: %#v", after.Member)
+			}
+			if tc.author && (after.Author == nil || after.Member.User != after.Author) {
+				t.Fatal("updated member was not linked to the newly received author")
+			}
+			if !tc.author && (after.Author != nil || after.Member.User != nil) {
+				t.Fatal("update invented an omitted author")
+			}
+		})
+	}
+}
+
+func TestMessageResolvedMembersPreserveGuildIdentity(t *testing.T) {
+	for _, eventType := range []string{messageCreateEventType, messageUpdateEventType} {
+		for _, stateEnabled := range []bool{false, true} {
+			for _, gateway := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/state=%t/gateway=%t", eventType, stateEnabled, gateway), func(t *testing.T) {
+					session, err := New("Bot test")
+					if err != nil {
+						t.Fatal(err)
+					}
+					session.SyncEvents = true
+					session.StateEnabled = stateEnabled
+					if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+						t.Fatal(err)
+					}
+					payload := []byte(`{"id":"400","channel_id":"300","guild_id":"100",
+						"resolved":{"users":{"200":{"id":"200","username":"selected","discriminator":"0"}},
+						"members":{"200":{"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","flags":0}}}}`)
+					var received *Message
+					session.AddHandler(func(_ *Session, event *MessageCreate) { received = event.Message })
+					session.AddHandler(func(_ *Session, event *MessageUpdate) { received = event.Message })
+					if gateway {
+						if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":%q,"d":%s}`, eventType, payload))); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						var event interface{}
+						if eventType == messageCreateEventType {
+							event = &MessageCreate{}
+						} else {
+							event = &MessageUpdate{}
+						}
+						if err := json.Unmarshal(payload, event); err != nil {
+							t.Fatal(err)
+						}
+						session.handleEvent(eventType, event)
+					}
+					if received == nil || received.Resolved == nil {
+						t.Fatal("callback did not receive message resolved data")
+					}
+					member := received.Resolved.Members["200"]
+					if member == nil || member.User == nil || member.User != received.Resolved.Users["200"] {
+						t.Fatal("resolved member or linked user missing")
+					}
+					if member.GuildID != "100" {
+						t.Errorf("member guild = %q, want 100", member.GuildID)
+					}
+					if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+						t.Errorf("AvatarURL = %q, want %q", got, want)
+					}
+					if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+						t.Errorf("BannerURL = %q, want %q", got, want)
+					}
+					if err := session.State.MemberAdd(member); err != nil {
+						t.Errorf("caching resolved member failed: %v", err)
+					} else if cached, err := session.State.Member("100", "200"); err != nil || cached.GuildID != "100" || cached.User.ID != "200" {
+						t.Errorf("member not retrievable from its guild: %v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMessageResolvedMemberGuildIdentityOptionalData(t *testing.T) {
+	for _, payload := range []string{
+		`{"guild_id":"100"}`,
+		`{"guild_id":"100","resolved":null}`,
+		`{"guild_id":"100","resolved":{"members":null}}`,
+		`{"guild_id":"100","resolved":{"members":{"200":null}}}`,
+	} {
+		var message Message
+		if err := json.Unmarshal([]byte(payload), &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Resolved != nil && message.Resolved.Members["200"] != nil {
+			t.Fatal("decoder invented a resolved member")
+		}
+	}
+}
+
+func newMessageUpdateState(t *testing.T, message *Message) *State {
+	t.Helper()
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if message != nil {
+		if err := state.MessageAdd(message); err != nil {
+			t.Fatalf("MessageAdd returned error: %v", err)
+		}
+	}
+	return state
+}
+
+func unmarshalMessageUpdate(t *testing.T, payload string) *MessageUpdate {
+	t.Helper()
+	var update MessageUpdate
+	if err := json.Unmarshal([]byte(payload), &update); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	return &update
+}
+
+func TestMessageUpdateMergePreservesOmittedFields(t *testing.T) {
+	timestamp := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
+	message := &Message{
+		ID:              "message",
+		ChannelID:       "channel",
+		GuildID:         "guild",
+		Content:         "before",
+		Timestamp:       timestamp,
+		Author:          &User{ID: "author"},
+		Flags:           MessageFlagsSuppressEmbeds,
+		Type:            MessageTypeReply,
+		Pinned:          true,
+		TTS:             true,
+		MentionEveryone: true,
+		MentionRoles:    []string{"role"},
+		Reactions: []*MessageReactions{{
+			Count: 1,
+			Me:    true,
+			Emoji: &Emoji{Name: "wave"},
+		}},
+	}
+	state := newMessageUpdateState(t, message)
+	update := unmarshalMessageUpdate(t, `{"id":"message","channel_id":"channel","content":"after"}`)
+
+	if err := state.OnInterface(&Session{StateEnabled: true}, update); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	got, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if got.Content != "after" || got.Author != message.Author || got.Timestamp != timestamp ||
+		got.Flags != message.Flags || got.Type != message.Type || !got.Pinned || !got.TTS ||
+		!got.MentionEveryone || !reflect.DeepEqual(got.MentionRoles, message.MentionRoles) ||
+		!reflect.DeepEqual(got.Reactions, message.Reactions) {
+		t.Fatalf("cached message lost omitted fields: %#v", got)
+	}
+	if update.Author != nil || update.Flags != 0 || update.Type != 0 || update.Pinned || update.Reactions != nil {
+		t.Fatalf("event payload was replaced with merged state: %#v", update.Message)
+	}
+	if update.BeforeUpdate == nil || update.BeforeUpdate.Content != "before" || update.BeforeUpdate == got {
+		t.Fatalf("BeforeUpdate = %#v, want isolated pre-update message", update.BeforeUpdate)
+	}
+}
+
+func TestMessageUpdateMergeAppliesEveryExplicitField(t *testing.T) {
+	timestamp := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
+	one := 1
+	message := &Message{
+		ID: "message", ChannelID: "channel", ChannelType: ChannelTypeGuildText, GuildID: "guild",
+		Content: "old", Timestamp: timestamp, EditedTimestamp: &timestamp, MentionRoles: []string{"role"},
+		TTS: true, MentionEveryone: true, Author: &User{ID: "author"},
+		Attachments: []*MessageAttachment{{ID: "attachment"}}, Components: []MessageComponent{&ActionsRow{}},
+		Embeds: []*MessageEmbed{{Title: "embed"}}, Mentions: []*User{{ID: "mention"}},
+		Reactions: []*MessageReactions{{Count: 1, Me: true, Emoji: &Emoji{Name: "wave"}}}, Nonce: "nonce",
+		Pinned: true, Type: MessageTypeReply, WebhookID: "webhook", Member: &Member{GuildID: "guild", User: &User{ID: "member"}},
+		MentionChannels: []*Channel{{ID: "mentioned-channel"}}, Activity: &MessageActivity{Type: MessageActivityTypeJoin, PartyID: "party"},
+		Application: &MessageApplication{ID: "application"}, ApplicationID: "application",
+		MessageReference: &MessageReference{MessageID: "reference"}, ReferencedMessage: &Message{ID: "reference"},
+		MessageSnapshots: []MessageSnapshot{{Message: &Message{ID: "snapshot"}}}, Interaction: &MessageInteraction{ID: "interaction"},
+		InteractionMetadata: &MessageInteractionMetadata{ID: "metadata"}, Flags: MessageFlagsSuppressEmbeds,
+		Thread: &Channel{ID: "thread"}, StickerItems: []*StickerItem{{ID: "sticker"}}, Stickers: []*Sticker{{ID: "legacy-sticker"}},
+		Position: &one, RoleSubscriptionData: &MessageRoleSubscriptionData{TierName: "tier"},
+		Resolved: &ComponentInteractionDataResolved{Users: map[string]*User{"user": {ID: "user"}}},
+		Poll:     &Poll{AllowMultiselect: true}, Call: &MessageCall{Participants: []string{"user"}},
+		SharedClientTheme: &MessageSharedClientTheme{Colors: []string{"ffffff"}, GradientAngle: 1, BaseMix: 1},
+	}
+	state := newMessageUpdateState(t, message)
+	update := unmarshalMessageUpdate(t, `{
+		"id":"message","channel_id":"channel","channel_type":0,"guild_id":"guild",
+		"content":"","timestamp":"0001-01-01T00:00:00Z","edited_timestamp":null,"mention_roles":[],
+		"tts":false,"mention_everyone":false,"author":null,"attachments":[],"components":[],"embeds":[],
+		"mentions":[],"reactions":[{"count":0,"count_details":{"burst":0,"normal":0},"me":false,"me_burst":false,"emoji":{"id":null,"name":""},"burst_colors":[]}],
+		"nonce":"","pinned":false,"type":0,"webhook_id":"","member":null,"mention_channels":[],
+		"activity":null,"application":null,"application_id":"","message_reference":null,"referenced_message":null,
+		"message_snapshots":[],"interaction":null,"interaction_metadata":null,"flags":0,"thread":null,
+		"sticker_items":[],"stickers":[],"position":null,"role_subscription_data":null,"resolved":null,
+		"poll":null,"call":null,"shared_client_theme":null
+	}`)
+
+	if err := state.OnInterface(&Session{StateEnabled: true}, update); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	got, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if !reflect.DeepEqual(got, update.Message) {
+		t.Fatalf("cached message = %#v, want explicit update %#v", got, update.Message)
+	}
+	if got.Reactions[0].Count != 0 || got.Reactions[0].Me || got.Flags != 0 || got.Type != 0 || got.Pinned {
+		t.Fatalf("explicit zero values were not applied: %#v", got)
+	}
+	if got.MentionRoles == nil || got.Attachments == nil || got.Components == nil || got.Embeds == nil || got.Mentions == nil {
+		t.Fatalf("explicit empty arrays became nil: %#v", got)
+	}
+	if got.EditedTimestamp != nil || got.Poll != nil || got.ReferencedMessage != nil || got.Position != nil {
+		t.Fatalf("explicit null values were not applied: %#v", got)
+	}
+	update.Reactions[0].Count = 99
+	if got.Reactions[0].Count != 0 {
+		t.Fatalf("cached update aliases event payload: %#v", got.Reactions)
+	}
+}
+
+func TestMessageUpdateMergeCacheMiss(t *testing.T) {
+	state := newMessageUpdateState(t, nil)
+	update := unmarshalMessageUpdate(t, `{"id":"message","channel_id":"channel","content":"partial"}`)
+	if err := state.OnInterface(&Session{StateEnabled: true}, update); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	got, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if got.Content != "partial" || got.Author != nil || update.BeforeUpdate != nil {
+		t.Fatalf("cache miss message = %#v, BeforeUpdate = %#v", got, update.BeforeUpdate)
+	}
+	if got == update.Message {
+		t.Fatal("cached message aliases event payload")
+	}
+	update.Content = "mutated"
+	if got.Content != "partial" {
+		t.Fatalf("cached content = %q after event mutation, want partial", got.Content)
+	}
+}
+
+func BenchmarkMessageUpdateMergeCacheMiss(b *testing.B) {
+	state := NewState()
+	state.MaxMessageCount = 10
+	if err := state.GuildAdd(&Guild{
+		ID:       "guild",
+		Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	updates := make([]*MessageUpdate, state.MaxMessageCount+1)
+	for i := range updates {
+		updates[i] = &MessageUpdate{Message: &Message{
+			ID:        "message-" + strconv.Itoa(i),
+			ChannelID: "channel",
+		}}
+	}
+	for i := 0; i < state.MaxMessageCount; i++ {
+		if err := state.MessageAdd(updates[i].Message); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	i := state.MaxMessageCount
+	b.ReportAllocs()
+	b.ResetTimer()
+	for ; i < b.N+state.MaxMessageCount; i++ {
+		update := updates[i%len(updates)]
+		if err := state.messageUpdate(update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestMessageUpdateMergeProgrammaticCompatibility(t *testing.T) {
+	state := newMessageUpdateState(t, &Message{
+		ID:        "message",
+		ChannelID: "channel",
+		Content:   "before",
+		Flags:     MessageFlagsSuppressEmbeds,
+	})
+	update := &MessageUpdate{Message: &Message{ID: "message", ChannelID: "channel", Content: "after"}}
+	if err := state.OnInterface(&Session{StateEnabled: true}, update); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	got, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if got.Content != "after" || got.Flags != MessageFlagsSuppressEmbeds {
+		t.Fatalf("programmatic update = %#v", got)
+	}
+}
+
+func TestMessageUpdateMergeConcurrent(t *testing.T) {
+	state := newMessageUpdateState(t, &Message{ID: "message", ChannelID: "channel", Content: "initial"})
+	session := &Session{StateEnabled: true}
+	var wg sync.WaitGroup
+	updates := make([]*MessageUpdate, 25)
+	for i := range updates {
+		updates[i] = unmarshalMessageUpdate(t, `{"id":"message","channel_id":"channel","content":"updated"}`)
+	}
+	for _, update := range updates {
+		wg.Add(2)
+		go func(update *MessageUpdate) {
+			defer wg.Done()
+			if err := state.OnInterface(session, update); err != nil {
+				t.Errorf("OnInterface returned error: %v", err)
+			}
+		}(update)
+		go func() {
+			defer wg.Done()
+			if _, err := state.Message("channel", "message"); err != nil {
+				t.Errorf("Message returned error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestMessageUpdateUnmarshalMalformed(t *testing.T) {
+	for _, payload := range []string{`{"id":`, `[]`, `{"id":false}`} {
+		var update MessageUpdate
+		if err := json.Unmarshal([]byte(payload), &update); err == nil {
+			t.Fatalf("json.Unmarshal(%q) returned nil error", payload)
+		}
+		if update.Message != nil {
+			t.Fatalf("json.Unmarshal(%q) left Message = %#v", payload, update.Message)
+		}
+	}
+}
+
+type permissionRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f permissionRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestEffectiveChannelPermissions(t *testing.T) {
+	activeTimeout := time.Now().Add(time.Hour)
+	expiredTimeout := time.Now().Add(-time.Hour)
+
+	const sendDependencies int64 = PermissionSendTTSMessages |
+		PermissionMentionEveryone |
+		PermissionEmbedLinks |
+		PermissionAttachFiles
+	const guildPermissions int64 = PermissionManageGuild |
+		PermissionViewAuditLogs |
+		PermissionManageEvents |
+		PermissionCreateEvents
+	const voicePermissions int64 = PermissionVoicePrioritySpeaker |
+		PermissionVoiceStreamVideo |
+		PermissionVoiceConnect |
+		PermissionVoiceSpeak |
+		PermissionVoiceMuteMembers |
+		PermissionVoiceDeafenMembers |
+		PermissionVoiceMoveMembers |
+		PermissionVoiceUseVAD |
+		PermissionUseEmbeddedActivities |
+		PermissionUseSoundboard |
+		PermissionUseExternalSounds
+	const connectDependentPermissions int64 = voicePermissions |
+		PermissionManageChannels |
+		PermissionManageRoles
+	const basePermissions int64 = PermissionViewChannel |
+		PermissionSendMessages |
+		PermissionSendMessagesInThreads |
+		sendDependencies |
+		PermissionReadMessageHistory |
+		guildPermissions
+
+	tests := []struct {
+		name        string
+		permissions int64
+		overwrites  []*PermissionOverwrite
+		channelType ChannelType
+		thread      bool
+		timeout     *time.Time
+		owner       bool
+		admin       bool
+		want        int64
+	}{
+		{
+			name:        "nil timeout keeps permissions",
+			permissions: basePermissions,
+			want:        basePermissions,
+		},
+		{
+			name:        "missing view channel clears channel permissions",
+			permissions: basePermissions &^ PermissionViewChannel,
+			want:        guildPermissions,
+		},
+		{
+			name:        "missing send messages clears dependent permissions",
+			permissions: basePermissions &^ PermissionSendMessages,
+			want:        basePermissions &^ PermissionSendMessages &^ sendDependencies,
+		},
+		{
+			name:        "thread uses send messages in threads",
+			permissions: basePermissions,
+			thread:      true,
+			want:        basePermissions &^ PermissionSendMessages,
+		},
+		{
+			name:        "missing thread send clears dependent permissions",
+			permissions: basePermissions &^ PermissionSendMessagesInThreads,
+			thread:      true,
+			want:        basePermissions &^ PermissionSendMessagesInThreads &^ PermissionSendMessages &^ sendDependencies,
+		},
+		{
+			name:        "voice without connect clears voice and channel management permissions",
+			permissions: basePermissions | connectDependentPermissions,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionVoiceConnect},
+			},
+			channelType: ChannelTypeGuildVoice,
+			want:        basePermissions,
+		},
+		{
+			name:        "voice without connect keeps set voice channel status",
+			permissions: basePermissions | connectDependentPermissions | PermissionSetVoiceChannelStatus,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionVoiceConnect},
+			},
+			channelType: ChannelTypeGuildVoice,
+			want:        basePermissions | PermissionSetVoiceChannelStatus,
+		},
+		{
+			name: "stage without connect clears voice but keeps stage permissions",
+			permissions: basePermissions |
+				(connectDependentPermissions &^ PermissionVoiceConnect) |
+				PermissionVoiceRequestToSpeak,
+			channelType: ChannelTypeGuildStageVoice,
+			want:        basePermissions | PermissionVoiceRequestToSpeak,
+		},
+		{
+			name:        "member overwrite restores voice connect",
+			permissions: basePermissions | connectDependentPermissions,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionVoiceConnect},
+				{ID: "user", Type: PermissionOverwriteTypeMember, Allow: PermissionVoiceConnect},
+			},
+			channelType: ChannelTypeGuildVoice,
+			want:        basePermissions | connectDependentPermissions,
+		},
+		{
+			name:        "active timeout keeps view and history",
+			permissions: basePermissions,
+			timeout:     &activeTimeout,
+			want:        PermissionViewChannel | PermissionReadMessageHistory,
+		},
+		{
+			name:        "expired timeout keeps permissions",
+			permissions: basePermissions,
+			timeout:     &expiredTimeout,
+			want:        basePermissions,
+		},
+		{
+			name:        "owner bypasses active timeout and thread masks",
+			permissions: basePermissions,
+			thread:      true,
+			timeout:     &activeTimeout,
+			owner:       true,
+			want:        PermissionAll,
+		},
+		{
+			name:        "administrator bypasses active timeout and thread masks",
+			permissions: basePermissions,
+			thread:      true,
+			timeout:     &activeTimeout,
+			admin:       true,
+			want:        PermissionAll,
+		},
+		{
+			name:        "owner bypasses missing voice connect",
+			permissions: basePermissions | (connectDependentPermissions &^ PermissionVoiceConnect),
+			channelType: ChannelTypeGuildVoice,
+			owner:       true,
+			want:        PermissionAll,
+		},
+		{
+			name:        "administrator bypasses missing stage connect",
+			permissions: basePermissions | (connectDependentPermissions &^ PermissionVoiceConnect),
+			channelType: ChannelTypeGuildStageVoice,
+			admin:       true,
+			want:        PermissionAll,
+		},
+		{
+			name:        "member overwrite restores send messages",
+			permissions: basePermissions,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionSendMessages},
+				{ID: "user", Type: PermissionOverwriteTypeMember, Allow: PermissionSendMessages},
+			},
+			want: basePermissions,
+		},
+		{
+			name:        "dependent allows do not restore denied send messages",
+			permissions: basePermissions,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionSendMessages},
+				{ID: "user", Type: PermissionOverwriteTypeMember, Allow: sendDependencies},
+			},
+			want: basePermissions &^ PermissionSendMessages &^ sendDependencies,
+		},
+		{
+			name:        "missing view channel wins after overwrites",
+			permissions: basePermissions,
+			thread:      true,
+			overwrites: []*PermissionOverwrite{
+				{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionViewChannel},
+				{ID: "user", Type: PermissionOverwriteTypeMember, Allow: PermissionSendMessages},
+			},
+			want: guildPermissions,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roles := []*Role{{ID: "guild", Permissions: tt.permissions}}
+			memberRoles := []string{}
+			if tt.admin {
+				roles = append(roles, &Role{ID: "admin", Permissions: PermissionAdministrator})
+				memberRoles = append(memberRoles, "admin")
+			}
+
+			member := &Member{
+				GuildID:                    "guild",
+				User:                       &User{ID: "user"},
+				Roles:                      memberRoles,
+				CommunicationDisabledUntil: tt.timeout,
+			}
+			channel := &Channel{
+				ID:                   "channel",
+				GuildID:              "guild",
+				Type:                 tt.channelType,
+				PermissionOverwrites: tt.overwrites,
+			}
+			guild := &Guild{
+				ID:       "guild",
+				OwnerID:  "owner",
+				Roles:    roles,
+				Members:  []*Member{member},
+				Channels: []*Channel{channel},
+			}
+			channelID := channel.ID
+			if tt.owner {
+				guild.OwnerID = member.User.ID
+			}
+			if tt.thread {
+				thread := &Channel{
+					ID:       "thread",
+					GuildID:  guild.ID,
+					ParentID: channel.ID,
+					Type:     ChannelTypeGuildPublicThread,
+				}
+				guild.Threads = []*Channel{thread}
+				channelID = thread.ID
+			}
+
+			newState := func(includeMember bool) *State {
+				state := NewState()
+				guildCopy := *guild
+				if !includeMember {
+					guildCopy.Members = nil
+				}
+				if err := state.GuildAdd(&guildCopy); err != nil {
+					t.Fatalf("GuildAdd returned error: %v", err)
+				}
+				return state
+			}
+
+			state := newState(true)
+			statePermissions, stateErr := state.UserChannelPermissions(member.User.ID, channelID)
+			messagePermissions, messageErr := state.MessagePermissions(&Message{
+				ChannelID: channelID,
+				Author:    member.User,
+				Member:    member,
+			})
+			stateSession := &Session{State: state}
+			stateSessionPermissions, stateSessionErr := stateSession.UserChannelPermissions(member.User.ID, channelID)
+
+			memberJSON, err := json.Marshal(member)
+			if err != nil {
+				t.Fatalf("json.Marshal returned error: %v", err)
+			}
+			requests := 0
+			restSession, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			restSession.State = newState(false)
+			restSession.Client.Transport = permissionRoundTripper(func(r *http.Request) (*http.Response, error) {
+				requests++
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+				}
+				if !strings.HasSuffix(r.URL.Path, "/guilds/guild/members/user") {
+					t.Fatalf("path = %q, want guild member endpoint", r.URL.Path)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(string(memberJSON))),
+					Request:    r,
+				}, nil
+			})
+			restPermissions, restErr := restSession.UserChannelPermissions(member.User.ID, channelID)
+
+			results := []struct {
+				name        string
+				permissions int64
+				err         error
+			}{
+				{name: "State.UserChannelPermissions", permissions: statePermissions, err: stateErr},
+				{name: "State.MessagePermissions", permissions: messagePermissions, err: messageErr},
+				{name: "Session.UserChannelPermissions state", permissions: stateSessionPermissions, err: stateSessionErr},
+				{name: "Session.UserChannelPermissions REST fallback", permissions: restPermissions, err: restErr},
+			}
+			for _, result := range results {
+				t.Run(result.name, func(t *testing.T) {
+					if result.err != nil {
+						t.Fatalf("returned error: %v", result.err)
+					}
+					if result.permissions != tt.want {
+						t.Fatalf("permissions = %d, want %d", result.permissions, tt.want)
+					}
+				})
+			}
+
+			wantRequests := 1
+			if tt.owner {
+				wantRequests = 0
+			}
+			if requests != wantRequests {
+				t.Fatalf("REST requests = %d, want %d", requests, wantRequests)
+			}
+		})
+	}
+}
+
+func TestMessagePollVoteCreatesMissingZeroCount(t *testing.T) {
+	for _, self := range []bool{false, true} {
+		for _, sparse := range []bool{false, true} {
+			results := &PollResults{}
+			if sparse {
+				results.AnswerCounts = []*PollAnswerCount{{ID: 2, Count: 4}}
+			}
+			state, session := newMessagePollVoteTestState(t, &Poll{
+				Answers: []PollAnswer{{AnswerID: 1}, {AnswerID: 2}}, Results: results,
+			})
+			before, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			userID := "user"
+			if self {
+				userID = "bot"
+			}
+			if err := state.OnInterface(session, &MessagePollVoteAdd{
+				UserID: userID, ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var added *PollAnswerCount
+			for _, count := range got.Poll.Results.AnswerCounts {
+				if count.ID == 1 {
+					added = count
+				}
+			}
+			if added == nil || added.Count != 1 || added.MeVoted != self {
+				t.Fatalf("self=%v sparse=%v: first vote = %#v, want count 1 and me_voted %v", self, sparse, added, self)
+			}
+			wantOldCount := 0
+			if sparse {
+				wantOldCount = 1
+			}
+			if len(before.Poll.Results.AnswerCounts) != wantOldCount || before.Poll.Results != results {
+				t.Fatal("first vote mutated old snapshot")
+			}
+			if sparse && got.Poll.Results.AnswerCounts[0].Count != 4 {
+				t.Fatal("unrelated count changed")
+			}
+			if err := state.OnInterface(session, &MessagePollVoteRemove{
+				UserID: userID, ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, count := range after.Poll.Results.AnswerCounts {
+				if count.ID == 1 && (count.Count != 0 || count.MeVoted) {
+					t.Fatalf("removed vote = %#v", count)
+				}
+			}
+			if added.Count != 1 {
+				t.Fatal("removal mutated preceding snapshot")
+			}
+		}
+	}
+}
+
+func TestMessagePollVoteDoesNotInventUnknownCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		results  *PollResults
+		answerID int
+		adding   bool
+	}{
+		{"unknown results", nil, 1, true},
+		{"unknown answer", &PollResults{}, 99, true},
+		{"remove zero votes", &PollResults{}, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, _ := newMessagePollVoteTestState(t, &Poll{
+				Answers: []PollAnswer{{AnswerID: 1}}, Results: tc.results,
+			})
+			before, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := state.messagePollVoteUpdate("channel", "message", "user", tc.answerID, tc.adding); err != nil {
+				t.Fatal(err)
+			}
+			after, err := state.Message("channel", "message")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before != after {
+				t.Fatal("vote event replaced unchanged snapshot")
+			}
+			if tc.results != nil && len(after.Poll.Results.AnswerCounts) != 0 {
+				t.Fatal("vote event invented a count")
+			}
+		})
+	}
+}
+
+func TestMessagePollVoteStateLifecycle(t *testing.T) {
+	state, session := newMessagePollVoteTestState(t, &Poll{Results: &PollResults{
+		AnswerCounts: []*PollAnswerCount{{ID: 1, Count: 2}, {ID: 2, Count: 7}},
+	}})
+
+	guildSnapshot, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	snapshot, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+
+	add := &MessagePollVoteAdd{
+		UserID: "user", ChannelID: "channel", MessageID: "message", GuildID: "guild", AnswerID: 1,
+	}
+	addBefore := *add
+	if err = state.OnInterface(session, add); err != nil {
+		t.Fatalf("OnInterface(add) returned error: %v", err)
+	}
+	assertMessagePollVoteState(t, state, 3, false)
+	if *add != addBefore {
+		t.Fatalf("add event was mutated: %#v", add)
+	}
+
+	selfAdd := &MessagePollVoteAdd{
+		UserID: "bot", ChannelID: "channel", MessageID: "message", GuildID: "guild", AnswerID: 1,
+	}
+	if err = state.OnInterface(session, selfAdd); err != nil {
+		t.Fatalf("OnInterface(self add) returned error: %v", err)
+	}
+	assertMessagePollVoteState(t, state, 4, true)
+
+	remove := &MessagePollVoteRemove{
+		UserID: "user", ChannelID: "channel", MessageID: "message", GuildID: "guild", AnswerID: 1,
+	}
+	removeBefore := *remove
+	if err = state.OnInterface(session, remove); err != nil {
+		t.Fatalf("OnInterface(remove) returned error: %v", err)
+	}
+	assertMessagePollVoteState(t, state, 3, true)
+	if *remove != removeBefore {
+		t.Fatalf("remove event was mutated: %#v", remove)
+	}
+
+	selfRemove := &MessagePollVoteRemove{
+		UserID: "bot", ChannelID: "channel", MessageID: "message", GuildID: "guild", AnswerID: 1,
+	}
+	if err = state.OnInterface(session, selfRemove); err != nil {
+		t.Fatalf("OnInterface(self remove) returned error: %v", err)
+	}
+	assertMessagePollVoteState(t, state, 2, false)
+
+	answer := snapshot.Poll.Results.AnswerCounts[0]
+	if answer.Count != 2 || answer.MeVoted {
+		t.Fatalf("held message snapshot was mutated: %#v", answer)
+	}
+	current, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	if current.Poll.Results.AnswerCounts[1].Count != 7 {
+		t.Fatalf("unmatched answer count = %d, want 7", current.Poll.Results.AnswerCounts[1].Count)
+	}
+	currentGuild, err := state.Guild("guild")
+	if err != nil {
+		t.Fatalf("Guild returned error: %v", err)
+	}
+	if currentGuild == guildSnapshot || currentGuild.Channels[0] == guildSnapshot.Channels[0] {
+		t.Fatal("poll vote update reused the guild channel snapshot")
+	}
+	if currentGuild.Channels[0] != state.channelMap["channel"] {
+		t.Fatal("guild channel and channel map do not reference the replacement")
+	}
+}
+
+func TestMessagePollVoteStateClampsRemovalAtZero(t *testing.T) {
+	state, session := newMessagePollVoteTestState(t, &Poll{Results: &PollResults{
+		AnswerCounts: []*PollAnswerCount{{ID: 1, MeVoted: true}},
+	}})
+
+	remove := &MessagePollVoteRemove{
+		UserID: "bot", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+	}
+	if err := state.OnInterface(session, remove); err != nil {
+		t.Fatalf("OnInterface returned error: %v", err)
+	}
+	assertMessagePollVoteState(t, state, 0, false)
+}
+
+func TestMessagePollVoteStateIgnoresMissingCacheData(t *testing.T) {
+	tests := []struct {
+		name  string
+		poll  *Poll
+		event interface{}
+	}{
+		{
+			name: "unknown channel",
+			poll: &Poll{Results: &PollResults{AnswerCounts: []*PollAnswerCount{{ID: 1, Count: 2}}}},
+			event: &MessagePollVoteAdd{
+				UserID: "user", ChannelID: "unknown", MessageID: "message", AnswerID: 1,
+			},
+		},
+		{
+			name: "unknown message",
+			poll: &Poll{Results: &PollResults{AnswerCounts: []*PollAnswerCount{{ID: 1, Count: 2}}}},
+			event: &MessagePollVoteRemove{
+				UserID: "user", ChannelID: "channel", MessageID: "unknown", AnswerID: 1,
+			},
+		},
+		{
+			name: "nil poll",
+			event: &MessagePollVoteAdd{
+				UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			},
+		},
+		{
+			name: "nil results",
+			poll: &Poll{},
+			event: &MessagePollVoteAdd{
+				UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			},
+		},
+		{
+			name: "nil answer counts",
+			poll: &Poll{Results: &PollResults{}},
+			event: &MessagePollVoteRemove{
+				UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			},
+		},
+		{
+			name: "nil and unmatched answers",
+			poll: &Poll{Results: &PollResults{AnswerCounts: []*PollAnswerCount{
+				nil,
+				{ID: 2, Count: 4},
+			}}},
+			event: &MessagePollVoteAdd{
+				UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, session := newMessagePollVoteTestState(t, tt.poll)
+			if err := state.OnInterface(session, tt.event); err != nil {
+				t.Fatalf("OnInterface returned error: %v", err)
+			}
+		})
+	}
+
+	t.Run("nil cached message", func(t *testing.T) {
+		state := NewState()
+		state.MaxMessageCount = 10
+		if err := state.GuildAdd(&Guild{
+			ID: "guild",
+			Channels: []*Channel{{
+				ID: "channel", GuildID: "guild", Messages: []*Message{nil},
+			}},
+		}); err != nil {
+			t.Fatalf("GuildAdd returned error: %v", err)
+		}
+		event := &MessagePollVoteAdd{
+			UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+		}
+		if err := state.OnInterface(&Session{StateEnabled: true, State: state}, event); err != nil {
+			t.Fatalf("OnInterface returned error: %v", err)
+		}
+	})
+}
+
+func TestMessagePollVoteStateRejectsMalformedEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		event interface{}
+	}{
+		{name: "nil add", event: (*MessagePollVoteAdd)(nil)},
+		{name: "nil remove", event: (*MessagePollVoteRemove)(nil)},
+		{name: "add missing user", event: &MessagePollVoteAdd{ChannelID: "channel", MessageID: "message", AnswerID: 1}},
+		{name: "add missing channel", event: &MessagePollVoteAdd{UserID: "user", MessageID: "message", AnswerID: 1}},
+		{name: "remove missing message", event: &MessagePollVoteRemove{UserID: "user", ChannelID: "channel", AnswerID: 1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, session := newMessagePollVoteTestState(t, &Poll{Results: &PollResults{}})
+			if err := state.OnInterface(session, tt.event); !errors.Is(err, ErrStateInvalidData) {
+				t.Fatalf("OnInterface returned error %v, want %v", err, ErrStateInvalidData)
+			}
+		})
+	}
+}
+
+func TestMessagePollVoteStateMutatorsDoNotRaceSnapshots(t *testing.T) {
+	state, session := newMessagePollVoteTestState(t, &Poll{Results: &PollResults{
+		AnswerCounts: []*PollAnswerCount{{ID: 1}},
+	}})
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			message, err := state.Message("channel", "message")
+			if err == nil && message.Poll != nil && message.Poll.Results != nil {
+				for _, answer := range message.Poll.Results.AnswerCounts {
+					if answer != nil {
+						_ = answer.Count
+						_ = answer.MeVoted
+					}
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 500; i++ {
+		add := &MessagePollVoteAdd{
+			UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+		}
+		if err := state.OnInterface(session, add); err != nil {
+			t.Fatalf("OnInterface(add) returned error: %v", err)
+		}
+		remove := &MessagePollVoteRemove{
+			UserID: "user", ChannelID: "channel", MessageID: "message", AnswerID: 1,
+		}
+		if err := state.OnInterface(session, remove); err != nil {
+			t.Fatalf("OnInterface(remove) returned error: %v", err)
+		}
+	}
+
+	close(done)
+	wg.Wait()
+}
+
+func newMessagePollVoteTestState(t *testing.T, poll *Poll) (*State, *Session) {
+	t.Helper()
+	state := NewState()
+	state.MaxMessageCount = 10
+	state.User = &User{ID: "bot"}
+	if err := state.GuildAdd(&Guild{
+		ID: "guild",
+		Channels: []*Channel{{
+			ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText,
+		}},
+	}); err != nil {
+		t.Fatalf("GuildAdd returned error: %v", err)
+	}
+	if err := state.MessageAdd(&Message{
+		ID: "message", ChannelID: "channel", Poll: poll,
+	}); err != nil {
+		t.Fatalf("MessageAdd returned error: %v", err)
+	}
+	return state, &Session{StateEnabled: true, State: state}
+}
+
+func assertMessagePollVoteState(t *testing.T, state *State, count int, meVoted bool) {
+	t.Helper()
+	message, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatalf("Message returned error: %v", err)
+	}
+	answer := message.Poll.Results.AnswerCounts[0]
+	if answer.Count != count || answer.MeVoted != meVoted {
+		t.Fatalf("answer state = (%d, %t), want (%d, %t)", answer.Count, answer.MeVoted, count, meVoted)
+	}
+}
+
+func TestPresenceUpdateClearsExplicitNullAvatar(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		avatar          string
+		wantAvatar      string
+		offline         bool
+		disableTracking bool
+		disableState    bool
+		programmatic    bool
+	}{
+		{name: "clear_online", avatar: `,"avatar":null`},
+		{name: "clear_offline", avatar: `,"avatar":null`, offline: true},
+		{name: "replace", avatar: `,"avatar":"new-avatar"`, wantAvatar: "new-avatar"},
+		{name: "omit", wantAvatar: "old-avatar"},
+		{name: "malformed_avatar", avatar: `,"avatar":123`, wantAvatar: "old-avatar"},
+		{name: "tracking_disabled", avatar: `,"avatar":null`, wantAvatar: "old-avatar", disableTracking: true},
+		{name: "state_disabled", avatar: `,"avatar":null`, wantAvatar: "old-avatar", disableState: true},
+		{name: "programmatic_zero", wantAvatar: "old-avatar", programmatic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel, session.SyncEvents = -1, true
+			if err := session.State.GuildAdd(&Guild{ID: "100", Presences: []*Presence{{
+				User:   &User{ID: "200", Username: "cached-name", Discriminator: "0", Avatar: "old-avatar"},
+				Status: StatusOnline,
+			}}}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := before.Presences[0]
+			session.State.TrackPresences = !tc.disableTracking
+			session.StateEnabled = !tc.disableState
+			called := false
+			session.AddHandler(func(s *Session, update *PresenceUpdate) {
+				called = true
+				if update.GuildID != "100" || update.User == nil || update.User.ID != "200" || update.User.Username != "" {
+					t.Error("presence decoding or cache merge changed the event's identity/user fields")
+				}
+				current, err := s.State.Presence("100", "200")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if current.User.Avatar != tc.wantAvatar || current.User.Username != "cached-name" {
+					t.Errorf("cached avatar/name = %q/%q, want %q/cached-name", current.User.Avatar, current.User.Username, tc.wantAvatar)
+				}
+				wantUser := &User{ID: "200", Discriminator: "0", Avatar: tc.wantAvatar}
+				if got := current.User.AvatarURL(""); got != wantUser.AvatarURL("") {
+					t.Errorf("cached avatar URL = %q, want %q", got, wantUser.AvatarURL(""))
+				}
+				guild, err := s.State.Guild("100")
+				if err != nil || len(guild.Presences) != 1 || guild.Presences[0] != current {
+					t.Errorf("guild and presence cache disagree: %v", err)
+				}
+				if !tc.disableTracking && !tc.disableState && (current == old || current.User == old.User) {
+					t.Error("presence update reused the previous snapshot")
+				}
+			})
+			status := StatusIdle
+			if tc.offline {
+				status = StatusOffline
+			}
+			if tc.programmatic {
+				session.handleEvent(presenceUpdateEventType, &PresenceUpdate{GuildID: "100", Presence: Presence{User: &User{ID: "200"}, Status: status}})
+			} else {
+				payload := fmt.Sprintf(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200"%s},"status":%q,"activities":[],"client_status":{}}}`, tc.avatar, status)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !called {
+				t.Fatal("presence callback did not run")
+			}
+			if old.User.Avatar != "old-avatar" || before.Presences[0] != old || old.Status != StatusOnline {
+				t.Error("presence update mutated an earlier snapshot")
+			}
+		})
+	}
+}
+
+func TestPresenceUpdateClearsInactiveClients(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  Status
+		clients string
+		want    ClientStatus
+	}{
+		{"desktop only", StatusIdle, `{"desktop":"idle"}`, ClientStatus{Desktop: StatusIdle}},
+		{"mobile only", StatusOnline, `{"mobile":"online"}`, ClientStatus{Mobile: StatusOnline}},
+		{"web only", StatusDoNotDisturb, `{"web":"dnd"}`, ClientStatus{Web: StatusDoNotDisturb}},
+		{"offline", StatusOffline, `{}`, ClientStatus{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := NewState()
+			initial := &Presence{
+				User:         &User{ID: "user", Username: "cached-name"},
+				Status:       StatusOnline,
+				ClientStatus: ClientStatus{Desktop: StatusOnline, Mobile: StatusOnline, Web: StatusOnline},
+			}
+			if err := state.GuildAdd(&Guild{ID: "guild", Presences: []*Presence{initial}}); err != nil {
+				t.Fatal(err)
+			}
+			old, err := state.Presence("guild", "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var update PresenceUpdate
+			payload := fmt.Sprintf(`{"guild_id":"guild","user":{"id":"user"},"status":%q,"activities":[],"client_status":%s}`, test.status, test.clients)
+			if err := json.Unmarshal([]byte(payload), &update); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.OnInterface(&Session{StateEnabled: true}, &update); err != nil {
+				t.Fatal(err)
+			}
+			current, err := state.Presence("guild", "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.ClientStatus != test.want {
+				t.Errorf("client status = %+v, want %+v", current.ClientStatus, test.want)
+			}
+			if current.Status != test.status || current.User.Username != "cached-name" {
+				t.Errorf("presence status/user = %s/%s", current.Status, current.User.Username)
+			}
+			if old.ClientStatus != (ClientStatus{Desktop: StatusOnline, Mobile: StatusOnline, Web: StatusOnline}) {
+				t.Errorf("previous snapshot changed: %+v", old.ClientStatus)
+			}
+		})
+	}
+}
+
+func TestPresenceUpdateRefreshesCachedGlobalName(t *testing.T) {
+	for _, tracking := range []struct {
+		name      string
+		presences bool
+		members   bool
+	}{
+		{"both", true, true},
+		{"presences_only", true, false},
+		{"members_only", false, true},
+		{"disabled", false, false},
+	} {
+		for _, tc := range []struct {
+			name         string
+			field        string
+			want         string
+			offline      bool
+			programmatic bool
+		}{
+			{name: "replace", field: `,"global_name":"new-name"`, want: "new-name"},
+			{name: "clear", field: `,"global_name":null`},
+			{name: "omit", want: "old-name"},
+			{name: "replace_offline", field: `,"global_name":"new-name"`, want: "new-name", offline: true},
+			{name: "clear_offline", field: `,"global_name":null`, offline: true},
+			{name: "omit_offline", want: "old-name", offline: true},
+			{name: "malformed", field: `,"global_name":123`, want: "old-name"},
+			{name: "programmatic_zero", want: "old-name", programmatic: true},
+		} {
+			t.Run(tracking.name+"/"+tc.name, func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.LogLevel, session.SyncEvents = -1, true
+				session.Identify.Intents = IntentsGuildPresences
+				user := &User{ID: "200", Username: "cached-name", GlobalName: "old-name", Avatar: "avatar"}
+				if err := session.State.GuildAdd(&Guild{ID: "100",
+					Members:   []*Member{{GuildID: "100", User: user, Roles: []string{"role"}}},
+					Presences: []*Presence{{User: user, Status: StatusOnline}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				before, err := session.State.Guild("100")
+				if err != nil {
+					t.Fatal(err)
+				}
+				oldMember, oldPresence := before.Members[0], before.Presences[0]
+				session.State.TrackPresences, session.State.TrackMembers = tracking.presences, tracking.members
+				called := false
+				session.AddHandler(func(s *Session, update *PresenceUpdate) {
+					called = true
+					member, err := s.State.Member("100", "200")
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					presence, err := s.State.Presence("100", "200")
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					for _, cache := range []struct {
+						name        string
+						user        *User
+						displayName string
+						tracked     bool
+					}{
+						{"member", member.User, member.DisplayName(), tracking.members},
+						{"presence", presence.User, presence.User.DisplayName(), tracking.presences},
+					} {
+						want := "old-name"
+						if cache.tracked {
+							want = tc.want
+						}
+						wantDisplay := want
+						if wantDisplay == "" {
+							wantDisplay = "cached-name"
+						}
+						if cache.user.GlobalName != want || cache.displayName != wantDisplay {
+							t.Errorf("%s global/display name = %q/%q, want %q/%q", cache.name, cache.user.GlobalName, cache.displayName, want, wantDisplay)
+						}
+						if cache.user.Username != "cached-name" || cache.user.Avatar != "avatar" {
+							t.Errorf("%s merge lost omitted user fields", cache.name)
+						}
+					}
+					guild, err := s.State.Guild("100")
+					if err != nil || len(guild.Members) != 1 || guild.Members[0] != member || len(guild.Presences) != 1 || guild.Presences[0] != presence {
+						t.Errorf("guild and member/presence caches disagree: %v", err)
+					}
+					if len(member.Roles) != 1 || member.Roles[0] != "role" {
+						t.Error("partial presence lost member roles")
+					}
+					if update.User == nil || update.User.ID != "200" || update.User.Username != "" || update.User.Avatar != "" {
+						t.Error("cache merge changed the partial event user")
+					}
+				})
+				status := StatusOnline
+				if tc.offline {
+					status = StatusOffline
+				}
+				if tc.programmatic {
+					session.handleEvent(presenceUpdateEventType, &PresenceUpdate{GuildID: "100", Presence: Presence{User: &User{ID: "200"}, Status: status}})
+				} else {
+					payload := fmt.Sprintf(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200"%s},"status":%q,"activities":[],"client_status":{}}}`, tc.field, status)
+					if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !called {
+					t.Fatal("presence callback did not run")
+				}
+				if oldMember.User.GlobalName != "old-name" || oldPresence.User.GlobalName != "old-name" || before.Members[0] != oldMember || before.Presences[0] != oldPresence {
+					t.Error("presence update changed an earlier guild/member/presence snapshot")
+				}
+			})
+		}
+	}
+}
+
+func TestPresenceUpdateRefreshesCachedMemberAvatar(t *testing.T) {
+	for _, trackPresences := range []bool{false, true} {
+		for _, tc := range []struct {
+			name         string
+			avatar       string
+			want         string
+			offline      bool
+			programmatic bool
+		}{
+			{name: "replace", avatar: `,"avatar":"new-avatar"`, want: "new-avatar"},
+			{name: "clear", avatar: `,"avatar":null`},
+			{name: "omit", want: "old-avatar"},
+			{name: "clear_offline", avatar: `,"avatar":null`, offline: true},
+			{name: "replace_offline", avatar: `,"avatar":"new-avatar"`, want: "new-avatar", offline: true},
+			{name: "omit_offline", want: "old-avatar", offline: true},
+			{name: "programmatic_zero", want: "old-avatar", programmatic: true},
+		} {
+			t.Run(fmt.Sprintf("presences=%t/%s", trackPresences, tc.name), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.LogLevel, session.SyncEvents = -1, true
+				// Presence events can arrive without the GUILD_MEMBERS intent.
+				session.Identify.Intents = IntentsGuildPresences
+				session.State.TrackPresences = trackPresences
+				if err := session.State.GuildAdd(&Guild{ID: "100", Members: []*Member{{
+					GuildID: "100", Nick: "guild-name", Roles: []string{"role"},
+					User: &User{ID: "200", Username: "cached-name", Discriminator: "0", Avatar: "old-avatar"},
+				}}}); err != nil {
+					t.Fatal(err)
+				}
+				before, err := session.State.Guild("100")
+				if err != nil {
+					t.Fatal(err)
+				}
+				old := before.Members[0]
+				called := false
+				session.AddHandler(func(s *Session, update *PresenceUpdate) {
+					called = true
+					member, err := s.State.Member("100", "200")
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if member.User.Avatar != tc.want {
+						t.Errorf("member avatar = %q, want %q", member.User.Avatar, tc.want)
+					}
+					wantUser := &User{ID: "200", Discriminator: "0", Avatar: tc.want}
+					if got := member.AvatarURL(""); got != wantUser.AvatarURL("") {
+						t.Errorf("member avatar URL = %q, want %q", got, wantUser.AvatarURL(""))
+					}
+					if member.User.Username != "cached-name" || member.Nick != "guild-name" || len(member.Roles) != 1 || member.Roles[0] != "role" {
+						t.Error("partial presence lost unrelated member fields")
+					}
+					guild, err := s.State.Guild("100")
+					if err != nil || len(guild.Members) != 1 || guild.Members[0] != member {
+						t.Errorf("guild and member cache disagree: %v", err)
+					}
+					if (!tc.offline || tc.avatar != "") && (member == old || member.User == old.User) {
+						t.Error("presence update reused the earlier member snapshot")
+					}
+					if update.User.Username != "" {
+						t.Error("cache merge modified the partial event user")
+					}
+				})
+				status := StatusOnline
+				if tc.offline {
+					status = StatusOffline
+				}
+				if tc.programmatic {
+					session.handleEvent(presenceUpdateEventType, &PresenceUpdate{GuildID: "100", Presence: Presence{User: &User{ID: "200"}, Status: status}})
+				} else {
+					payload := fmt.Sprintf(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200"%s},"status":%q,"activities":[],"client_status":{}}}`, tc.avatar, status)
+					if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !called {
+					t.Fatal("presence callback did not run")
+				}
+				if old.User.Avatar != "old-avatar" || before.Members[0] != old {
+					t.Error("presence update modified an earlier guild/member snapshot")
+				}
+			})
+		}
+	}
+}
+
+func TestOfflinePresenceAvatarDoesNotAddMember(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200","avatar":"new-avatar"},"status":"offline","activities":[],"client_status":{}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.State.Member("100", "200"); !errors.Is(err, ErrStateNotFound) {
+		t.Errorf("offline member lookup = %v, want not found", err)
+	}
+	guild, err := session.State.Guild("100")
+	if err != nil || len(guild.Members) != 0 {
+		t.Errorf("offline presence populated guild members: %v", err)
+	}
+}
+
+func TestPresenceUpdatePreservesConcurrentMemberUpdates(t *testing.T) {
+	for _, trackPresences := range []bool{false, true} {
+		t.Run(fmt.Sprintf("presences=%t", trackPresences), func(t *testing.T) {
+			state := NewState()
+			state.TrackPresences = trackPresences
+			if err := state.GuildAdd(&Guild{ID: "guild", Members: []*Member{{GuildID: "guild", User: &User{ID: "user"}, Nick: "0"}}}); err != nil {
+				t.Fatal(err)
+			}
+			session := &Session{StateEnabled: true}
+			start := make(chan struct{})
+			results := make(chan error, 1)
+			var workers sync.WaitGroup
+			workers.Go(func() {
+				<-start
+				for range 2000 {
+					if err := state.OnInterface(session, &PresenceUpdate{
+						GuildID:  "guild",
+						Presence: Presence{User: &User{ID: "user", Username: "online-user"}, Status: StatusOnline},
+					}); err != nil {
+						results <- err
+						return
+					}
+				}
+			})
+			close(start)
+			var firstErr error
+			for i := 1; i <= 2000; i++ {
+				nick := strconv.Itoa(i)
+				if err := state.MemberAdd(&Member{GuildID: "guild", User: &User{ID: "user"}, Nick: nick}); err != nil {
+					firstErr = err
+					break
+				}
+				member, err := state.Member("guild", "user")
+				if err != nil {
+					firstErr = err
+					break
+				}
+				// Presence updates do not contain or intentionally change a member's nickname.
+				if member.Nick != nick && firstErr == nil {
+					firstErr = fmt.Errorf("presence overwrote committed nickname %q with %q", nick, member.Nick)
+				}
+			}
+			workers.Wait()
+			close(results)
+			for err := range results {
+				t.Error(err)
+			}
+			if firstErr != nil {
+				t.Error(firstErr)
+			}
+			member, err := state.Member("guild", "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if member.Nick != "2000" {
+				t.Errorf("final nickname = %q, want 2000", member.Nick)
+			}
+		})
+	}
+}
+
+func TestPresenceUpdateRefreshesCachedMemberDiscriminator(t *testing.T) {
+	const userID = "175928847299117063"
+	for _, tracking := range []struct {
+		name      string
+		presences bool
+		members   bool
+	}{
+		{"both", true, true},
+		{"presences_only", true, false},
+		{"members_only", false, true},
+		{"disabled", false, false},
+	} {
+		for _, status := range []Status{StatusOnline, StatusOffline} {
+			for _, tc := range []struct {
+				name          string
+				field         string
+				discriminator string
+				tag           string
+				avatarIndex   int
+			}{
+				{"legacy", `,"discriminator":"9876"`, "9876", "person#9876", 1},
+				{"migrated", `,"discriminator":"0"`, "0", "person", 2},
+				{"omitted", "", "1234", "person#1234", 4},
+			} {
+				t.Run(fmt.Sprintf("%s/%s/%s", tracking.name, status, tc.name), func(t *testing.T) {
+					session, err := New("Bot test")
+					if err != nil {
+						t.Fatal(err)
+					}
+					session.LogLevel, session.SyncEvents = -1, true
+					session.Identify.Intents = IntentsGuildPresences
+					user := &User{ID: userID, Username: "person", Discriminator: "1234"}
+					if err := session.State.GuildAdd(&Guild{ID: "100",
+						Members:   []*Member{{GuildID: "100", User: user, Nick: "nickname", Roles: []string{"role"}}},
+						Presences: []*Presence{{User: user, Status: StatusOnline}},
+					}); err != nil {
+						t.Fatal(err)
+					}
+					before, err := session.State.Guild("100")
+					if err != nil {
+						t.Fatal(err)
+					}
+					oldMember, oldPresence := before.Members[0], before.Presences[0]
+					session.State.TrackPresences, session.State.TrackMembers = tracking.presences, tracking.members
+					called := false
+					session.AddHandler(func(s *Session, event *PresenceUpdate) {
+						called = true
+						member, err := s.State.Member("100", userID)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						wantDiscriminator, wantTag, wantAvatar := "1234", "person#1234", 4
+						if tracking.members {
+							wantDiscriminator, wantTag, wantAvatar = tc.discriminator, tc.tag, tc.avatarIndex
+						}
+						if member.User.Discriminator != wantDiscriminator || member.User.String() != wantTag {
+							t.Errorf("member discriminator/tag = %q/%q, want %q/%q", member.User.Discriminator, member.User.String(), wantDiscriminator, wantTag)
+						}
+						if got, want := member.AvatarURL(""), EndpointDefaultUserAvatar(wantAvatar); got != want {
+							t.Errorf("member default avatar = %q, want %q", got, want)
+						}
+						presence, err := s.State.Presence("100", userID)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						wantPresence := "1234"
+						if tracking.presences {
+							wantPresence = tc.discriminator
+						}
+						if presence.User.Discriminator != wantPresence {
+							t.Errorf("presence discriminator = %q, want %q", presence.User.Discriminator, wantPresence)
+						}
+						guild, err := s.State.Guild("100")
+						if err != nil || len(guild.Members) != 1 || guild.Members[0] != member {
+							t.Errorf("guild/member indexes disagree: %v", err)
+						}
+						if member.Nick != "nickname" || len(member.Roles) != 1 || member.Roles[0] != "role" || member.User.Username != "person" {
+							t.Error("partial presence lost unrelated member fields")
+						}
+						if event.User.Username != "" || event.User.Avatar != "" {
+							t.Error("cache merge changed the partial event user")
+						}
+					})
+					payload := fmt.Sprintf(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":%q%s},"status":%q,"activities":[],"client_status":{}}}`, userID, tc.field, status)
+					if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+						t.Fatal(err)
+					}
+					if !called {
+						t.Fatal("presence callback did not run")
+					}
+					if oldMember.User.Discriminator != "1234" || oldPresence.User.Discriminator != "1234" || before.Members[0] != oldMember || before.Presences[0] != oldPresence {
+						t.Error("presence update changed an earlier snapshot")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOfflinePresenceDiscriminatorDoesNotAddMember(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200","discriminator":"0"},"status":"offline","activities":[],"client_status":{}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.State.Member("100", "200"); !errors.Is(err, ErrStateNotFound) {
+		t.Errorf("offline member lookup = %v, want not found", err)
+	}
+	guild, err := session.State.Guild("100")
+	if err != nil || len(guild.Members) != 0 {
+		t.Errorf("offline presence populated guild members: %v", err)
+	}
+}
+
+func TestReactionMemberPreservesGuildIdentity(t *testing.T) {
+	for _, stateEnabled := range []bool{false, true} {
+		for _, gateway := range []bool{false, true} {
+			t.Run(fmt.Sprintf("state=%t/gateway=%t", stateEnabled, gateway), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				session.StateEnabled = stateEnabled
+				if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+					t.Fatal(err)
+				}
+				payload := []byte(`{"guild_id":"100","channel_id":"300","message_id":"400","user_id":"200","emoji":{"id":null,"name":"👍"},"burst":false,"type":0,
+					"member":{"user":{"id":"200","username":"member","discriminator":"0"},"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0}}`)
+				called := false
+				session.AddHandler(func(_ *Session, event *MessageReactionAdd) {
+					called = true
+					if event == nil || event.Member == nil || event.Member.User == nil {
+						t.Error("callback did not receive the reaction member")
+						return
+					}
+					member := event.Member
+					if member.GuildID != "100" {
+						t.Errorf("member guild = %q, want 100", member.GuildID)
+					}
+					if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+						t.Errorf("AvatarURL = %q, want %q", got, want)
+					}
+					if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+						t.Errorf("BannerURL = %q, want %q", got, want)
+					}
+					if err := session.State.MemberAdd(member); err != nil {
+						t.Errorf("caching reaction member failed: %v", err)
+					} else if cached, err := session.State.Member("100", "200"); err != nil || cached.User.ID != "200" {
+						t.Errorf("member not retrievable from its guild: %v", err)
+					}
+				})
+				if gateway {
+					if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":"MESSAGE_REACTION_ADD","d":%s}`, payload))); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					var event MessageReactionAdd
+					if err := json.Unmarshal(payload, &event); err != nil {
+						t.Fatal(err)
+					}
+					session.handleEvent(messageReactionAddEventType, &event)
+				}
+				if !called {
+					t.Fatal("reaction callback did not run")
+				}
+			})
+		}
+	}
+}
+
+func TestReactionMemberGuildIdentityOptionalData(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+	var received *MessageReactionAdd
+	session.AddHandler(func(_ *Session, event *MessageReactionAdd) { received = event })
+	for _, payload := range []string{
+		`{"channel_id":"300","message_id":"400","user_id":"200","emoji":{"id":null,"name":"👍"},"burst":false,"type":0}`,
+		`{"guild_id":"100","channel_id":"300","message_id":"400","user_id":"200","emoji":{"id":null,"name":"👍"},"burst":false,"type":0,"member":null}`,
+	} {
+		received = nil
+		if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":"MESSAGE_REACTION_ADD","d":%s}`, payload))); err != nil {
+			t.Fatal(err)
+		}
+		if received == nil || received.Member != nil {
+			t.Fatal("omitted/null reaction member was not preserved")
+		}
+	}
+}
+
+func TestColorHelpersOrderEqualPositionRolesByID(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		roles [2]Role
+		want  int
+	}{
+		{
+			name: "equal positions",
+			roles: [2]Role{
+				{ID: "200000000000000000", Position: 1, Color: 0x123456},
+				{ID: "300000000000000000", Position: 1, Color: 0x654321},
+			},
+			want: 0x123456,
+		},
+		{
+			name: "different ID lengths",
+			roles: [2]Role{
+				{ID: "99000000000000000", Position: 1, Color: 0x123456},
+				{ID: "100000000000000000", Position: 1, Color: 0x654321},
+			},
+			want: 0x123456,
+		},
+		{
+			name: "position takes precedence",
+			roles: [2]Role{
+				{ID: "200000000000000000", Position: 1, Color: 0x123456},
+				{ID: "300000000000000000", Position: 2, Color: 0x654321},
+			},
+			want: 0x654321,
+		},
+		{
+			name: "uncolored higher role",
+			roles: [2]Role{
+				{ID: "200000000000000000", Position: 1},
+				{ID: "300000000000000000", Position: 1, Color: 0x654321},
+			},
+			want: 0x654321,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, order := range []struct {
+				name  string
+				first int
+			}{{"older first", 0}, {"newer first", 1}} {
+				t.Run(order.name, func(t *testing.T) {
+					roles := []*Role{&tc.roles[order.first], &tc.roles[1-order.first]}
+					member := &Member{GuildID: "guild", User: &User{ID: "user"}, Roles: []string{tc.roles[0].ID, tc.roles[1].ID}}
+					state := NewState()
+					if err := state.GuildAdd(&Guild{
+						ID: "guild", Roles: roles, Members: []*Member{member},
+						Channels: []*Channel{{ID: "channel", GuildID: "guild"}},
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if got := state.UserColor("user", "channel"); got != tc.want {
+						t.Errorf("UserColor = %#x, want %#x", got, tc.want)
+					}
+					if got := state.MessageColor(&Message{ChannelID: "channel", Member: member}); got != tc.want {
+						t.Errorf("MessageColor = %#x, want %#x", got, tc.want)
+					}
+					guild, err := state.Guild("guild")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if guild.Roles[0].ID != tc.roles[order.first].ID || guild.Roles[1].ID != tc.roles[1-order.first].ID {
+						t.Error("color lookup reordered cached roles")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestScheduledEventUpdatePreservesOmittedUserCount(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		countJSON    string
+		wantCount    int
+		incoming     int
+		disableState bool
+		programmatic bool
+		uncached     bool
+	}{
+		{name: "omitted", wantCount: 2},
+		{name: "explicit_zero", countJSON: `,"user_count":0`},
+		{name: "explicit_count", countJSON: `,"user_count":5`, incoming: 5, wantCount: 5},
+		{name: "malformed_count", countJSON: `,"user_count":"invalid"`},
+		{name: "state_disabled", wantCount: 2, disableState: true},
+		{name: "programmatic_zero", programmatic: true},
+		{name: "uncached", uncached: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel, session.SyncEvents = -1, true
+			guild := &Guild{ID: "100"}
+			if !tc.uncached {
+				guild.GuildScheduledEvents = []*GuildScheduledEvent{{ID: "200", GuildID: "100", Name: "before", UserCount: 1}}
+			}
+			if err := session.State.GuildAdd(guild); err != nil {
+				t.Fatal(err)
+			}
+			// Establish the known count through the subscriber event path.
+			_, _ = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"t":"GUILD_SCHEDULED_EVENT_USER_ADD","d":{"guild_id":"100","guild_scheduled_event_id":"200","user_id":"300"}}`))
+			before, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.uncached && before.GuildScheduledEvents[0].UserCount != 2 {
+				t.Fatal("subscriber event did not establish the initial count")
+			}
+			session.StateEnabled = !tc.disableState
+			called := false
+			var retained *GuildScheduledEvent
+			session.AddHandler(func(s *Session, update *GuildScheduledEventUpdate) {
+				called = true
+				if update.GuildScheduledEvent == nil || update.ID != "200" || update.GuildID != "100" || update.Name != "updated" || update.UserCount != tc.incoming {
+					t.Error("decoding or cache merge changed the incoming event")
+				}
+				if tc.disableState || tc.uncached {
+					if update.BeforeUpdate != nil {
+						t.Error("unexpected BeforeUpdate")
+					}
+				} else if update.BeforeUpdate == nil || update.BeforeUpdate.UserCount != 2 || update.BeforeUpdate.Name != "before" {
+					t.Error("BeforeUpdate did not retain the previous event")
+				}
+				current, err := s.State.Guild("100")
+				if err != nil || len(current.GuildScheduledEvents) != 1 {
+					t.Errorf("cached event missing: %v", err)
+					return
+				}
+				retained = current.GuildScheduledEvents[0]
+				wantName := "updated"
+				if tc.disableState {
+					wantName = "before"
+				}
+				if retained.UserCount != tc.wantCount || retained.Name != wantName {
+					t.Errorf("cached count/name = %d/%q, want %d/%q", retained.UserCount, retained.Name, tc.wantCount, wantName)
+				}
+			})
+			if tc.programmatic {
+				session.handleEvent(guildScheduledEventUpdateEventType, &GuildScheduledEventUpdate{GuildScheduledEvent: &GuildScheduledEvent{ID: "200", GuildID: "100", Name: "updated"}})
+			} else {
+				payload := fmt.Sprintf(`{"op":0,"t":"GUILD_SCHEDULED_EVENT_UPDATE","d":{"id":"200","guild_id":"100","channel_id":null,"name":"updated","scheduled_start_time":"2030-01-01T20:00:00Z","scheduled_end_time":"2030-01-01T21:00:00Z","privacy_level":2,"status":1,"entity_type":3,"entity_id":null,"entity_metadata":{"location":"somewhere"},"recurrence_rule":null%s}}`, tc.countJSON)
+				_, _ = session.onEvent(websocket.TextMessage, []byte(payload))
+			}
+			if !called || retained == nil {
+				t.Fatal("scheduled event callback did not observe the cache")
+			}
+			retainedCount := retained.UserCount
+			_, _ = session.onEvent(websocket.TextMessage, []byte(`{"op":0,"t":"GUILD_SCHEDULED_EVENT_USER_ADD","d":{"guild_id":"100","guild_scheduled_event_id":"200","user_id":"400"}}`))
+			after, err := session.State.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAfter := tc.wantCount + 1
+			if tc.disableState {
+				wantAfter = tc.wantCount
+			}
+			if after.GuildScheduledEvents[0].UserCount != wantAfter {
+				t.Errorf("count after subscription = %d, want %d", after.GuildScheduledEvents[0].UserCount, wantAfter)
+			}
+			if retained.UserCount != retainedCount || (!tc.uncached && before.GuildScheduledEvents[0].UserCount != 2) {
+				t.Error("later cache updates changed a retained snapshot")
+			}
+		})
+	}
+}
+
+func TestScheduledEventUserMembersPreserveIdentity(t *testing.T) {
+	for _, exception := range []bool{false, true} {
+		for _, embeddedUser := range []bool{false, true} {
+			t.Run(fmt.Sprintf("exception_%t/embedded_user_%t", exception, embeddedUser), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+					t.Fatal(err)
+				}
+				userField := ""
+				if embeddedUser {
+					userField = `"user":{"id":"200","username":"embedded","discriminator":"0"},`
+				}
+				body := fmt.Sprintf(`[{"guild_scheduled_event_id":"300","user":{"id":"200","username":"subscriber","discriminator":"0"},"member":{%s"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0}}]`, userField)
+				endpoint := EndpointGuildScheduledEventUsers("100", "300")
+				if exception {
+					endpoint = EndpointGuildScheduledEventExceptionUsers("100", "300", "400")
+				}
+				session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if req.Method != http.MethodGet || req.URL.String() != endpoint+"?with_member=true" {
+						t.Errorf("request = %s %s, want subscriber GET with members", req.Method, req.URL)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+				})
+				fetch := func() ([]*GuildScheduledEventUser, error) {
+					if exception {
+						return session.GuildScheduledEventExceptionUsers("100", "300", "400", 0, true, "", "")
+					}
+					return session.GuildScheduledEventUsers("100", "300", 0, true, "", "")
+				}
+				users, err := fetch()
+				if err != nil || len(users) != 1 || users[0] == nil || users[0].Member == nil {
+					t.Fatalf("subscriber response = %#v, %v", users, err)
+				}
+				member := users[0].Member
+				if member.GuildID != "100" {
+					t.Errorf("member guild = %q, want 100", member.GuildID)
+				}
+				if !embeddedUser && member.User != users[0].User {
+					t.Error("member did not link the subscriber user")
+				} else if embeddedUser && (member.User == nil || member.User.Username != "embedded") {
+					t.Error("member's existing user was replaced")
+				}
+				if got := member.Mention(); got != "<@!200>" {
+					t.Errorf("Mention = %q, want <@!200>", got)
+				}
+				if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+					t.Errorf("AvatarURL = %q, want %q", got, want)
+				}
+				if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+					t.Errorf("BannerURL = %q, want %q", got, want)
+				}
+				if err := session.State.MemberAdd(member); err != nil {
+					t.Errorf("caching subscriber member failed: %v", err)
+				} else if cached, err := session.State.Member("100", "200"); err != nil || cached.User.ID != "200" {
+					t.Errorf("member not retrievable from its guild: %v", err)
+				}
+
+				// Membership is optional even when requested; do not invent it.
+				body = `[{"guild_scheduled_event_id":"300","user":{"id":"200"}}]`
+				if users, err = fetch(); err != nil || len(users) != 1 || users[0].Member != nil {
+					t.Fatalf("omitted member response = %#v, %v", users, err)
+				}
+				// Preserve previously accepted null responses and entries safely.
+				body = `null`
+				if users, err = fetch(); err != nil || users != nil {
+					t.Fatalf("null response = %#v, %v", users, err)
+				}
+				body = `[null]`
+				if users, err = fetch(); err != nil || len(users) != 1 || users[0] != nil {
+					t.Fatalf("null entry response = %#v, %v", users, err)
+				}
+			})
+		}
+	}
+}
+
+func TestThreadArchiveEvictsCachedState(t *testing.T) {
+	for _, trackChannels := range []bool{true, false} {
+		t.Run(fmt.Sprintf("trackChannels=%t", trackChannels), func(t *testing.T) {
+			session, err := New("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.SyncEvents = true
+			state := session.State
+			state.TrackChannels = trackChannels
+			state.MaxMessageCount = 2
+			parent := &Channel{ID: "150", GuildID: "100", Type: ChannelTypeGuildText}
+			active := &Channel{ID: "199", GuildID: "100", ParentID: parent.ID, Type: ChannelTypeGuildPublicThread, Name: "active"}
+			if err := state.GuildAdd(&Guild{ID: "100", Channels: []*Channel{parent}, Threads: []*Channel{active}}); err != nil {
+				t.Fatal(err)
+			}
+			sequence := 0
+			dispatch := func(eventType, data string) {
+				t.Helper()
+				sequence++
+				payload := fmt.Sprintf(`{"op":0,"s":%d,"t":%q,"d":%s}`, sequence, eventType, data)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			threadData := func(id, name string, archived bool) string {
+				return fmt.Sprintf(`{"id":%q,"guild_id":"100","parent_id":"150","owner_id":"300","type":11,"name":%q,"thread_metadata":{"archived":%t,"auto_archive_duration":60,"archive_timestamp":"2026-10-30T10:00:00Z","locked":false}}`, id, name, archived)
+			}
+			var snapshot *Channel
+			archiveCallbacks, cachedDuringCallbacks := 0, 0
+			session.AddHandler(func(_ *Session, event *ThreadUpdate) {
+				if !event.ThreadMetadata.Archived {
+					return
+				}
+				archiveCallbacks++
+				if _, err := state.Channel(event.ID); err == nil {
+					cachedDuringCallbacks++
+				}
+				if event.ID == "900" {
+					if event.BeforeUpdate != nil {
+						t.Error("unknown archived thread had a previous snapshot")
+					}
+					return
+				}
+				if event.BeforeUpdate == nil || event.BeforeUpdate.ThreadMetadata.Archived || len(event.BeforeUpdate.Messages) != 1 {
+					t.Error("archive callback lost the previous active thread and its message")
+				}
+				if event.ID == "200" {
+					snapshot = event.BeforeUpdate
+				}
+			})
+			for i := 0; i < 16; i++ {
+				id := fmt.Sprint(200 + i)
+				dispatch("THREAD_CREATE", threadData(id, "created", false))
+				dispatch("MESSAGE_CREATE", fmt.Sprintf(`{"id":%q,"channel_id":%q,"guild_id":"100","content":"cached message","author":{"id":"300"}}`, "message-"+id, id))
+				dispatch("THREAD_UPDATE", threadData(id, "archived", true))
+			}
+			// An update for an uncached archived thread must not add a cache entry.
+			dispatch("THREAD_UPDATE", threadData("900", "already archived", true))
+			guild, err := state.Guild("100")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(guild.Threads) != 1 || guild.Threads[0] != active {
+				t.Errorf("cache retains %d threads after 16 archive cycles and an uncached archive update, want only the active thread", len(guild.Threads))
+			}
+			wantChannels := 1
+			if trackChannels {
+				wantChannels++
+			}
+			if len(state.channelMap) != wantChannels {
+				t.Errorf("channel index retains %d entries, want %d", len(state.channelMap), wantChannels)
+			}
+			if archiveCallbacks != 17 || cachedDuringCallbacks != 0 {
+				t.Errorf("archive callbacks=%d, callbacks with retained cache=%d", archiveCallbacks, cachedDuringCallbacks)
+			}
+			if _, err := state.Message("200", "message-200"); !errors.Is(err, ErrStateNotFound) {
+				t.Errorf("archived message lookup error = %v, want ErrStateNotFound", err)
+			}
+			if snapshot == nil || snapshot.Name != "created" || snapshot.ThreadMetadata.Archived || len(snapshot.Messages) != 1 {
+				t.Fatal("previous snapshot was mutated by archiving")
+			}
+			// Active updates still refresh the cache, and unarchiving can re-add a thread.
+			dispatch("THREAD_UPDATE", threadData("199", "renamed", false))
+			dispatch("THREAD_CREATE", threadData("200", "reopened", false))
+			current, err := state.Channel("199")
+			if err != nil || current.Name != "renamed" || active.Name != "active" {
+				t.Fatalf("active update did not preserve snapshot semantics: %v", err)
+			}
+			reopened, err := state.Channel("200")
+			if err != nil || reopened.Name != "reopened" || len(reopened.Messages) != 0 {
+				t.Fatalf("reopened thread retained archived messages: %v", err)
+			}
+		})
+	}
+}
+
+func TestAddedThreadMemberPreservesGuildIdentity(t *testing.T) {
+	for _, tracking := range []string{"enabled", "state_disabled", "members_disabled"} {
+		for _, gateway := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/gateway=%t", tracking, gateway), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				session.StateEnabled = tracking != "state_disabled"
+				session.State.TrackMembers = tracking != "members_disabled"
+				if err := session.State.GuildAdd(&Guild{ID: "100", Threads: []*Channel{{
+					ID: "300", GuildID: "100", Type: ChannelTypeGuildPublicThread,
+				}}}); err != nil {
+					t.Fatal(err)
+				}
+				cache := NewState()
+				if err := cache.GuildAdd(&Guild{ID: "100"}); err != nil {
+					t.Fatal(err)
+				}
+				payload := []byte(`{"id":"300","guild_id":"100","member_count":1,"added_members":[{
+					"id":"300","user_id":"200","join_timestamp":"2026-10-30T10:00:00Z","flags":0,"presence":null,
+					"member":{"user":{"id":"200","username":"member","discriminator":"0"},"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0}}]}`)
+				called := false
+				session.AddHandler(func(_ *Session, event *ThreadMembersUpdate) {
+					called = true
+					if len(event.AddedMembers) != 1 || event.AddedMembers[0].Member == nil {
+						t.Error("callback did not receive the added guild member")
+						return
+					}
+					member := event.AddedMembers[0].Member
+					if member.GuildID != "100" {
+						t.Errorf("member guild = %q, want 100", member.GuildID)
+					}
+					if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+						t.Errorf("AvatarURL = %q, want %q", got, want)
+					}
+					if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+						t.Errorf("BannerURL = %q, want %q", got, want)
+					}
+					// A callback can populate a separate cache regardless of session tracking.
+					if err := cache.MemberAdd(member); err != nil {
+						t.Errorf("caching callback member: %v", err)
+					} else if cached, err := cache.Member("100", "200"); err != nil || cached.GuildID != "100" {
+						t.Errorf("retrieving callback member: %v", err)
+					}
+				})
+				if gateway {
+					if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":"THREAD_MEMBERS_UPDATE","d":%s}`, payload))); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					var event ThreadMembersUpdate
+					if err := json.Unmarshal(payload, &event); err != nil {
+						t.Fatal(err)
+					}
+					session.handleEvent(threadMembersUpdateEventType, &event)
+				}
+				if !called {
+					t.Fatal("thread member callback did not run")
+				}
+			})
+		}
+	}
+}
+
+func TestAddedThreadMemberGuildIdentityAbsentData(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+	var received *ThreadMembersUpdate
+	session.AddHandler(func(_ *Session, event *ThreadMembersUpdate) { received = event })
+	for _, added := range []string{`[]`, `[{"id":"300","user_id":"200"}]`, `[{"id":"300","user_id":"200","member":null}]`} {
+		received = nil
+		payload := fmt.Sprintf(`{"op":0,"s":1,"t":"THREAD_MEMBERS_UPDATE","d":{"id":"300","guild_id":"100","member_count":1,"added_members":%s}}`, added)
+		if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		if received == nil {
+			t.Fatal("callback did not run")
+		}
+		for _, member := range received.AddedMembers {
+			if member.Member != nil {
+				t.Fatal("absent member was not preserved")
+			}
+		}
+	}
+}
+
+func TestThreadMembersUpdateClearsCurrentMember(t *testing.T) {
+	for _, source := range []string{"THREAD_CREATE", "GUILD_CREATE"} {
+		t.Run(source, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.SyncEvents = true
+			sequence := 0
+			dispatch := func(eventType, data string) {
+				t.Helper()
+				sequence++
+				payload := fmt.Sprintf(`{"op":0,"s":%d,"t":%q,"d":%s}`, sequence, eventType, data)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dispatch("READY", `{"v":10,"user":{"id":"300","bot":true},"guilds":[],"session_id":"test","resume_gateway_url":"wss://gateway.discord.gg"}`)
+			member := `{"join_timestamp":"2026-10-30T10:00:00Z","flags":1}`
+			if source == "THREAD_CREATE" {
+				member = `{"id":"200","user_id":"300","join_timestamp":"2026-10-30T10:00:00Z","flags":1}`
+			}
+			thread := `{"id":"200","guild_id":"100","parent_id":"150","type":11,"name":"public-thread","member_count":2,"thread_metadata":{"archived":false,"auto_archive_duration":60,"archive_timestamp":"2026-10-30T10:00:00Z","locked":false},"member":` + member + `}`
+			if source == "GUILD_CREATE" {
+				// Discord omits both membership IDs in a GUILD_CREATE thread.
+				dispatch(source, `{"id":"100","threads":[`+thread+`]}`)
+			} else {
+				dispatch("GUILD_CREATE", `{"id":"100","threads":[]}`)
+				dispatch(source, thread)
+			}
+			before, err := session.State.Channel("200")
+			if err != nil || before.Member == nil {
+				t.Fatalf("initial membership missing: %v", err)
+			}
+			if source == "GUILD_CREATE" && before.Member.UserID != "" {
+				t.Fatal("fixture unexpectedly supplied the omitted user ID")
+			}
+			callbacks := 0
+			session.AddHandler(func(s *Session, event *ThreadMembersUpdate) {
+				callbacks++
+				cached, err := s.State.Channel(event.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if event.RemovedMembers[0] == "300" && cached.Member != nil {
+					t.Error("removal callback still sees the current user as a thread member")
+				}
+			})
+			dispatch("THREAD_MEMBERS_UPDATE", `{"id":"200","guild_id":"100","member_count":1,"removed_member_ids":["400"]}`)
+			otherRemoved, err := session.State.Channel("200")
+			if err != nil || otherRemoved.Member != before.Member {
+				t.Fatalf("another user's removal changed current membership: %v", err)
+			}
+			dispatch("THREAD_MEMBERS_UPDATE", `{"id":"200","guild_id":"100","member_count":0,"removed_member_ids":["300"]}`)
+			after, err := session.State.Channel("200")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Member != nil || after.MemberCount != 0 {
+				t.Errorf("current membership survived removal: member=%+v count=%d", after.Member, after.MemberCount)
+			}
+			if before.Member == nil || otherRemoved.Member != before.Member || before.MemberCount != 2 || otherRemoved.MemberCount != 1 {
+				t.Error("removal modified an earlier thread snapshot")
+			}
+			guild, err := session.State.Guild("100")
+			if err != nil || len(guild.Threads) != 1 || guild.Threads[0] != after {
+				t.Fatalf("guild thread cache not updated: %v", err)
+			}
+			if callbacks != 2 {
+				t.Fatalf("removal callbacks = %d, want 2", callbacks)
+			}
+		})
+	}
+}
+
+func TestThreadCreateHonorsMemberTracking(t *testing.T) {
+	for _, track := range []bool{false, true} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("tracking=%t/cached=%t", track, existing), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				session.State.TrackThreadMembers = track
+				guild := &Guild{ID: "100"}
+				var before *Channel
+				if existing {
+					// THREAD_CREATE also arrives when joining a known thread.
+					before = &Channel{ID: "200", GuildID: "100", ParentID: "150", Type: ChannelTypeGuildPublicThread, Name: "public-thread"}
+					guild.Threads = []*Channel{before}
+				}
+				if err := session.State.GuildAdd(guild); err != nil {
+					t.Fatal(err)
+				}
+				if existing {
+					before, err = session.State.Channel("200")
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				callbacks := 0
+				session.AddHandler(func(s *Session, event *ThreadCreate) {
+					callbacks++
+					checkCurrentThreadMember(t, event.Channel)
+					cached, err := s.State.Channel(event.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if track {
+						checkCurrentThreadMember(t, cached)
+					} else if cached.Member != nil || cached.Members != nil {
+						t.Error("callback sees cached thread membership with tracking disabled")
+					}
+				})
+				thread := `{"id":"200","guild_id":"100","parent_id":"150","type":11,"name":"public-thread","thread_metadata":{"archived":false,"auto_archive_duration":60,"archive_timestamp":"2026-10-30T10:00:00Z","locked":false},"member":{"id":"200","user_id":"300","join_timestamp":"2026-10-30T10:00:00Z","flags":1}}`
+				if _, err := session.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"THREAD_CREATE","d":`+thread+`}`)); err != nil {
+					t.Fatal(err)
+				}
+				cached, err := session.State.Channel("200")
+				if err != nil {
+					t.Fatal(err)
+				}
+				cachedGuild, err := session.State.Guild("100")
+				if err != nil || len(cachedGuild.Threads) != 1 || cachedGuild.Threads[0] != cached {
+					t.Fatalf("guild thread cache disagrees: %v", err)
+				}
+				if before != nil && (cached == before || before.Member != nil || before.Members != nil) {
+					t.Error("thread create changed the previous snapshot")
+				}
+				if callbacks != 1 {
+					t.Fatalf("thread callbacks = %d, want 1", callbacks)
+				}
+			})
+		}
+	}
+}
+
+func TestThreadPinsUpdateWithoutChannelTracking(t *testing.T) {
+	for _, channelType := range []ChannelType{ChannelTypeGuildNewsThread, ChannelTypeGuildPublicThread, ChannelTypeGuildPrivateThread} {
+		t.Run(fmt.Sprint(channelType), func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel, session.SyncEvents = -1, true
+			session.State.TrackChannels = false
+			if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+				t.Fatal(err)
+			}
+			sequence := 0
+			dispatch := func(eventType, data string) {
+				t.Helper()
+				sequence++
+				payload := fmt.Sprintf(`{"op":0,"s":%d,"t":%q,"d":%s}`, sequence, eventType, data)
+				if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dispatch("THREAD_CREATE", fmt.Sprintf(`{"id":"200","guild_id":"100","parent_id":"150","owner_id":"300","type":%d,"name":"thread","last_pin_timestamp":"2026-10-30T10:00:00Z","thread_metadata":{"archived":false,"auto_archive_duration":60,"archive_timestamp":"2026-10-30T10:00:00Z","locked":false}}`, channelType))
+			var callbackChannel *Channel
+			session.AddHandler(func(s *Session, event *ChannelPinsUpdate) {
+				callbackChannel, err = s.State.Channel(event.ChannelID)
+				if err != nil {
+					t.Error(err)
+				}
+			})
+			for _, timestamp := range []string{"2026-10-30T11:00:00Z", ""} {
+				before, err := session.State.Channel("200")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if before.LastPinTimestamp == nil {
+					t.Fatal("expected an existing pin timestamp before the update")
+				}
+				previousTimestamp := *before.LastPinTimestamp
+				value := "null"
+				var expected *time.Time
+				if timestamp != "" {
+					parsed, err := time.Parse(time.RFC3339, timestamp)
+					if err != nil {
+						t.Fatal(err)
+					}
+					expected = &parsed
+					value = fmt.Sprintf("%q", timestamp)
+				}
+				dispatch("CHANNEL_PINS_UPDATE", fmt.Sprintf(`{"guild_id":"100","channel_id":"200","last_pin_timestamp":%s}`, value))
+				after, err := session.State.Channel("200")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (expected == nil && after.LastPinTimestamp != nil) || (expected != nil && (after.LastPinTimestamp == nil || !after.LastPinTimestamp.Equal(*expected))) {
+					t.Errorf("thread pin timestamp = %v, want %v", after.LastPinTimestamp, expected)
+				}
+				guild, err := session.State.Guild("100")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(guild.Threads) != 1 || guild.Threads[0] != after || callbackChannel != after || after == before {
+					t.Error("thread pin update did not replace both cache indexes before its callback")
+				}
+				if before.LastPinTimestamp == nil || !before.LastPinTimestamp.Equal(previousTimestamp) || len(guild.Channels) != 0 {
+					t.Error("pin update changed the previous snapshot or cached an ordinary channel")
+				}
+			}
+		})
+	}
+}
+
+func TestThreadPinsUpdatePreservesDisabledTracking(t *testing.T) {
+	for _, channelType := range []ChannelType{ChannelTypeGuildText, ChannelTypeGuildPublicThread} {
+		t.Run(fmt.Sprint(channelType), func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+				t.Fatal(err)
+			}
+			channel := &Channel{ID: "channel", GuildID: "guild", Type: channelType}
+			if err := state.ChannelAdd(channel); err != nil {
+				t.Fatal(err)
+			}
+			state.TrackChannels = false
+			state.TrackThreads = !channel.IsThread()
+			if err := state.OnInterface(&Session{StateEnabled: true}, &ChannelPinsUpdate{ChannelID: "channel", LastPinTimestamp: "2026-10-30T11:00:00Z"}); err != nil {
+				t.Fatal(err)
+			}
+			after, err := state.Channel("channel")
+			if err != nil || after != channel || after.LastPinTimestamp != nil {
+				t.Errorf("pin update changed an untracked channel: %v", err)
+			}
+		})
+	}
+}
+
+func TestThreadUpdatePreservesCachedMembership(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.SyncEvents = true
+	if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+		t.Fatal(err)
+	}
+	sequence := 0
+	dispatch := func(eventType, data string) {
+		t.Helper()
+		sequence++
+		payload := fmt.Sprintf(`{"op":0,"s":%d,"t":%q,"d":%s}`, sequence, eventType, data)
+		if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispatch("THREAD_CREATE", channelWithThreadMember)
+	dispatch("THREAD_MEMBERS_UPDATE", `{"id":"200","guild_id":"100","member_count":2,"added_members":[{"id":"200","user_id":"300","join_timestamp":"2026-10-30T10:00:00Z","flags":1,"member":{"user":{"id":"300"},"roles":[],"joined_at":"2026-10-30T09:00:00Z","deaf":false,"mute":false},"presence":null},{"id":"200","user_id":"400","join_timestamp":"2026-10-30T10:01:00Z","flags":0,"member":{"user":{"id":"400"},"roles":[],"joined_at":"2026-10-30T09:00:00Z","deaf":false,"mute":false},"presence":null}]}`)
+	before, err := session.State.Channel("200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Member == nil || len(before.Members) != 2 {
+		t.Fatal("membership setup failed")
+	}
+	var received *ThreadUpdate
+	session.AddHandler(func(_ *Session, event *ThreadUpdate) { received = event })
+	dispatch("THREAD_UPDATE", `{"id":"200","guild_id":"100","parent_id":"150","owner_id":"300","type":12,"name":"renamed","member_count":2,"thread_metadata":{"archived":false,"auto_archive_duration":60,"archive_timestamp":"2026-10-30T10:00:00Z","locked":false,"invitable":true}}`)
+	after, err := session.State.Channel("200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Member != before.Member {
+		t.Error("thread rename discarded the current user's membership")
+	}
+	if len(after.Members) != 2 || after.Members[0] != before.Members[0] || after.Members[1] != before.Members[1] {
+		t.Error("thread rename discarded tracked members")
+	}
+	if after == before || after.Name != "renamed" || before.Name != "private-thread" {
+		t.Fatal("thread rename did not create an updated cache snapshot")
+	}
+	if received == nil || received.BeforeUpdate == nil || received.BeforeUpdate.Member != before.Member || len(received.BeforeUpdate.Members) != 2 {
+		t.Fatal("thread update lost the previous membership snapshot")
+	}
+	if received.Member != nil || received.Members != nil {
+		t.Fatal("cache preservation modified the incoming event")
+	}
+	guild, err := session.State.Guild("100")
+	if err != nil || len(guild.Threads) != 1 || guild.Threads[0] != after {
+		t.Fatalf("guild thread cache not updated: %v", err)
+	}
+
+	// Later membership changes must still apply without changing old snapshots.
+	membersAfterRename := len(after.Members)
+	dispatch("THREAD_MEMBERS_UPDATE", `{"id":"200","guild_id":"100","member_count":1,"removed_member_ids":["400"]}`)
+	current, err := session.State.Channel("200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Members) != 1 || current.Members[0].UserID != "300" {
+		t.Error("membership removal lost the remaining tracked member")
+	}
+	if len(after.Members) != membersAfterRename || len(before.Members) != 2 || before.Members[1].UserID != "400" {
+		t.Error("membership removal changed an earlier cache snapshot")
+	}
+}
+
+func TestThreadChannelUpdateDoesNotRestoreReplacedMembership(t *testing.T) {
+	for _, name := range []string{"tracking disabled", "obfuscated", "explicit replacement"} {
+		t.Run(name, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild", Threads: []*Channel{{
+				ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread,
+				Member: &ThreadMember{UserID: "self"}, Members: []*ThreadMember{{UserID: "other"}},
+			}}}); err != nil {
+				t.Fatal(err)
+			}
+			update := &Channel{ID: "thread", GuildID: "guild", Type: ChannelTypeGuildPublicThread}
+			switch name {
+			case "tracking disabled":
+				state.TrackThreadMembers = false
+			case "obfuscated":
+				update.Flags = ChannelFlagObfuscated
+			case "explicit replacement":
+				update.Member = &ThreadMember{UserID: "self", Flags: 7}
+				update.Members = []*ThreadMember{}
+			}
+			if err := state.ChannelAdd(update); err != nil {
+				t.Fatal(err)
+			}
+			cached, err := state.Channel("thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cached.Member != update.Member || len(cached.Members) != 0 {
+				t.Fatal("channel update restored obsolete membership")
+			}
+		})
+	}
+}
+
+func TestVoiceStateMembersPreserveGuildIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		event        string
+		userID       string
+		stateEnabled bool
+	}{
+		{name: "REST user", userID: "200", stateEnabled: true},
+		{name: "REST current user", userID: "@me", stateEnabled: true},
+		{name: "voice update", event: "VOICE_STATE_UPDATE", stateEnabled: true},
+		{name: "voice update without state", event: "VOICE_STATE_UPDATE"},
+		{name: "guild create", event: "GUILD_CREATE", stateEnabled: true},
+		{name: "guild create without state", event: "GUILD_CREATE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.SyncEvents = true
+			session.StateEnabled = tc.stateEnabled
+			session.State.User = &User{ID: "bot"}
+			if err := session.State.GuildAdd(&Guild{ID: "100"}); err != nil {
+				t.Fatal(err)
+			}
+			payload := `{"channel_id":"300","user_id":"200","session_id":"voice-session","deaf":false,"mute":false,"self_deaf":false,"self_mute":false,"self_video":false,"suppress":false,"request_to_speak_timestamp":null,
+				"member":{"user":{"id":"200","username":"member","discriminator":"0"},"avatar":"guild-avatar","banner":"guild-banner","roles":[],"joined_at":"2026-10-30T10:00:00Z","deaf":false,"mute":false,"flags":0}}`
+			var voice *VoiceState
+			if tc.event == "" {
+				session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if req.Method != http.MethodGet || req.URL.String() != EndpointGuildMemberVoiceState("100", tc.userID) {
+						t.Errorf("request = %s %s, want voice-state GET", req.Method, req.URL)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: req}, nil
+				})
+				voice, err = session.UserVoiceState("100", tc.userID)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				capture := func(state *VoiceState) {
+					voice = state
+					if state == nil || state.Member == nil || state.Member.GuildID != "100" {
+						t.Error("callback received a member without guild identity")
+					}
+					if tc.stateEnabled {
+						cached, err := session.State.VoiceState("100", "200")
+						if err != nil || cached != state {
+							t.Errorf("voice state not cached before callback: %v", err)
+						}
+					}
+				}
+				switch tc.event {
+				case "VOICE_STATE_UPDATE":
+					payload = `{"guild_id":"100",` + payload[1:]
+					session.AddHandler(func(_ *Session, event *VoiceStateUpdate) { capture(event.VoiceState) })
+				case "GUILD_CREATE":
+					payload = `{"id":"100","voice_states":[` + payload + `]}`
+					session.AddHandler(func(_ *Session, event *GuildCreate) { capture(event.VoiceStates[0]) })
+				}
+				if _, err := session.onEvent(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":0,"s":1,"t":%q,"d":%s}`, tc.event, payload))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if voice == nil || voice.Member == nil || voice.Member.User == nil {
+				t.Fatal("voice state or member missing")
+			}
+			member := voice.Member
+			if voice.GuildID != "100" || member.GuildID != "100" {
+				t.Errorf("guild identity = voice %q, member %q, want 100", voice.GuildID, member.GuildID)
+			}
+			if got, want := member.AvatarURL(""), EndpointGuildMemberAvatar("100", "200", "guild-avatar"); got != want {
+				t.Errorf("AvatarURL = %q, want %q", got, want)
+			}
+			if got, want := member.BannerURL(""), EndpointGuildMemberBanner("100", "200", "guild-banner"); got != want {
+				t.Errorf("BannerURL = %q, want %q", got, want)
+			}
+			if err := session.State.MemberAdd(member); err != nil {
+				t.Errorf("caching voice member failed: %v", err)
+			} else if cached, err := session.State.Member("100", "200"); err != nil || cached.User.ID != "200" {
+				t.Errorf("voice member not retrievable from its guild: %v", err)
+			}
+		})
+	}
+}
+
+func TestUserVoiceStateOptionalMember(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{`{"user_id":"200","channel_id":null}`, `null`} {
+		session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: req}, nil
+		})
+		voice, err := session.UserVoiceState("100", "200")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if payload == "null" {
+			if voice != nil {
+				t.Fatal("null response produced a voice state")
+			}
+		} else if voice == nil || voice.Member != nil {
+			t.Fatal("omitted member was not preserved")
+		}
 	}
 }

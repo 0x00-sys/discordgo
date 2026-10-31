@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -621,7 +621,7 @@ func TestGuildStickerEndpoints(t *testing.T) {
 				t.Fatalf("FormFile returned error: %v", err)
 			}
 			defer file.Close()
-			contents, err := ioutil.ReadAll(file)
+			contents, err := io.ReadAll(file)
 			if err != nil {
 				t.Fatalf("ReadAll returned error: %v", err)
 			}
@@ -1692,7 +1692,7 @@ func TestChannelInviteCreateWithTargetUsersFile(t *testing.T) {
 			t.Fatalf("FormFile returned error: %v", err)
 		}
 		defer file.Close()
-		contents, err := ioutil.ReadAll(file)
+		contents, err := io.ReadAll(file)
 		if err != nil {
 			t.Fatalf("ReadAll returned error: %v", err)
 		}
@@ -1758,7 +1758,7 @@ func TestInviteTargetUsersEndpoints(t *testing.T) {
 				t.Fatalf("FormFile returned error: %v", err)
 			}
 			defer file.Close()
-			contents, err := ioutil.ReadAll(file)
+			contents, err := io.ReadAll(file)
 			if err != nil {
 				t.Fatalf("ReadAll returned error: %v", err)
 			}
@@ -2588,7 +2588,7 @@ func TestWebhookExecuteComplexJSON(t *testing.T) {
 			t.Fatalf("Authorization = %q, want empty", authorization)
 		}
 
-		body, err := ioutil.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("ReadAll returned error: %v", err)
 		}
@@ -2685,7 +2685,7 @@ func TestWebhookExecuteComplexMultipart(t *testing.T) {
 			t.Fatalf("FormFile returned error: %v", err)
 		}
 		defer file.Close()
-		contents, err := ioutil.ReadAll(file)
+		contents, err := io.ReadAll(file)
 		if err != nil {
 			t.Fatalf("ReadAll returned error: %v", err)
 		}
@@ -3182,7 +3182,7 @@ func TestInteractionRespondWithResponseMultipart(t *testing.T) {
 			t.Fatalf("FormFile returned error: %v", err)
 		}
 		defer file.Close()
-		contents, err := ioutil.ReadAll(file)
+		contents, err := io.ReadAll(file)
 		if err != nil {
 			t.Fatalf("ReadAll returned error: %v", err)
 		}
@@ -3437,7 +3437,7 @@ func TestSessionAllowedMentionsAppliedToRESTPayloads(t *testing.T) {
 			called := false
 			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 				called = true
-				body, err := ioutil.ReadAll(r.Body)
+				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Fatalf("ReadAll returned error: %v", err)
 				}
@@ -3550,7 +3550,7 @@ func TestSessionAllowedMentionsDoesNotOverridePayload(t *testing.T) {
 	session.AllowedMentions = &MessageAllowedMentions{Parse: []AllowedMentionType{}}
 
 	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body, err := ioutil.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("ReadAll returned error: %v", err)
 		}
@@ -4670,7 +4670,7 @@ func TestRequestWithLockedBucketRetriesUseBoundedStack(t *testing.T) {
 				if got := r.Header.Get("X-Retry-Attempt"); got != strconv.Itoa(attempts) {
 					t.Fatalf("X-Retry-Attempt = %q, want %q", got, strconv.Itoa(attempts))
 				}
-				requestBody, err := ioutil.ReadAll(r.Body)
+				requestBody, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Fatalf("ReadAll request body returned error: %v", err)
 				}
@@ -4939,7 +4939,7 @@ func TestChannelMessagesPinnedUsesPerChannelBucket(t *testing.T) {
 				"X-RateLimit-Remaining":   []string{"1"},
 				"X-RateLimit-Reset-After": []string{"0.1"},
 			},
-			Body:    ioutil.NopCloser(strings.NewReader(`{"items":[],"has_more":false}`)),
+			Body:    io.NopCloser(strings.NewReader(`{"items":[],"has_more":false}`)),
 			Request: r,
 		}, nil
 	})
@@ -5349,7 +5349,7 @@ func TestNewRestErrorRedactsRequestSecrets(t *testing.T) {
 		t.Fatalf("original request GetBody returned error: %v", err)
 	}
 	defer originalBody.Close()
-	body, err := ioutil.ReadAll(originalBody)
+	body, err := io.ReadAll(originalBody)
 	if err != nil {
 		t.Fatalf("original request body read returned error: %v", err)
 	}
@@ -5779,5 +5779,3732 @@ func TestChannelInviteCreateRejectsConflictingTargetUsers(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("expected no request, got %d", calls)
+	}
+}
+
+func TestApplicationAttachmentUpload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPost)
+		}
+		if r.URL.Path != "/applications/app/attachment" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/applications/app/attachment")
+		}
+		if got := r.Header.Get("X-Test-Request-Option"); got != "present" {
+			t.Fatalf("X-Test-Request-Option = %q, want present", got)
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Fatalf("Content-Type = %q, want multipart/form-data", r.Header.Get("Content-Type"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm returned error: %v", err)
+		}
+		if _, ok := r.MultipartForm.Value["payload_json"]; ok {
+			t.Fatal("payload_json was included in application attachment upload")
+		}
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("FormFile returned error: %v", err)
+		}
+		defer func() { _ = file.Close() }()
+		contents, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if header.Filename != "activity.png" {
+			t.Fatalf("filename = %q, want activity.png", header.Filename)
+		}
+		if got := header.Header.Get("Content-Type"); got != "image/png" {
+			t.Fatalf("file Content-Type = %q, want image/png", got)
+		}
+		if string(contents) != "png" {
+			t.Fatalf("file contents = %q, want png", contents)
+		}
+
+		_, _ = w.Write([]byte(`{
+			"attachment": {
+				"id": "attachment",
+				"filename": "activity.png",
+				"title": null,
+				"description": "Activity image",
+				"content_type": "image/png",
+				"size": 3,
+				"url": "https://cdn.discordapp.com/attachment",
+				"proxy_url": "https://media.discordapp.net/attachment",
+				"width": 640,
+				"height": 480,
+				"placeholder": "hash",
+				"placeholder_version": 1,
+				"ephemeral": true,
+				"duration_secs": 1.5,
+				"waveform": "wave",
+				"flags": 1,
+				"clip_participants": [{"id":"user","username":"tester"}],
+				"clip_created_at": "2026-01-02T03:04:05Z",
+				"application": {"id":"app","name":"Activity"}
+			}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointApplications := EndpointApplications
+	EndpointApplications = server.URL + "/applications"
+	t.Cleanup(func() {
+		EndpointApplications = oldEndpointApplications
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	response, err := session.ApplicationAttachmentUpload("app", &File{
+		Name:        "activity.png",
+		ContentType: "image/png",
+		Reader:      strings.NewReader("png"),
+		FieldName:   "ignored",
+	}, WithHeader("X-Test-Request-Option", "present"))
+	if err != nil {
+		t.Fatalf("ApplicationAttachmentUpload returned error: %v", err)
+	}
+
+	attachment := response.Attachment
+	if attachment.ID != "attachment" || attachment.Filename != "activity.png" || attachment.Title != "" {
+		t.Fatalf("attachment identity = %#v", attachment)
+	}
+	if attachment.Description != "Activity image" || attachment.ContentType != "image/png" || attachment.Size != 3 {
+		t.Fatalf("attachment metadata = %#v", attachment)
+	}
+	if attachment.URL != "https://cdn.discordapp.com/attachment" || attachment.ProxyURL != "https://media.discordapp.net/attachment" {
+		t.Fatalf("attachment URLs = %#v", attachment)
+	}
+	if attachment.Width != 640 || attachment.Height != 480 || attachment.Placeholder != "hash" || attachment.PlaceholderVersion != 1 {
+		t.Fatalf("attachment dimensions = %#v", attachment)
+	}
+	if !attachment.Ephemeral || attachment.DurationSecs != 1.5 || attachment.Waveform != "wave" || attachment.Flags != MessageAttachmentFlagsIsClip {
+		t.Fatalf("attachment media data = %#v", attachment)
+	}
+	if len(attachment.ClipParticipants) != 1 || attachment.ClipParticipants[0].ID != "user" {
+		t.Fatalf("clip participants = %#v", attachment.ClipParticipants)
+	}
+	if attachment.ClipCreatedAt == nil || !attachment.ClipCreatedAt.Equal(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Fatalf("clip created at = %#v", attachment.ClipCreatedAt)
+	}
+	if attachment.Application == nil || attachment.Application.ID != "app" || attachment.Application.Name != "Activity" {
+		t.Fatalf("application = %#v", attachment.Application)
+	}
+}
+
+func TestApplicationAttachmentUploadInvalidResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{`},
+		{name: "null response", body: `null`},
+		{name: "missing attachment", body: `{}`},
+		{name: "null attachment", body: `{"attachment":null}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			response, err := session.ApplicationAttachmentUpload("app", &File{
+				Name:   "activity.png",
+				Reader: strings.NewReader("png"),
+			})
+			if response != nil {
+				t.Fatalf("response = %#v, want nil", response)
+			}
+			if !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+		})
+	}
+}
+
+func TestApplicationAttachmentUploadRESTError(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"code":50046,"message":"Invalid file uploaded"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	response, err := session.ApplicationAttachmentUpload("app", &File{
+		Name:   "activity.png",
+		Reader: strings.NewReader("png"),
+	})
+	if response != nil {
+		t.Fatalf("response = %#v, want nil", response)
+	}
+	var restErr *RESTError
+	if !errors.As(err, &restErr) {
+		t.Fatalf("error = %T %v, want *RESTError", err, err)
+	}
+	if restErr.Response.StatusCode != http.StatusBadRequest || restErr.Message == nil || restErr.Message.Code != ErrCodeInvalidFileUploaded {
+		t.Fatalf("RESTError = %#v", restErr)
+	}
+}
+
+func TestApplicationAttachmentUploadInvalidFile(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if _, err := session.ApplicationAttachmentUpload("app", nil); err == nil {
+		t.Fatal("ApplicationAttachmentUpload returned nil error for nil file")
+	}
+	if _, err := session.ApplicationAttachmentUpload("app", &File{Name: "activity.png"}); err == nil {
+		t.Fatal("ApplicationAttachmentUpload returned nil error for nil file reader")
+	}
+}
+
+func TestApplicationResourceEndpoints(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	requests := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		wantPath := "/api/v" + APIVersion + "/applications/app"
+		if r.URL.Path != wantPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+		}
+		if got := r.Header.Get("X-Test"); got != "application-resource" {
+			t.Fatalf("X-Test = %q, want application-resource", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bot test" {
+			t.Fatalf("Authorization = %q, want Bot test", got)
+		}
+
+		body := `{"id":"app","name":"Application","description":"original","flags_new":"4294967296"}`
+		switch r.Method {
+		case http.MethodGet:
+		case http.MethodPatch:
+			var payload map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			for key, want := range map[string]string{
+				"description":        `"updated"`,
+				"icon":               `null`,
+				"cover_image":        `null`,
+				"event_webhooks_url": `null`,
+				"tags":               `[]`,
+			} {
+				if got := string(payload[key]); got != want {
+					t.Fatalf("%s = %s, want %s", key, got, want)
+				}
+			}
+			if _, ok := payload["custom_install_url"]; ok {
+				t.Fatal("custom_install_url was included when unset")
+			}
+			body = `{"id":"app","name":"Application","description":"updated","flags_new":"4294967296"}`
+		default:
+			t.Fatalf("method = %q, want GET or PATCH", r.Method)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+
+	application, err := session.ApplicationGet("app", WithHeader("X-Test", "application-resource"))
+	if err != nil {
+		t.Fatalf("ApplicationGet returned error: %v", err)
+	}
+	if application.ID != "app" || application.Name != "Application" || application.FlagsNew != "4294967296" {
+		t.Fatalf("application = %#v", application)
+	}
+
+	description := "updated"
+	empty := ""
+	tags := []string{}
+	application, err = session.ApplicationEdit("app", &ApplicationEditParams{
+		Description:      &description,
+		Icon:             &empty,
+		CoverImage:       &empty,
+		Tags:             &tags,
+		EventWebhooksURL: &empty,
+	}, WithHeader("X-Test", "application-resource"))
+	if err != nil {
+		t.Fatalf("ApplicationEdit returned error: %v", err)
+	}
+	if application.Description != description {
+		t.Fatalf("description = %q, want %q", application.Description, description)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	if _, ok := session.Ratelimiter.buckets[EndpointApplication("app")]; !ok {
+		t.Fatalf("bucket %q was not created", EndpointApplication("app"))
+	}
+}
+
+func TestApplicationResourceResponseErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		method   string
+		status   int
+		body     string
+		wantREST bool
+	}{
+		{name: "get malformed json", method: http.MethodGet, status: http.StatusOK, body: `{`},
+		{name: "get null response", method: http.MethodGet, status: http.StatusOK, body: `null`},
+		{name: "get rest error", method: http.MethodGet, status: http.StatusUnauthorized, body: `{"code":0,"message":"Unauthorized"}`, wantREST: true},
+		{name: "edit malformed json", method: http.MethodPatch, status: http.StatusOK, body: `{`},
+		{name: "edit null response", method: http.MethodPatch, status: http.StatusOK, body: `null`},
+		{name: "edit rest error", method: http.MethodPatch, status: http.StatusForbidden, body: `{"code":0,"message":"Forbidden"}`, wantREST: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != tt.method {
+					t.Fatalf("method = %q, want %q", r.Method, tt.method)
+				}
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			var application *Application
+			if tt.method == http.MethodGet {
+				application, err = session.ApplicationGet("app", WithRestRetries(0))
+			} else {
+				application, err = session.ApplicationEdit("app", &ApplicationEditParams{}, WithRestRetries(0))
+			}
+			if application != nil {
+				t.Fatalf("application = %#v, want nil", application)
+			}
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.status {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.status)
+				}
+				return
+			}
+			if !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %T %v, want ErrJSONUnmarshal", err, err)
+			}
+		})
+	}
+}
+
+func TestWithAuditLogReasonRoundTrip(t *testing.T) {
+	for _, tc := range []struct{ name, reason, header string }{
+		{"plain", "moderation", "moderation"},
+		{"multiline", "first line\nsecond line\r\n", "first%20line%0Asecond%20line%0D%0A"},
+		{"unicode", "café 🚫", "caf%C3%A9%20%F0%9F%9A%AB"},
+		{"percent and plus", "100% + %20", "100%25%20%2B%20%2520"},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			received := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received <- r.Header.Get("X-Audit-Log-Reason")
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+			s, err := New("Bot dummy-token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Request(http.MethodDelete, server.URL, nil, WithAuditLogReason(tc.reason)); err != nil {
+				t.Fatalf("request failed before reason could be received: %v", err)
+			}
+			got := <-received
+			if got != tc.header {
+				t.Errorf("wire reason = %q, want %q", got, tc.header)
+			}
+			decoded, err := url.PathUnescape(got)
+			if err != nil || decoded != tc.reason {
+				t.Errorf("decoded reason = %q, error %v; want %q", decoded, err, tc.reason)
+			}
+		})
+	}
+}
+
+func TestChannelEditMarshalNullableFields(t *testing.T) {
+	guildText := ChannelTypeGuildText
+	guildNews := ChannelTypeGuildNews
+	icon := "data:image/png;base64,aWNvbg=="
+	iconValue := &icon
+	rtcRegion := "us-central"
+	rtcRegionValue := &rtcRegion
+	var nullString *string
+	videoQualityMode := VideoQualityModeFull
+	defaultAutoArchiveDuration := 1440
+
+	tests := []struct {
+		name string
+		edit ChannelEdit
+		want string
+	}{
+		{
+			name: "omits unset nullable fields",
+			edit: ChannelEdit{Name: "ticket"},
+			want: `{"name":"ticket"}`,
+		},
+		{
+			name: "sets zero channel type",
+			edit: ChannelEdit{Type: &guildText},
+			want: `{"type":0}`,
+		},
+		{
+			name: "sets nonzero channel type",
+			edit: ChannelEdit{Type: &guildNews},
+			want: `{"type":5}`,
+		},
+		{
+			name: "sets group dm icon",
+			edit: ChannelEdit{Icon: &iconValue},
+			want: `{"icon":"data:image/png;base64,aWNvbg=="}`,
+		},
+		{
+			name: "clears group dm icon",
+			edit: ChannelEdit{Icon: &nullString},
+			want: `{"icon":null}`,
+		},
+		{
+			name: "keeps non-empty topic",
+			edit: ChannelEdit{Topic: "updates"},
+			want: `{"topic":"updates"}`,
+		},
+		{
+			name: "clears topic",
+			edit: ChannelEdit{Topic: "ignored", TopicNull: true},
+			want: `{"topic":null}`,
+		},
+		{
+			name: "keeps nonzero user limit",
+			edit: ChannelEdit{UserLimit: 25},
+			want: `{"user_limit":25}`,
+		},
+		{
+			name: "omits unset zero user limit",
+			edit: ChannelEdit{UserLimit: 0},
+			want: `{}`,
+		},
+		{
+			name: "sets zero user limit",
+			edit: ChannelEdit{UserLimitSet: true},
+			want: `{"user_limit":0}`,
+		},
+		{
+			name: "sets rtc region",
+			edit: ChannelEdit{RTCRegion: &rtcRegionValue},
+			want: `{"rtc_region":"us-central"}`,
+		},
+		{
+			name: "clears rtc region",
+			edit: ChannelEdit{RTCRegion: &nullString},
+			want: `{"rtc_region":null}`,
+		},
+		{
+			name: "sets video quality mode",
+			edit: ChannelEdit{VideoQualityMode: &videoQualityMode},
+			want: `{"video_quality_mode":2}`,
+		},
+		{
+			name: "sets default auto archive duration",
+			edit: ChannelEdit{DefaultAutoArchiveDuration: &defaultAutoArchiveDuration},
+			want: `{"default_auto_archive_duration":1440}`,
+		},
+		{
+			name: "keeps non-empty parent id",
+			edit: ChannelEdit{ParentID: "category"},
+			want: `{"parent_id":"category"}`,
+		},
+		{
+			name: "clears parent id",
+			edit: ChannelEdit{ParentID: "ignored", ParentIDNull: true},
+			want: `{"parent_id":null}`,
+		},
+		{
+			name: "keeps empty permission overwrites",
+			edit: ChannelEdit{PermissionOverwrites: []*PermissionOverwrite{}},
+			want: `{"permission_overwrites":[]}`,
+		},
+		{
+			name: "clears parent and keeps empty permission overwrites",
+			edit: ChannelEdit{ParentIDNull: true, PermissionOverwrites: []*PermissionOverwrite{}},
+			want: `{"parent_id":null,"permission_overwrites":[]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.edit)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}
+
+func TestChannelEditRequestAndResponse(t *testing.T) {
+	guildText := ChannelTypeGuildText
+	videoQualityMode := VideoQualityModeFull
+	defaultAutoArchiveDuration := 1440
+	var rtcRegion *string
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		if r.URL.Path != "/channels/channel" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/channels/channel")
+		}
+		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "channel%20parity" {
+			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "channel%20parity")
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		assertJSONEqual(t, body, []byte(`{
+			"type":0,
+			"topic":null,
+			"user_limit":0,
+			"rtc_region":null,
+			"video_quality_mode":2,
+			"default_auto_archive_duration":1440
+		}`))
+
+		_, _ = w.Write([]byte(`{
+			"id":"channel",
+			"guild_id":"guild",
+			"name":"general",
+			"type":0,
+			"topic":null,
+			"user_limit":0,
+			"rtc_region":null,
+			"video_quality_mode":2,
+			"default_auto_archive_duration":1440
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := EndpointChannels
+	EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	channel, err := session.ChannelEdit("channel", &ChannelEdit{
+		Type:                       &guildText,
+		TopicNull:                  true,
+		UserLimitSet:               true,
+		RTCRegion:                  &rtcRegion,
+		VideoQualityMode:           &videoQualityMode,
+		DefaultAutoArchiveDuration: &defaultAutoArchiveDuration,
+	}, WithAuditLogReason("channel parity"))
+	if err != nil {
+		t.Fatalf("ChannelEdit returned error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+	if channel == nil || channel.ID != "channel" || channel.GuildID != "guild" || channel.Type != ChannelTypeGuildText {
+		t.Fatalf("channel = %#v, want edited guild text channel", channel)
+	}
+	if channel.RTCRegion != nil || channel.VideoQualityMode != VideoQualityModeFull {
+		t.Fatalf("voice settings = %#v/%d, want automatic region and full video", channel.RTCRegion, channel.VideoQualityMode)
+	}
+	if channel.UserLimit != 0 || channel.DefaultAutoArchiveDuration != 1440 {
+		t.Fatalf("channel limits = %d/%d, want 0/1440", channel.UserLimit, channel.DefaultAutoArchiveDuration)
+	}
+}
+
+func assertJSONEqual(t *testing.T, got, want []byte) {
+	t.Helper()
+
+	var gotJSON interface{}
+	if err := json.Unmarshal(got, &gotJSON); err != nil {
+		t.Fatalf("got is invalid JSON: %v", err)
+	}
+
+	var wantJSON interface{}
+	if err := json.Unmarshal(want, &wantJSON); err != nil {
+		t.Fatalf("want is invalid JSON: %v", err)
+	}
+
+	if !reflect.DeepEqual(gotJSON, wantJSON) {
+		t.Fatalf("JSON = %s, want %s", got, want)
+	}
+}
+
+func TestGameDirectMessageModerationMetadataUpdate(t *testing.T) {
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	calls := 0
+	currentID := ""
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want %s", r.Method, http.MethodPut)
+		}
+		want := "/api/v" + APIVersion + "/partner-sdk/dms/user-a/user-b/messages/" + currentID + "/moderation-metadata"
+		if r.URL.Path != want {
+			t.Errorf("path = %s, want %s", r.URL.Path, want)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bot token" {
+			t.Errorf("Authorization = %q, want Bot token", got)
+		}
+		if got := r.Header.Get("X-Test"); got != "moderation" {
+			t.Errorf("X-Test = %q, want moderation", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll returned error: %v", err)
+		}
+		assertLobbyJSONEqual(t, body, []byte(`{"action":"hide","reason":"toxicity"}`))
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})
+
+	metadata := map[string]string{"action": "hide", "reason": "toxicity"}
+	for _, messageID := range []string{"message-1", "message-2"} {
+		currentID = messageID
+		if err := session.GameDirectMessageModerationMetadataUpdate("user-a", "user-b", messageID, metadata, WithHeader("X-Test", "moderation")); err != nil {
+			t.Fatalf("GameDirectMessageModerationMetadataUpdate returned error: %v", err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("requests = %d, want 2", calls)
+	}
+
+	// Messages in the same DM share one bucket, like lobby messages.
+	session.Ratelimiter.Lock()
+	defer session.Ratelimiter.Unlock()
+	want := EndpointGameDirectMessageModerationMetadata("user-a", "user-b", "")
+	if _, ok := session.Ratelimiter.buckets[want]; !ok || len(session.Ratelimiter.buckets) != 1 {
+		t.Fatalf("buckets = %v, want only %q", session.Ratelimiter.buckets, want)
+	}
+}
+
+func TestGameDirectMessageModerationMetadataUpdateReturnsRESTErrors(t *testing.T) {
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"code":10008,"message":"Unknown Message"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	err = session.GameDirectMessageModerationMetadataUpdate("user-a", "user-b", "message", map[string]string{"action": "show"})
+	var restErr *RESTError
+	if !errors.As(err, &restErr) || restErr.Message == nil || restErr.Message.Code != ErrCodeUnknownMessage {
+		t.Fatalf("error = %v, want RESTError with code %d", err, ErrCodeUnknownMessage)
+	}
+}
+
+func guildCurrentMemberString(value string) **string {
+	pointer := &value
+	return &pointer
+}
+
+func TestGuildCurrentMemberParams(t *testing.T) {
+	var nullString *string
+
+	tests := []struct {
+		name   string
+		params GuildCurrentMemberParams
+		want   string
+	}{
+		{
+			name: "omits unset fields",
+			want: `{}`,
+		},
+		{
+			name: "sets fields",
+			params: GuildCurrentMemberParams{
+				Nick:   guildCurrentMemberString("Bot"),
+				Banner: guildCurrentMemberString("data:image/png;base64,banner"),
+				Avatar: guildCurrentMemberString("data:image/png;base64,avatar"),
+				Bio:    guildCurrentMemberString("Guild bot"),
+			},
+			want: `{"nick":"Bot","banner":"data:image/png;base64,banner","avatar":"data:image/png;base64,avatar","bio":"Guild bot"}`,
+		},
+		{
+			name: "clears fields",
+			params: GuildCurrentMemberParams{
+				Nick:   &nullString,
+				Banner: &nullString,
+				Avatar: &nullString,
+				Bio:    &nullString,
+			},
+			want: `{"nick":null,"banner":null,"avatar":null,"bio":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}
+
+func TestGuildCurrentMemberEditRequestAndResponse(t *testing.T) {
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		if r.URL.Path != "/guilds/guild/members/@me" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/members/@me")
+		}
+		if reason := r.Header.Get("X-Audit-Log-Reason"); reason != "profile%20refresh" {
+			t.Fatalf("X-Audit-Log-Reason = %q, want %q", reason, "profile%20refresh")
+		}
+
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		want := map[string]string{
+			"nick":   `"Bot"`,
+			"banner": `"data:image/png;base64,banner"`,
+			"avatar": `"data:image/png;base64,avatar"`,
+			"bio":    `"Guild bot"`,
+		}
+		for field, expected := range want {
+			if got := string(payload[field]); got != expected {
+				t.Fatalf("%s = %s, want %s", field, got, expected)
+			}
+		}
+
+		_, _ = w.Write([]byte(`{
+			"user":{"id":"current","username":"Bot"},
+			"nick":"Bot",
+			"banner":"banner-hash",
+			"avatar":"avatar-hash",
+			"roles":[]
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	member, err := session.GuildCurrentMemberEdit("guild", &GuildCurrentMemberParams{
+		Nick:   guildCurrentMemberString("Bot"),
+		Banner: guildCurrentMemberString("data:image/png;base64,banner"),
+		Avatar: guildCurrentMemberString("data:image/png;base64,avatar"),
+		Bio:    guildCurrentMemberString("Guild bot"),
+	}, WithAuditLogReason("profile refresh"))
+	if err != nil {
+		t.Fatalf("GuildCurrentMemberEdit returned error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+	if member == nil || member.User == nil || member.User.ID != "current" || member.GuildID != "guild" {
+		t.Fatalf("member = %#v", member)
+	}
+	if member.Nick != "Bot" || member.Banner != "banner-hash" || member.Avatar != "avatar-hash" {
+		t.Fatalf("member profile = %#v", member)
+	}
+}
+
+func TestGuildCurrentMemberEditNullableRequests(t *testing.T) {
+	var nullString *string
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+
+		switch requests {
+		case 1:
+			if len(payload) != 0 {
+				t.Fatalf("omitted payload = %#v, want empty object", payload)
+			}
+		case 2:
+			for _, field := range []string{"nick", "banner", "avatar", "bio"} {
+				if got := string(payload[field]); got != "null" {
+					t.Fatalf("%s = %s, want null", field, got)
+				}
+			}
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+
+		_, _ = w.Write([]byte(`{"user":{"id":"current","username":"Bot"},"roles":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	if _, err = session.GuildCurrentMemberEdit("guild", &GuildCurrentMemberParams{}); err != nil {
+		t.Fatalf("GuildCurrentMemberEdit omitted fields returned error: %v", err)
+	}
+	if _, err = session.GuildCurrentMemberEdit("guild", &GuildCurrentMemberParams{
+		Nick:   &nullString,
+		Banner: &nullString,
+		Avatar: &nullString,
+		Bio:    &nullString,
+	}); err != nil {
+		t.Fatalf("GuildCurrentMemberEdit null fields returned error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestGuildCurrentMemberEditFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/guilds/api-error/members/@me":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":50035,"message":"Invalid Form Body"}`))
+		case "/guilds/invalid-json/members/@me":
+			_, _ = w.Write([]byte(`{`))
+		case "/guilds/null-member/members/@me":
+			_, _ = w.Write([]byte(`null`))
+		case "/guilds/missing-user/members/@me":
+			_, _ = w.Write([]byte(`{"roles":[]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	for _, guildID := range []string{"api-error", "invalid-json", "null-member", "missing-user"} {
+		t.Run(guildID, func(t *testing.T) {
+			member, err := session.GuildCurrentMemberEdit(guildID, &GuildCurrentMemberParams{})
+			if err == nil {
+				t.Fatalf("GuildCurrentMemberEdit(%q) returned nil error", guildID)
+			}
+			if member != nil {
+				t.Fatalf("GuildCurrentMemberEdit(%q) member = %#v, want nil", guildID, member)
+			}
+		})
+	}
+}
+
+// https://docs.discord.com/developers/resources/guild#modify-guild
+func TestGuildEditExplicitResets(t *testing.T) {
+	verification := VerificationLevelNone
+	tests := []struct {
+		name   string
+		params GuildParams
+		want   string
+	}{
+		{"omitted", GuildParams{}, `{}`},
+		{"zero", GuildParams{DefaultMessageNotificationsSet: true, ExplicitContentFilterSet: true, SystemChannelFlagsSet: true, VerificationLevel: &verification}, `{"default_message_notifications":0,"explicit_content_filter":0,"system_channel_flags":0,"verification_level":0}`},
+		{"null", GuildParams{AfkChannelIDNull: true, IconNull: true, SplashNull: true, DiscoverySplashNull: true, BannerNull: true, SystemChannelIDNull: true, RulesChannelIDNull: true, PublicUpdatesChannelIDNull: true, DescriptionNull: true}, `{"afk_channel_id":null,"icon":null,"splash":null,"discovery_splash":null,"banner":null,"system_channel_id":null,"rules_channel_id":null,"public_updates_channel_id":null,"description":null}`},
+		{"legacy values", GuildParams{Name: "guild", DefaultMessageNotifications: 1, ExplicitContentFilter: 2, SystemChannelFlags: 1, AfkChannelID: "channel", Icon: "image", Splash: "splash", DiscoverySplash: "discovery", Banner: "banner", SystemChannelID: "system", RulesChannelID: "rules", PublicUpdatesChannelID: "updates", Description: "description", AfkTimeout: 300}, `{"name":"guild","default_message_notifications":1,"explicit_content_filter":2,"system_channel_flags":1,"afk_channel_id":"channel","icon":"image","splash":"splash","discovery_splash":"discovery","banner":"banner","system_channel_id":"system","rules_channel_id":"rules","public_updates_channel_id":"updates","description":"description","afk_timeout":300}`},
+		{"null precedence", GuildParams{AfkChannelID: "channel", AfkChannelIDNull: true, Icon: "image", IconNull: true}, `{"afk_channel_id":null,"icon":null}`},
+		{"set nonzero", GuildParams{DefaultMessageNotifications: 1, DefaultMessageNotificationsSet: true, ExplicitContentFilter: 2, ExplicitContentFilterSet: true, SystemChannelFlags: 1, SystemChannelFlagsSet: true}, `{"default_message_notifications":1,"explicit_content_filter":2,"system_channel_flags":1}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				if r.Method != http.MethodPatch || r.URL.Path != "/api/v"+APIVersion+"/guilds/guild" {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+				}
+				var got, want map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("body = %#v, want %s", got, tt.want)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"guild","name":"updated"}`)), Request: r}, nil
+			})
+			guild, err := session.GuildEdit("guild", &tt.params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !called || guild == nil || guild.Name != "updated" {
+				t.Fatalf("GuildEdit did not complete: %#v", guild)
+			}
+		})
+	}
+}
+
+func TestGuildEditNilParams(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("nil guild params must not send a request")
+		return nil, nil
+	})
+	guild, err := session.GuildEdit("guild", nil)
+	if err == nil || guild != nil {
+		t.Fatalf("GuildEdit(nil) = %#v, %v; want nil and error", guild, err)
+	}
+}
+
+func TestGuildHomeSettings(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		wantPath := "/api/v" + APIVersion + "/guilds/guild/new-member-welcome"
+		if r.Method != http.MethodGet || r.URL.Path != wantPath {
+			t.Fatalf("request = %s %s, want GET %s", r.Method, r.URL.Path, wantPath)
+		}
+		if got := r.Header.Get("X-Test"); got != "guild-home-settings" {
+			t.Fatalf("X-Test = %q, want guild-home-settings", got)
+		}
+
+		body := `{"guild_id":"guild","enabled":true,"welcome_message":{"author_ids":["author"],"message":"Welcome"},"new_member_actions":[{"channel_id":"rules","action_type":0,"title":"Read the rules","description":"Start here","emoji":{"id":null,"name":"👋","animated":false},"icon":"book"},{"channel_id":"chat","action_type":1,"title":"Say hello","description":"Meet everyone"}],"resource_channels":[{"channel_id":"faq","title":"FAQ","description":"Common questions","emoji":{"id":"emoji","name":null,"animated":true},"icon":"help"}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+
+	settings, err := session.GuildHomeSettings("guild", WithHeader("X-Test", "guild-home-settings"))
+	if err != nil {
+		t.Fatalf("GuildHomeSettings returned error: %v", err)
+	}
+	if settings == nil || settings.GuildID != "guild" || !settings.Enabled {
+		t.Fatalf("settings = %#v", settings)
+	}
+	if settings.WelcomeMessage == nil || settings.WelcomeMessage.Message != "Welcome" || len(settings.WelcomeMessage.AuthorIDs) != 1 || settings.WelcomeMessage.AuthorIDs[0] != "author" {
+		t.Fatalf("welcome message = %#v", settings.WelcomeMessage)
+	}
+	if len(settings.NewMemberActions) != 2 || settings.NewMemberActions[0].ActionType != GuildHomeNewMemberActionTypeView || settings.NewMemberActions[1].ActionType != GuildHomeNewMemberActionTypeTalk {
+		t.Fatalf("new member actions = %#v", settings.NewMemberActions)
+	}
+	if settings.NewMemberActions[0].Emoji == nil || settings.NewMemberActions[0].Emoji.Name != "👋" || settings.NewMemberActions[1].Emoji != nil {
+		t.Fatalf("new member action emojis = %#v", settings.NewMemberActions)
+	}
+	if len(settings.ResourceChannels) != 1 || settings.ResourceChannels[0].ChannelID != "faq" || settings.ResourceChannels[0].Emoji == nil || settings.ResourceChannels[0].Emoji.ID != "emoji" || !settings.ResourceChannels[0].Emoji.Animated {
+		t.Fatalf("resource channels = %#v", settings.ResourceChannels)
+	}
+}
+
+func TestGuildHomeSettingsResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantNil    bool
+		wantJSON   bool
+		wantREST   bool
+	}{
+		{name: "no content", statusCode: http.StatusNoContent, wantNil: true},
+		{name: "malformed JSON", statusCode: http.StatusOK, body: `{`, wantNil: true, wantJSON: true},
+		{name: "null JSON", statusCode: http.StatusOK, body: `null`, wantNil: true, wantJSON: true},
+		{name: "REST error", statusCode: http.StatusForbidden, body: `{"code":50001,"message":"Missing Access"}`, wantNil: true, wantREST: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.statusCode,
+					Status:     http.StatusText(tt.statusCode),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+
+			settings, err := session.GuildHomeSettings("guild")
+			if tt.wantJSON && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+			if tt.wantREST {
+				var restErr *RESTError
+				if !errors.As(err, &restErr) || restErr.Response.StatusCode != tt.statusCode {
+					t.Fatalf("error = %T %v, want %d RESTError", err, err, tt.statusCode)
+				}
+			}
+			if !tt.wantJSON && !tt.wantREST && err != nil {
+				t.Fatalf("GuildHomeSettings returned error: %v", err)
+			}
+			if tt.wantNil && settings != nil {
+				t.Fatalf("settings = %#v, want nil", settings)
+			}
+		})
+	}
+}
+
+func guildJoinRequestString(value string) **string {
+	pointer := &value
+	return &pointer
+}
+
+func guildJoinRequestSession(t *testing.T, handler http.HandlerFunc) *Session {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+	return session
+}
+
+func TestGuildJoinRequestActionParams(t *testing.T) {
+	var nullString *string
+	tests := []struct {
+		name   string
+		params GuildJoinRequestActionParams
+		want   string
+	}{
+		{
+			name: "omits unset rejection reason",
+			params: GuildJoinRequestActionParams{
+				Action: GuildJoinRequestApplicationStatusApproved,
+			},
+			want: `{"action":"APPROVED"}`,
+		},
+		{
+			name: "sets rejection reason",
+			params: GuildJoinRequestActionParams{
+				Action:          GuildJoinRequestApplicationStatusRejected,
+				RejectionReason: guildJoinRequestString("Incomplete answers"),
+			},
+			want: `{"action":"REJECTED","rejection_reason":"Incomplete answers"}`,
+		},
+		{
+			name: "clears rejection reason",
+			params: GuildJoinRequestActionParams{
+				Action:          GuildJoinRequestApplicationStatusRejected,
+				RejectionReason: &nullString,
+			},
+			want: `{"action":"REJECTED","rejection_reason":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}
+
+func TestGuildJoinRequests(t *testing.T) {
+	requests := 0
+	session := guildJoinRequestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/guilds/guild/requests" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/requests")
+		}
+		if got := r.Header.Get("X-Test"); got != "join-requests" {
+			t.Fatalf("X-Test = %q, want join-requests", got)
+		}
+
+		switch requests {
+		case 1:
+			if r.URL.RawQuery != "" {
+				t.Fatalf("query = %q, want empty", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{
+				"total":1,
+				"guild_join_requests":[{
+					"id":"request",
+					"created_at":"2026-07-12T10:00:00Z",
+					"reviewed_at":"2026-07-12T11:00:00Z",
+					"application_status":"REJECTED",
+					"rejection_reason":"Incomplete answers",
+					"guild_id":"guild",
+					"user_id":"applicant",
+					"user":{"id":"applicant","username":"Applicant"},
+					"form_responses":[
+						{"field_type":"MULTIPLE_CHOICE","label":"Pick one","description":"Choose","required":true,"choices":["One","Two"],"response":1},
+						{"field_type":"PARAGRAPH","label":"About you","description":"Tell us","required":true,"placeholder":"Details","response":"Long answer"},
+						{"field_type":"TERMS","label":"Rules","description":"Accept","required":true,"values":["Be kind"],"response":true},
+						{"field_type":"TEXT_INPUT","label":"Name","description":"Display name","required":false,"placeholder":"Name","response":"Applicant"}
+					],
+					"actioned_by_user":{"id":"reviewer","username":"Reviewer"}
+				}]
+			}`))
+		case 2:
+			if got := r.URL.Query().Get("status"); got != "SUBMITTED" {
+				t.Fatalf("status = %q, want SUBMITTED", got)
+			}
+			if got := r.URL.Query().Get("limit"); got != "100" {
+				t.Fatalf("limit = %q, want 100", got)
+			}
+			if got := r.URL.Query().Get("before"); got != "before" {
+				t.Fatalf("before = %q, want before", got)
+			}
+			if got := r.URL.Query().Get("after"); got != "after" {
+				t.Fatalf("after = %q, want after", got)
+			}
+			_, _ = w.Write([]byte(`{"total":0,"guild_join_requests":[]}`))
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	})
+
+	result, err := session.GuildJoinRequests("guild", WithHeader("X-Test", "join-requests"))
+	if err != nil {
+		t.Fatalf("GuildJoinRequests returned error: %v", err)
+	}
+	if result.Total != 1 || len(result.GuildJoinRequests) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	request := result.GuildJoinRequests[0]
+	if request.ID != "request" || request.GuildID != "guild" || request.UserID != "applicant" {
+		t.Fatalf("request ids = %#v", request)
+	}
+	if request.CreatedAt != time.Date(2026, time.July, 12, 10, 0, 0, 0, time.UTC) {
+		t.Fatalf("created_at = %v", request.CreatedAt)
+	}
+	if request.ReviewedAt == nil || *request.ReviewedAt != time.Date(2026, time.July, 12, 11, 0, 0, 0, time.UTC) {
+		t.Fatalf("reviewed_at = %v", request.ReviewedAt)
+	}
+	if request.ApplicationStatus == nil || *request.ApplicationStatus != GuildJoinRequestApplicationStatusRejected {
+		t.Fatalf("application_status = %v", request.ApplicationStatus)
+	}
+	if request.RejectionReason == nil || *request.RejectionReason != "Incomplete answers" {
+		t.Fatalf("rejection_reason = %v", request.RejectionReason)
+	}
+	if request.User == nil || request.User.ID != "applicant" || request.ActionedByUser == nil || request.ActionedByUser.ID != "reviewer" {
+		t.Fatalf("users = %#v, %#v", request.User, request.ActionedByUser)
+	}
+	if len(request.FormResponses) != 4 {
+		t.Fatalf("form responses = %#v", request.FormResponses)
+	}
+	multipleChoice, ok := request.FormResponses[0].(*GuildJoinRequestMultipleChoiceFormFieldResponse)
+	if !ok || multipleChoice.Type() != GuildMemberVerificationFormFieldTypeMultipleChoice || multipleChoice.Response == nil || *multipleChoice.Response != 1 || len(multipleChoice.Choices) != 2 {
+		t.Fatalf("multiple choice response = %#v", request.FormResponses[0])
+	}
+	paragraph, ok := request.FormResponses[1].(*GuildJoinRequestParagraphFormFieldResponse)
+	if !ok || paragraph.Response == nil || *paragraph.Response != "Long answer" {
+		t.Fatalf("paragraph response = %#v", request.FormResponses[1])
+	}
+	terms, ok := request.FormResponses[2].(*GuildJoinRequestTermsFormFieldResponse)
+	if !ok || terms.Response == nil || !*terms.Response || len(terms.Values) != 1 {
+		t.Fatalf("terms response = %#v", request.FormResponses[2])
+	}
+	textInput, ok := request.FormResponses[3].(*GuildJoinRequestTextInputFormFieldResponse)
+	if !ok || textInput.Response == nil || *textInput.Response != "Applicant" {
+		t.Fatalf("text input response = %#v", request.FormResponses[3])
+	}
+
+	result, err = session.GuildJoinRequestsWithOptions("guild", &GuildJoinRequestsOptions{
+		Status: GuildJoinRequestApplicationStatusSubmitted,
+		Limit:  100,
+		Before: "before",
+		After:  "after",
+	}, WithHeader("X-Test", "join-requests"))
+	if err != nil {
+		t.Fatalf("GuildJoinRequestsWithOptions returned error: %v", err)
+	}
+	if result.Total != 0 || result.GuildJoinRequests == nil || len(result.GuildJoinRequests) != 0 {
+		t.Fatalf("empty result = %#v", result)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestGuildJoinRequestAction(t *testing.T) {
+	var nullString *string
+	requests := 0
+	session := guildJoinRequestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		if r.URL.Path != "/guilds/guild/requests/request" {
+			t.Fatalf("path = %q, want action path", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Test"); got != "join-request-action" {
+			t.Fatalf("X-Test = %q, want join-request-action", got)
+		}
+
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		switch requests {
+		case 1:
+			if got := string(payload["action"]); got != `"APPROVED"` {
+				t.Fatalf("action = %s, want APPROVED", got)
+			}
+			if _, ok := payload["rejection_reason"]; ok {
+				t.Fatalf("rejection_reason was sent: %s", payload["rejection_reason"])
+			}
+		case 2:
+			if got := string(payload["action"]); got != `"REJECTED"` {
+				t.Fatalf("action = %s, want REJECTED", got)
+			}
+			if got := string(payload["rejection_reason"]); got != `"Incomplete answers"` {
+				t.Fatalf("rejection_reason = %s", got)
+			}
+		case 3:
+			if got := string(payload["rejection_reason"]); got != "null" {
+				t.Fatalf("rejection_reason = %s, want null", got)
+			}
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+
+		status := "APPROVED"
+		if requests > 1 {
+			status = "REJECTED"
+		}
+		_, _ = w.Write([]byte(`{"id":"request","created_at":"2026-07-12T10:00:00Z","reviewed_at":null,"application_status":"` + status + `","rejection_reason":null,"guild_id":"guild","user_id":"applicant","form_responses":null}`))
+	})
+
+	approved, err := session.GuildJoinRequestAction("guild", "request", &GuildJoinRequestActionParams{
+		Action: GuildJoinRequestApplicationStatusApproved,
+	}, WithHeader("X-Test", "join-request-action"))
+	if err != nil {
+		t.Fatalf("approve returned error: %v", err)
+	}
+	if approved.ApplicationStatus == nil || *approved.ApplicationStatus != GuildJoinRequestApplicationStatusApproved {
+		t.Fatalf("approved request = %#v", approved)
+	}
+
+	rejected, err := session.GuildJoinRequestAction("guild", "request", &GuildJoinRequestActionParams{
+		Action:          GuildJoinRequestApplicationStatusRejected,
+		RejectionReason: guildJoinRequestString("Incomplete answers"),
+	}, WithHeader("X-Test", "join-request-action"))
+	if err != nil {
+		t.Fatalf("reject returned error: %v", err)
+	}
+	if rejected.ApplicationStatus == nil || *rejected.ApplicationStatus != GuildJoinRequestApplicationStatusRejected {
+		t.Fatalf("rejected request = %#v", rejected)
+	}
+
+	if _, err = session.GuildJoinRequestAction("guild", "request", &GuildJoinRequestActionParams{
+		Action:          GuildJoinRequestApplicationStatusRejected,
+		RejectionReason: &nullString,
+	}, WithHeader("X-Test", "join-request-action")); err != nil {
+		t.Fatalf("null rejection reason returned error: %v", err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
+	}
+}
+
+func TestGuildJoinRequestNullableResponse(t *testing.T) {
+	session := guildJoinRequestSession(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"request",
+			"created_at":"2026-07-12T10:00:00Z",
+			"reviewed_at":null,
+			"application_status":null,
+			"rejection_reason":null,
+			"guild_id":"guild",
+			"user_id":"applicant",
+			"user":null,
+			"form_responses":null,
+			"actioned_by_user":null
+		}`))
+	})
+
+	request, err := session.GuildJoinRequestAction("guild", "request", &GuildJoinRequestActionParams{
+		Action: GuildJoinRequestApplicationStatusApproved,
+	})
+	if err != nil {
+		t.Fatalf("GuildJoinRequestAction returned error: %v", err)
+	}
+	if request.ReviewedAt != nil || request.ApplicationStatus != nil || request.RejectionReason != nil || request.User != nil || request.FormResponses != nil || request.ActionedByUser != nil {
+		t.Fatalf("nullable fields = %#v", request)
+	}
+}
+
+func TestGuildJoinRequestFailures(t *testing.T) {
+	session := guildJoinRequestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		guildID := strings.Split(strings.TrimPrefix(r.URL.Path, "/guilds/"), "/")[0]
+		switch guildID {
+		case "http-list", "http-action":
+			http.Error(w, `{"code":50035,"message":"Invalid Form Body"}`, http.StatusBadRequest)
+		case "malformed-list", "malformed-action":
+			_, _ = w.Write([]byte(`{`))
+		case "null-list", "null-action":
+			_, _ = w.Write([]byte(`null`))
+		case "missing-list":
+			_, _ = w.Write([]byte(`{"total":0}`))
+		case "null-item":
+			_, _ = w.Write([]byte(`{"total":1,"guild_join_requests":[null]}`))
+		case "invalid-form":
+			_, _ = w.Write([]byte(`{"total":1,"guild_join_requests":[{"id":"request","created_at":"2026-07-12T10:00:00Z","reviewed_at":null,"application_status":"SUBMITTED","rejection_reason":null,"guild_id":"guild","user_id":"applicant","form_responses":[{"field_type":"TERMS","values":[],"response":"yes"}]}]}`))
+		case "unknown-form":
+			_, _ = w.Write([]byte(`{"total":1,"guild_join_requests":[{"id":"request","created_at":"2026-07-12T10:00:00Z","reviewed_at":null,"application_status":"SUBMITTED","rejection_reason":null,"guild_id":"guild","user_id":"applicant","form_responses":[{"field_type":"UNKNOWN"}]}]}`))
+		default:
+			t.Fatalf("unexpected guild id %q", guildID)
+		}
+	})
+
+	listTests := []struct {
+		guildID     string
+		wantJSONErr bool
+	}{
+		{guildID: "http-list"},
+		{guildID: "malformed-list", wantJSONErr: true},
+		{guildID: "null-list", wantJSONErr: true},
+		{guildID: "missing-list", wantJSONErr: true},
+		{guildID: "null-item", wantJSONErr: true},
+		{guildID: "invalid-form", wantJSONErr: true},
+	}
+	for _, tt := range listTests {
+		t.Run(tt.guildID, func(t *testing.T) {
+			result, err := session.GuildJoinRequests(tt.guildID)
+			if err == nil {
+				t.Fatal("GuildJoinRequests returned nil error")
+			}
+			if result != nil {
+				t.Fatalf("result = %#v, want nil", result)
+			}
+			if tt.wantJSONErr && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+		})
+	}
+
+	result, err := session.GuildJoinRequests("unknown-form")
+	if err != nil {
+		t.Fatalf("unknown form response returned error: %v", err)
+	}
+	if len(result.GuildJoinRequests) != 1 || len(result.GuildJoinRequests[0].FormResponses) != 1 || result.GuildJoinRequests[0].FormResponses[0].Type() != "UNKNOWN" {
+		t.Fatalf("unknown form response = %#v", result)
+	}
+
+	actionTests := []struct {
+		guildID     string
+		wantJSONErr bool
+	}{
+		{guildID: "http-action"},
+		{guildID: "malformed-action", wantJSONErr: true},
+		{guildID: "null-action", wantJSONErr: true},
+	}
+	for _, tt := range actionTests {
+		t.Run(tt.guildID, func(t *testing.T) {
+			request, err := session.GuildJoinRequestAction(tt.guildID, "request", &GuildJoinRequestActionParams{
+				Action: GuildJoinRequestApplicationStatusApproved,
+			})
+			if err == nil {
+				t.Fatal("GuildJoinRequestAction returned nil error")
+			}
+			if request != nil {
+				t.Fatalf("request = %#v, want nil", request)
+			}
+			if tt.wantJSONErr && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+		})
+	}
+}
+
+// Discord's template example uses integer placeholder IDs and permissions.
+// https://docs.discord.com/developers/resources/guild-template#guild-template-object
+const guildTemplateSnapshotJSON = `{"code":"template","source_guild_id":"678070694164299796","serialized_source_guild":{"name":"Friends & Family","afk_channel_id":null,"system_channel_id":2,"roles":[{"id":0,"name":"@everyone","permissions":104324689}],"channels":[{"id":1,"name":"Text Channels","type":4,"parent_id":null},{"id":2,"name":"general","type":0,"parent_id":1,"permission_overwrites":[{"id":0,"type":0,"allow":9007199254740993,"deny":"1024"}]}]}}`
+
+func TestGuildTemplatePlaceholderIDs(t *testing.T) {
+	var template GuildTemplate
+	if err := json.Unmarshal([]byte(guildTemplateSnapshotJSON), &template); err != nil {
+		t.Fatal(err)
+	}
+	guild := template.SerializedSourceGuild
+	if template.Code != "template" || template.SourceGuildID != "678070694164299796" || guild == nil {
+		t.Fatalf("template = %#v", template)
+	}
+	if guild.Name != "Friends & Family" || guild.AfkChannelID != "" || guild.SystemChannelID != "2" {
+		t.Fatalf("guild = %#v", guild)
+	}
+	if len(guild.Roles) != 1 || guild.Roles[0].ID != "0" || guild.Roles[0].Permissions != 104324689 {
+		t.Fatalf("roles = %#v", guild.Roles)
+	}
+	if len(guild.Channels) != 2 || guild.Channels[0].ID != "1" || guild.Channels[0].ParentID != "" || guild.Channels[1].ID != "2" || guild.Channels[1].ParentID != "1" {
+		t.Fatalf("channels = %#v", guild.Channels)
+	}
+	overwrite := guild.Channels[1].PermissionOverwrites[0]
+	if overwrite.ID != "0" || overwrite.Allow != 9007199254740993 || overwrite.Deny != 1024 {
+		t.Fatalf("overwrite = %#v", overwrite)
+	}
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip GuildTemplate
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.SerializedSourceGuild.Channels[1].PermissionOverwrites[0].Allow != overwrite.Allow {
+		t.Fatal("round trip lost permission precision")
+	}
+}
+
+func TestGuildTemplateRESTPlaceholderIDs(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body := guildTemplateSnapshotJSON
+		if strings.HasSuffix(r.URL.Path, "/templates") && r.Method == http.MethodGet {
+			body = "[" + body + "]"
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	checks := map[string]func() (*GuildTemplate, error){
+		"get": func() (*GuildTemplate, error) { return session.GuildTemplate("template") },
+		"create": func() (*GuildTemplate, error) {
+			return session.GuildTemplateCreateWithError("guild", &GuildTemplateParams{Name: "test"})
+		},
+		"edit": func() (*GuildTemplate, error) {
+			return session.GuildTemplateEdit("guild", "template", &GuildTemplateParams{Name: "test"})
+		},
+		"list": func() (*GuildTemplate, error) {
+			templates, err := session.GuildTemplates("guild")
+			if err != nil {
+				return nil, err
+			}
+			if len(templates) != 1 {
+				t.Fatalf("templates = %#v", templates)
+			}
+			return templates[0], nil
+		},
+	}
+	for name, check := range checks {
+		t.Run(name, func(t *testing.T) {
+			template, err := check()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if template.SerializedSourceGuild.SystemChannelID != "2" {
+				t.Fatal("placeholder was not decoded")
+			}
+		})
+	}
+}
+
+func TestGuildTemplateSnapshotValidation(t *testing.T) {
+	for _, snapshot := range []string{
+		`null`, `{}`, `{"roles":null,"channels":[null]}`,
+		`{"system_channel_id":"2","roles":[{"id":"0","permissions":"104324689"}]}`,
+	} {
+		var template GuildTemplate
+		if err := json.Unmarshal([]byte(`{"serialized_source_guild":`+snapshot+`}`), &template); err != nil {
+			t.Errorf("valid snapshot %s: %v", snapshot, err)
+		}
+	}
+	for _, snapshot := range []string{
+		`[]`, `{"id":true}`, `{"id":1.5}`, `{"id":-1}`,
+		`{"id":18446744073709551616}`, `{"roles":{}}`,
+		`{"roles":[{"permissions":9223372036854775808}]}`,
+		`{"channels":[{"permission_overwrites":[{"allow":false}]}]}`,
+	} {
+		var template GuildTemplate
+		if err := json.Unmarshal([]byte(`{"serialized_source_guild":`+snapshot+`}`), &template); err == nil {
+			t.Errorf("invalid snapshot accepted: %s", snapshot)
+		}
+	}
+	var guild Guild
+	if err := json.Unmarshal([]byte(`{"roles":[{"id":0,"permissions":104324689}]}`), &guild); err == nil {
+		t.Fatal("ordinary guild decoding unexpectedly accepts template placeholders")
+	}
+}
+
+func guildWidgetSession(t *testing.T, handler http.HandlerFunc) *Session {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+	return session
+}
+
+func TestGuildWidget(t *testing.T) {
+	session := guildWidgetSession(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/guilds/guild/widget.json" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/widget.json")
+		}
+		if got := r.Header.Get("X-Test"); got != "guild-widget" {
+			t.Fatalf("X-Test = %q, want guild-widget", got)
+		}
+
+		_, _ = w.Write([]byte(`{
+			"id":"guild",
+			"name":"Guild",
+			"instant_invite":"https://discord.gg/widget",
+			"channels":[{"id":"channel","name":"Voice","position":2}],
+			"members":[{
+				"id":"0",
+				"username":"Member",
+				"discriminator":"0000",
+				"avatar":null,
+				"status":"online",
+				"avatar_url":"https://cdn.discordapp.com/widget-avatar.png",
+				"activity":{"name":"Game"},
+				"deaf":true,
+				"mute":false,
+				"self_deaf":false,
+				"self_mute":true,
+				"suppress":false,
+				"channel_id":"channel"
+			}],
+			"presence_count":42
+		}`))
+	})
+
+	widget, err := session.GuildWidget("guild", WithHeader("X-Test", "guild-widget"))
+	if err != nil {
+		t.Fatalf("GuildWidget returned error: %v", err)
+	}
+	if widget.ID != "guild" || widget.Name != "Guild" || widget.PresenceCount != 42 {
+		t.Fatalf("widget = %#v", widget)
+	}
+	if widget.InstantInvite == nil || *widget.InstantInvite != "https://discord.gg/widget" {
+		t.Fatalf("instant invite = %v", widget.InstantInvite)
+	}
+	if len(widget.Channels) != 1 || widget.Channels[0].ID != "channel" || widget.Channels[0].Name != "Voice" || widget.Channels[0].Position != 2 {
+		t.Fatalf("channels = %#v", widget.Channels)
+	}
+	if len(widget.Members) != 1 {
+		t.Fatalf("members = %#v", widget.Members)
+	}
+	member := widget.Members[0]
+	if member.ID != "0" || member.Username != "Member" || member.Discriminator != "0000" || member.Avatar != "" {
+		t.Fatalf("member user = %#v", member.User)
+	}
+	if member.Status != StatusOnline || member.AvatarURL != "https://cdn.discordapp.com/widget-avatar.png" || member.ChannelID != "channel" {
+		t.Fatalf("member presence = %#v", member)
+	}
+	if member.Activity == nil || member.Activity.Name != "Game" {
+		t.Fatalf("member activity = %#v", member.Activity)
+	}
+	if member.Deaf == nil || !*member.Deaf || member.Mute == nil || *member.Mute || member.SelfDeaf == nil || *member.SelfDeaf || member.SelfMute == nil || !*member.SelfMute || member.Suppress == nil || *member.Suppress {
+		t.Fatalf("member voice state = %#v", member)
+	}
+}
+
+func TestGuildWidgetFailures(t *testing.T) {
+	session := guildWidgetSession(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/guilds/malformed/widget.json":
+			_, _ = w.Write([]byte(`{`))
+		case "/guilds/null/widget.json":
+			_, _ = w.Write([]byte(`null`))
+		case "/guilds/rest-error/widget.json":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":50004,"message":"Guild widget disabled"}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	})
+
+	tests := []struct {
+		name          string
+		guildID       string
+		wantREST      bool
+		wantUnmarshal bool
+	}{
+		{name: "malformed response", guildID: "malformed", wantUnmarshal: true},
+		{name: "null response", guildID: "null", wantUnmarshal: true},
+		{name: "REST error", guildID: "rest-error", wantREST: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			widget, err := session.GuildWidget(tt.guildID)
+			if err == nil {
+				t.Fatal("GuildWidget returned nil error")
+			}
+			if widget != nil {
+				t.Fatalf("widget = %#v, want nil", widget)
+			}
+			if tt.wantUnmarshal && !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+			var restErr *RESTError
+			if tt.wantREST && !errors.As(err, &restErr) {
+				t.Fatalf("error = %v, want RESTError", err)
+			}
+		})
+	}
+}
+
+func TestGuildWidgetImageURL(t *testing.T) {
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = "https://example.com/api/v10/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	tests := []struct {
+		name  string
+		style GuildWidgetStyle
+		want  string
+	}{
+		{name: "default", want: "https://example.com/api/v10/guilds/guild/widget.png"},
+		{name: "shield", style: GuildWidgetStyleShield, want: "https://example.com/api/v10/guilds/guild/widget.png?style=shield"},
+		{name: "banner 1", style: GuildWidgetStyleBanner1, want: "https://example.com/api/v10/guilds/guild/widget.png?style=banner1"},
+		{name: "banner 2", style: GuildWidgetStyleBanner2, want: "https://example.com/api/v10/guilds/guild/widget.png?style=banner2"},
+		{name: "banner 3", style: GuildWidgetStyleBanner3, want: "https://example.com/api/v10/guilds/guild/widget.png?style=banner3"},
+		{name: "banner 4", style: GuildWidgetStyleBanner4, want: "https://example.com/api/v10/guilds/guild/widget.png?style=banner4"},
+		{name: "query encoding", style: GuildWidgetStyle("banner&custom"), want: "https://example.com/api/v10/guilds/guild/widget.png?style=banner%26custom"},
+	}
+
+	widget := &GuildWidget{ID: "guild"}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := widget.ImageURL(tt.style); got != tt.want {
+				t.Fatalf("ImageURL(%q) = %q, want %q", tt.style, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLobbyRESTEndpoints(t *testing.T) {
+	metadata := map[string]string{"mode": "ranked"}
+	nullMetadata := map[string]string(nil)
+	members := []LobbyMemberParams{
+		{
+			ID:       "user",
+			Metadata: &nullMetadata,
+		},
+	}
+	emptyMembers := []LobbyMemberParams{}
+	timeout := 300
+	canLink := LobbyMemberFlagCanLinkLobby
+	noFlags := LobbyMemberFlags(0)
+	messageFlags := MessageFlagsSuppressNotifications
+
+	lobbyResponse := `{
+		"id":"lobby",
+		"application_id":"app",
+		"metadata":null,
+		"members":[{"id":"user","metadata":null,"flags":1}],
+		"linked_channel":{"id":"channel","type":0}
+	}`
+	messageResponse := `{
+		"id":"message",
+		"type":0,
+		"content":"hello",
+		"lobby_id":"lobby",
+		"channel_id":"lobby",
+		"author":{"id":"user","username":"tester"},
+		"metadata":null,
+		"moderation_metadata":{"decision":"allow"},
+		"flags":4096,
+		"application_id":"app"
+	}`
+
+	tests := []struct {
+		name          string
+		method        string
+		path          string
+		query         string
+		authorization string
+		body          string
+		status        int
+		response      string
+		call          func(*Session) error
+	}{
+		{
+			name:          "create lobby",
+			method:        http.MethodPost,
+			path:          "/lobbies",
+			authorization: "Bot token",
+			body:          `{"metadata":{"mode":"ranked"},"members":[{"id":"user","metadata":null}],"idle_timeout_seconds":300}`,
+			status:        http.StatusCreated,
+			response:      lobbyResponse,
+			call: func(s *Session) error {
+				lobby, err := s.LobbyCreate(&LobbyParams{
+					Metadata:           &metadata,
+					Members:            &members,
+					IdleTimeoutSeconds: &timeout,
+				})
+				return checkLobby(lobby, err)
+			},
+		},
+		{
+			name:          "create or join lobby",
+			method:        http.MethodPut,
+			path:          "/lobbies",
+			authorization: "Bearer token",
+			body:          `{"secret":"match-secret","idle_timeout_seconds":300,"lobby_metadata":null,"member_metadata":{"mode":"ranked"}}`,
+			response:      lobbyResponse,
+			call: func(s *Session) error {
+				lobby, err := s.LobbyCreateOrJoin(&LobbyCreateOrJoinParams{
+					Secret:             "match-secret",
+					IdleTimeoutSeconds: &timeout,
+					LobbyMetadata:      &nullMetadata,
+					MemberMetadata:     &metadata,
+				})
+				return checkLobby(lobby, err)
+			},
+		},
+		{
+			name:          "get lobby",
+			method:        http.MethodGet,
+			path:          "/lobbies/lobby",
+			authorization: "Bot token",
+			response:      lobbyResponse,
+			call: func(s *Session) error {
+				lobby, err := s.Lobby("lobby")
+				return checkLobby(lobby, err)
+			},
+		},
+		{
+			name:          "modify lobby and clear members",
+			method:        http.MethodPatch,
+			path:          "/lobbies/lobby",
+			authorization: "Bot token",
+			body:          `{"metadata":null,"members":[],"idle_timeout_seconds":300}`,
+			response:      lobbyResponse,
+			call: func(s *Session) error {
+				lobby, err := s.LobbyEdit("lobby", &LobbyParams{
+					Metadata:           &nullMetadata,
+					Members:            &emptyMembers,
+					IdleTimeoutSeconds: &timeout,
+				})
+				return checkLobby(lobby, err)
+			},
+		},
+		{
+			name:          "delete lobby",
+			method:        http.MethodDelete,
+			path:          "/lobbies/lobby",
+			authorization: "Bot token",
+			status:        http.StatusNoContent,
+			call: func(s *Session) error {
+				return s.LobbyDelete("lobby")
+			},
+		},
+		{
+			name:          "add lobby member",
+			method:        http.MethodPut,
+			path:          "/lobbies/lobby/members/user",
+			authorization: "Bot token",
+			body:          `{"metadata":null,"flags":0}`,
+			response:      `{"id":"user","metadata":null,"flags":0}`,
+			call: func(s *Session) error {
+				member, err := s.LobbyMemberAdd("lobby", "user", &LobbyMemberParams{
+					ID:       "ignored-body-id",
+					Metadata: &nullMetadata,
+					Flags:    &noFlags,
+				})
+				if err != nil {
+					return err
+				}
+				if member == nil || member.ID != "user" || member.Metadata != nil || member.Flags != 0 {
+					return fmt.Errorf("unexpected member: %#v", member)
+				}
+				return nil
+			},
+		},
+		{
+			name:          "bulk update lobby members",
+			method:        http.MethodPost,
+			path:          "/lobbies/lobby/members/bulk",
+			authorization: "Bot token",
+			body:          `[{"id":"user","metadata":{"mode":"ranked"},"flags":1},{"id":"removed","remove_member":true}]`,
+			response:      `[{"id":"user","metadata":{"mode":"ranked"},"flags":1}]`,
+			call: func(s *Session) error {
+				updated, err := s.LobbyMembersBulkUpdate("lobby", []LobbyMemberUpdateParams{
+					{ID: "user", Metadata: &metadata, Flags: &canLink},
+					{ID: "removed", RemoveMember: true},
+				})
+				if err != nil {
+					return err
+				}
+				if len(updated) != 1 || updated[0].ID != "user" || updated[0].Flags != canLink {
+					return fmt.Errorf("unexpected updated members: %#v", updated)
+				}
+				return nil
+			},
+		},
+		{
+			name:          "remove lobby member",
+			method:        http.MethodDelete,
+			path:          "/lobbies/lobby/members/user",
+			authorization: "Bot token",
+			status:        http.StatusNoContent,
+			call: func(s *Session) error {
+				return s.LobbyMemberRemove("lobby", "user")
+			},
+		},
+		{
+			name:          "leave lobby",
+			method:        http.MethodDelete,
+			path:          "/lobbies/lobby/members/@me",
+			authorization: "Bearer token",
+			status:        http.StatusNoContent,
+			call: func(s *Session) error {
+				return s.LobbyLeave("lobby")
+			},
+		},
+		{
+			name:          "link channel",
+			method:        http.MethodPatch,
+			path:          "/lobbies/lobby/channel-linking",
+			authorization: "Bearer token",
+			body:          `{"channel_id":"channel"}`,
+			response:      lobbyResponse,
+			call: func(s *Session) error {
+				lobby, err := s.LobbyChannelLink("lobby", "channel")
+				return checkLobby(lobby, err)
+			},
+		},
+		{
+			name:          "unlink channel",
+			method:        http.MethodPatch,
+			path:          "/lobbies/lobby/channel-linking",
+			authorization: "Bearer token",
+			body:          `{}`,
+			response:      `{"id":"lobby","application_id":"app","metadata":{},"members":[]}`,
+			call: func(s *Session) error {
+				lobby, err := s.LobbyChannelUnlink("lobby")
+				if err != nil {
+					return err
+				}
+				if lobby == nil || lobby.LinkedChannel != nil {
+					return fmt.Errorf("unexpected lobby: %#v", lobby)
+				}
+				return nil
+			},
+		},
+		{
+			name:          "send lobby message",
+			method:        http.MethodPost,
+			path:          "/lobbies/lobby/messages",
+			authorization: "Bearer token",
+			body:          `{"content":"hello","metadata":null,"flags":4096}`,
+			status:        http.StatusCreated,
+			response:      messageResponse,
+			call: func(s *Session) error {
+				message, err := s.LobbyMessageSend("lobby", &LobbyMessageSendParams{
+					Content:  "hello",
+					Metadata: &nullMetadata,
+					Flags:    &messageFlags,
+				})
+				return checkLobbyMessage(message, err)
+			},
+		},
+		{
+			name:          "get lobby messages",
+			method:        http.MethodGet,
+			path:          "/lobbies/lobby/messages",
+			query:         "limit=200",
+			authorization: "Bearer token",
+			response:      "[" + messageResponse + "]",
+			call: func(s *Session) error {
+				messages, err := s.LobbyMessages("lobby", 200)
+				if err != nil {
+					return err
+				}
+				if len(messages) != 1 {
+					return fmt.Errorf("messages length = %d, want 1", len(messages))
+				}
+				return checkLobbyMessage(messages[0], nil)
+			},
+		},
+		{
+			name:          "get lobby messages with default limit",
+			method:        http.MethodGet,
+			path:          "/lobbies/lobby/messages",
+			authorization: "Bearer token",
+			response:      `[]`,
+			call: func(s *Session) error {
+				messages, err := s.LobbyMessages("lobby", 0)
+				if err != nil {
+					return err
+				}
+				if len(messages) != 0 {
+					return fmt.Errorf("messages length = %d, want 0", len(messages))
+				}
+				return nil
+			},
+		},
+		{
+			name:          "update moderation metadata",
+			method:        http.MethodPut,
+			path:          "/lobbies/lobby/messages/message/moderation-metadata",
+			authorization: "Bot token",
+			body:          `{"decision":"allow"}`,
+			status:        http.StatusNoContent,
+			call: func(s *Session) error {
+				return s.LobbyMessageModerationMetadataUpdate("lobby", "message", map[string]string{"decision": "allow"})
+			},
+		},
+		{
+			name:          "create channel invite for self",
+			method:        http.MethodPost,
+			path:          "/lobbies/lobby/members/@me/invites",
+			authorization: "Bearer token",
+			response:      `{"code":"invite"}`,
+			call: func(s *Session) error {
+				invite, err := s.LobbyChannelInviteCreate("lobby")
+				if err != nil {
+					return err
+				}
+				if invite == nil || invite.Code != "invite" {
+					return fmt.Errorf("unexpected invite: %#v", invite)
+				}
+				return nil
+			},
+		},
+		{
+			name:          "create channel invite for user",
+			method:        http.MethodPost,
+			path:          "/lobbies/lobby/members/user/invites",
+			authorization: "Bot token",
+			response:      `{"code":"invite"}`,
+			call: func(s *Session) error {
+				invite, err := s.LobbyChannelInviteCreateForUser("lobby", "user")
+				if err != nil {
+					return err
+				}
+				if invite == nil || invite.Code != "invite" {
+					return fmt.Errorf("unexpected invite: %#v", invite)
+				}
+				return nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != tt.method {
+					t.Errorf("method = %q, want %q", r.Method, tt.method)
+				}
+				if r.URL.Path != tt.path {
+					t.Errorf("path = %q, want %q", r.URL.Path, tt.path)
+				}
+				if r.URL.RawQuery != tt.query {
+					t.Errorf("query = %q, want %q", r.URL.RawQuery, tt.query)
+				}
+				if authorization := r.Header.Get("Authorization"); authorization != tt.authorization {
+					t.Errorf("Authorization = %q, want %q", authorization, tt.authorization)
+				}
+
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("ReadAll returned error: %v", err)
+				}
+				if tt.body == "" {
+					if len(body) != 0 {
+						t.Errorf("body = %s, want empty", body)
+					}
+				} else {
+					assertLobbyJSONEqual(t, body, []byte(tt.body))
+				}
+
+				status := tt.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				w.WriteHeader(status)
+				if tt.response != "" {
+					_, _ = w.Write([]byte(tt.response))
+				}
+			}))
+			defer server.Close()
+
+			oldEndpointLobbies := EndpointLobbies
+			EndpointLobbies = server.URL + "/lobbies"
+			defer func() {
+				EndpointLobbies = oldEndpointLobbies
+			}()
+
+			session, err := New(tt.authorization)
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client = server.Client()
+
+			if err := tt.call(session); err != nil {
+				t.Fatalf("call returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLobbyOptionalJSONFields(t *testing.T) {
+	nullMetadata := map[string]string(nil)
+	emptyMetadata := map[string]string{}
+	emptyMembers := []LobbyMemberParams{}
+	noFlags := LobbyMemberFlags(0)
+
+	tests := []struct {
+		name     string
+		value    interface{}
+		expected string
+	}{
+		{
+			name:     "omit optional lobby fields",
+			value:    LobbyParams{},
+			expected: `{}`,
+		},
+		{
+			name: "send null metadata and empty members",
+			value: LobbyParams{
+				Metadata: &nullMetadata,
+				Members:  &emptyMembers,
+			},
+			expected: `{"metadata":null,"members":[]}`,
+		},
+		{
+			name: "send empty metadata object",
+			value: LobbyCreateOrJoinParams{
+				Secret:         "secret",
+				LobbyMetadata:  &emptyMetadata,
+				MemberMetadata: &nullMetadata,
+			},
+			expected: `{"secret":"secret","lobby_metadata":{},"member_metadata":null}`,
+		},
+		{
+			name: "send explicit zero member flags",
+			value: LobbyMemberParams{
+				Flags: &noFlags,
+			},
+			expected: `{"flags":0}`,
+		},
+		{
+			name: "send null message metadata",
+			value: LobbyMessageSendParams{
+				Content:  "hello",
+				Metadata: &nullMetadata,
+			},
+			expected: `{"content":"hello","metadata":null}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+			assertLobbyJSONEqual(t, body, []byte(tt.expected))
+		})
+	}
+}
+
+func TestLobbyNilOptionalBodiesUseObjects(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session) error
+	}{
+		{
+			name: "create lobby",
+			call: func(s *Session) error {
+				_, err := s.LobbyCreate(nil)
+				return err
+			},
+		},
+		{
+			name: "edit lobby",
+			call: func(s *Session) error {
+				_, err := s.LobbyEdit("lobby", nil)
+				return err
+			},
+		},
+		{
+			name: "add lobby member",
+			call: func(s *Session) error {
+				_, err := s.LobbyMemberAdd("lobby", "user", nil)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("ReadAll returned error: %v", err)
+				}
+				assertLobbyJSONEqual(t, body, []byte(`{}`))
+				_, _ = w.Write([]byte(`{"id":"lobby","application_id":"app","metadata":{},"members":[]}`))
+			}))
+			defer server.Close()
+
+			oldEndpointLobbies := EndpointLobbies
+			EndpointLobbies = server.URL + "/lobbies"
+			defer func() {
+				EndpointLobbies = oldEndpointLobbies
+			}()
+
+			session, err := New("Bot token")
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			session.Client = server.Client()
+			if err := tt.call(session); err != nil {
+				t.Fatalf("call returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLobbyRESTError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":50035,"message":"Invalid Form Body"}`))
+	}))
+	defer server.Close()
+
+	oldEndpointLobbies := EndpointLobbies
+	EndpointLobbies = server.URL + "/lobbies"
+	defer func() {
+		EndpointLobbies = oldEndpointLobbies
+	}()
+
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	lobby, err := session.Lobby("lobby")
+	if lobby != nil {
+		t.Fatalf("lobby = %#v, want nil", lobby)
+	}
+	if err == nil {
+		t.Fatal("Lobby returned nil error")
+	}
+	var restErr *RESTError
+	if !errors.As(err, &restErr) {
+		t.Fatalf("error = %T, want *RESTError", err)
+	}
+	if restErr.Response.StatusCode != http.StatusBadRequest || restErr.Message == nil || restErr.Message.Code != 50035 {
+		t.Fatalf("unexpected REST error: %#v", restErr)
+	}
+}
+
+func TestLobbyInvalidResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":`))
+	}))
+	defer server.Close()
+
+	oldEndpointLobbies := EndpointLobbies
+	EndpointLobbies = server.URL + "/lobbies"
+	defer func() {
+		EndpointLobbies = oldEndpointLobbies
+	}()
+
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+
+	lobby, err := session.Lobby("lobby")
+	if lobby != nil {
+		t.Fatalf("lobby = %#v, want nil", lobby)
+	}
+	if !errors.Is(err, ErrJSONUnmarshal) {
+		t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+	}
+}
+
+func checkLobby(lobby *Lobby, err error) error {
+	if err != nil {
+		return err
+	}
+	if lobby == nil || lobby.ID != "lobby" || lobby.ApplicationID != "app" {
+		return fmt.Errorf("unexpected lobby: %#v", lobby)
+	}
+	if lobby.Metadata != nil || len(lobby.Members) != 1 || lobby.Members[0].Metadata != nil {
+		return fmt.Errorf("unexpected nullable lobby fields: %#v", lobby)
+	}
+	if lobby.Members[0].Flags != LobbyMemberFlagCanLinkLobby {
+		return fmt.Errorf("member flags = %d, want %d", lobby.Members[0].Flags, LobbyMemberFlagCanLinkLobby)
+	}
+	if lobby.LinkedChannel == nil || lobby.LinkedChannel.ID != "channel" {
+		return fmt.Errorf("unexpected linked channel: %#v", lobby.LinkedChannel)
+	}
+	return nil
+}
+
+func checkLobbyMessage(message *LobbyMessage, err error) error {
+	if err != nil {
+		return err
+	}
+	if message == nil || message.Message == nil {
+		return fmt.Errorf("unexpected message: %#v", message)
+	}
+	if message.ID != "message" || message.LobbyID != "lobby" || message.ChannelID != "lobby" {
+		return fmt.Errorf("unexpected message IDs: %#v", message)
+	}
+	if message.Author == nil || message.Author.ID != "user" || message.ApplicationID != "app" {
+		return fmt.Errorf("unexpected message author or application: %#v", message)
+	}
+	if message.Metadata != nil || message.ModerationMetadata["decision"] != "allow" {
+		return fmt.Errorf("unexpected message metadata: %#v", message)
+	}
+	if message.Flags != MessageFlagsSuppressNotifications {
+		return fmt.Errorf("message flags = %d, want %d", message.Flags, MessageFlagsSuppressNotifications)
+	}
+	return nil
+}
+
+func assertLobbyJSONEqual(t *testing.T, actual, expected []byte) {
+	t.Helper()
+
+	var actualJSON interface{}
+	if err := json.Unmarshal(actual, &actualJSON); err != nil {
+		t.Fatalf("actual body is not JSON: %q: %v", actual, err)
+	}
+	var expectedJSON interface{}
+	if err := json.Unmarshal(expected, &expectedJSON); err != nil {
+		t.Fatalf("expected body is not JSON: %q: %v", expected, err)
+	}
+	if !reflect.DeepEqual(actualJSON, expectedJSON) {
+		t.Errorf("body = %s, want %s", actual, expected)
+	}
+}
+
+func TestMessageEditUploadRetrySafety(t *testing.T) {
+	for _, api := range []struct {
+		name string
+		path string
+		edit func(*Session, []*File) (*Message, error)
+	}{
+		{
+			name: "channel", path: "/channels/channel/messages/message",
+			edit: func(s *Session, files []*File) (*Message, error) {
+				return s.ChannelMessageEditComplex(&MessageEdit{Channel: "channel", ID: "message", Files: files})
+			},
+		},
+		{
+			name: "webhook", path: "/webhooks/webhook/test-token/messages/message",
+			edit: func(s *Session, files []*File) (*Message, error) {
+				return s.WebhookMessageEdit("webhook", "test-token", "message", &WebhookEdit{Files: files})
+			},
+		},
+		{
+			name: "interaction", path: "/webhooks/application/test-token/messages/@original",
+			edit: func(s *Session, files []*File) (*Message, error) {
+				return s.InteractionResponseEdit(&Interaction{AppID: "application", Token: "test-token"}, &WebhookEdit{Files: files})
+			},
+		},
+	} {
+		for _, firstStatus := range []int{http.StatusBadGateway, http.StatusTooManyRequests} {
+			t.Run(fmt.Sprintf("%s/%d", api.name, firstStatus), func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.LogLevel = -1
+				attempts := 0
+				var attachments []*MessageAttachment
+				var responseClosures []chan struct{}
+				session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					defer func() { _ = r.Body.Close() }()
+					attempts++
+					if r.Method != http.MethodPatch || r.URL.Path != "/api/v"+APIVersion+api.path {
+						t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+					}
+					reader, err := r.MultipartReader()
+					if err != nil {
+						t.Fatal(err)
+					}
+					files, payloads := 0, 0
+					for {
+						part, err := reader.NextPart()
+						if err == io.EOF {
+							break
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						body, err := io.ReadAll(part)
+						if err != nil {
+							t.Fatal(err)
+						}
+						switch part.FormName() {
+						case "payload_json":
+							payloads++
+							var payload map[string]json.RawMessage
+							if err := json.Unmarshal(body, &payload); err != nil {
+								t.Fatal(err)
+							}
+							if _, replacing := payload["attachments"]; replacing {
+								t.Fatal("fixture must append uploads without replacing existing attachments")
+							}
+						case "files[0]":
+							files++
+							if part.FileName() != "upload.txt" || string(body) != "file contents" {
+								t.Fatal("upload filename or contents changed")
+							}
+						default:
+							t.Fatalf("unexpected multipart field %q", part.FormName())
+						}
+						if err := part.Close(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if files != 1 || payloads != 1 {
+						t.Fatalf("multipart files=%d payloads=%d, want one of each", files, payloads)
+					}
+					// Model the documented append semantics. A gateway error can
+					// follow a committed upload; a rate limit rejects it outright.
+					if attempts != 1 || firstStatus != http.StatusTooManyRequests {
+						attachments = append(attachments, &MessageAttachment{ID: fmt.Sprint(len(attachments) + 1), Filename: "upload.txt"})
+					}
+					status := http.StatusOK
+					body, err := json.Marshal(&Message{ID: "message", ChannelID: "channel", Attachments: attachments})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if attempts == 1 {
+						status = firstStatus
+						body = []byte(`{"message":"upstream response unavailable"}`)
+						if status == http.StatusTooManyRequests {
+							body = []byte(`{"message":"rate limited","retry_after":0.001,"global":false}`)
+						}
+					}
+					closed := make(chan struct{})
+					responseClosures = append(responseClosures, closed)
+					return &http.Response{
+						StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)),
+						Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r,
+						Body: &closeNotifyReadCloser{reader: strings.NewReader(string(body)), closed: closed},
+					}, nil
+				})
+				message, err := api.edit(session, []*File{{Name: "upload.txt", Reader: strings.NewReader("file contents")}})
+				if firstStatus == http.StatusBadGateway {
+					var restErr *RESTError
+					if !errors.As(err, &restErr) || restErr.Response.StatusCode != firstStatus || message != nil || attempts != 1 {
+						t.Errorf("ambiguous upload result: attempts=%d message=%v error=%v; want one attempt and original RESTError", attempts, message, err)
+					}
+				} else if err != nil || attempts != 2 || message == nil || len(message.Attachments) != 1 {
+					t.Errorf("rate-limited upload result: attempts=%d message=%v error=%v; want one successful retry", attempts, message, err)
+				}
+				if len(attachments) != 1 {
+					t.Errorf("uploaded attachments = %d, want 1; an ambiguous failure replayed the append", len(attachments))
+				}
+				for _, closed := range responseClosures {
+					select {
+					case <-closed:
+					default:
+						t.Error("response body was not closed")
+					}
+				}
+			})
+		}
+	}
+}
+
+func computedPermissionsSession(t *testing.T, handler func(*http.Request) (int, string)) *Session {
+	t.Helper()
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		status, body := handler(r)
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+	return session
+}
+
+func TestComputedPermissionsEndpoints(t *testing.T) {
+	implicitFalse := false
+	implicitTrue := true
+	const (
+		permissionsBody = `{"permissions":"2251799813685247"}`
+		wantPermissions = int64(2251799813685247)
+	)
+
+	tests := []struct {
+		name      string
+		call      func(*Session, string) (int64, error)
+		wantPath  func(string) string
+		wantQuery string
+		bucket    string
+	}{
+		{
+			name: "guild member",
+			call: func(s *Session, id string) (int64, error) {
+				return s.GuildMemberPermissions("guild", id, WithHeader("X-Test", "permissions"))
+			},
+			wantPath: func(id string) string { return "/guilds/guild/permissions/member/" + id },
+			bucket:   EndpointGuildMemberPermissions("guild", ""),
+		},
+		{
+			name: "guild role",
+			call: func(s *Session, id string) (int64, error) {
+				return s.GuildRolePermissions("guild", id, WithHeader("X-Test", "permissions"))
+			},
+			wantPath: func(id string) string { return "/guilds/guild/permissions/role/" + id },
+			bucket:   EndpointGuildRolePermissions("guild", ""),
+		},
+		{
+			name: "channel member",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelMemberPermissions("channel", id, WithHeader("X-Test", "permissions"))
+			},
+			wantPath: func(id string) string { return "/channels/channel/permissions/member/" + id },
+			bucket:   EndpointChannelMemberPermissions("channel", ""),
+		},
+		{
+			name: "channel member nil options",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelMemberPermissionsWithOptions("channel", id, nil, WithHeader("X-Test", "permissions"))
+			},
+			wantPath: func(id string) string { return "/channels/channel/permissions/member/" + id },
+			bucket:   EndpointChannelMemberPermissions("channel", ""),
+		},
+		{
+			name: "channel member empty options",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelMemberPermissionsWithOptions("channel", id, &ChannelPermissionsOptions{}, WithHeader("X-Test", "permissions"))
+			},
+			wantPath: func(id string) string { return "/channels/channel/permissions/member/" + id },
+			bucket:   EndpointChannelMemberPermissions("channel", ""),
+		},
+		{
+			name: "channel member implicit false",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelMemberPermissionsWithOptions("channel", id, &ChannelPermissionsOptions{Implicit: &implicitFalse}, WithHeader("X-Test", "permissions"))
+			},
+			wantPath:  func(id string) string { return "/channels/channel/permissions/member/" + id },
+			wantQuery: "implicit=false",
+			bucket:    EndpointChannelMemberPermissions("channel", ""),
+		},
+		{
+			name: "channel role",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelRolePermissions("channel", id, WithHeader("X-Test", "permissions"))
+			},
+			wantPath: func(id string) string { return "/channels/channel/permissions/role/" + id },
+			bucket:   EndpointChannelRolePermissions("channel", ""),
+		},
+		{
+			name: "channel role implicit true",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelRolePermissionsWithOptions("channel", id, &ChannelPermissionsOptions{Implicit: &implicitTrue}, WithHeader("X-Test", "permissions"))
+			},
+			wantPath:  func(id string) string { return "/channels/channel/permissions/role/" + id },
+			wantQuery: "implicit=true",
+			bucket:    EndpointChannelRolePermissions("channel", ""),
+		},
+		{
+			name: "channel role implicit false",
+			call: func(s *Session, id string) (int64, error) {
+				return s.ChannelRolePermissionsWithOptions("channel", id, &ChannelPermissionsOptions{Implicit: &implicitFalse}, WithHeader("X-Test", "permissions"))
+			},
+			wantPath:  func(id string) string { return "/channels/channel/permissions/role/" + id },
+			wantQuery: "implicit=false",
+			bucket:    EndpointChannelRolePermissions("channel", ""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			currentID := ""
+			session := computedPermissionsSession(t, func(r *http.Request) (int, string) {
+				calls++
+				if want := "/api/v" + APIVersion + tt.wantPath(currentID); r.URL.Path != want {
+					t.Errorf("path = %s, want %s", r.URL.Path, want)
+				}
+				if r.Method != http.MethodGet {
+					t.Errorf("method = %s, want %s", r.Method, http.MethodGet)
+				}
+				if got := r.Header.Get("X-Test"); got != "permissions" {
+					t.Errorf("X-Test = %q, want permissions", got)
+				}
+				if r.URL.RawQuery != tt.wantQuery {
+					t.Errorf("query = %q, want %q", r.URL.RawQuery, tt.wantQuery)
+				}
+				return http.StatusOK, permissionsBody
+			})
+
+			// Two targets share one bucket keyed on the major parameter.
+			for _, id := range []string{"first", "second"} {
+				currentID = id
+				before := calls
+				permissions, err := tt.call(session, id)
+				if err != nil {
+					t.Fatalf("call returned error: %v", err)
+				}
+				if calls != before+1 {
+					t.Fatalf("requests = %d, want %d", calls, before+1)
+				}
+				if permissions != wantPermissions {
+					t.Fatalf("permissions = %d, want %d", permissions, wantPermissions)
+				}
+			}
+
+			session.Ratelimiter.Lock()
+			defer session.Ratelimiter.Unlock()
+			if _, ok := session.Ratelimiter.buckets[tt.bucket]; !ok || len(session.Ratelimiter.buckets) != 1 {
+				keys := make([]string, 0, len(session.Ratelimiter.buckets))
+				for key := range session.Ratelimiter.buckets {
+					keys = append(keys, key)
+				}
+				t.Fatalf("buckets = %q, want only %q", keys, tt.bucket)
+			}
+		})
+	}
+}
+
+func TestComputedPermissionsPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session) (int64, error)
+		want string
+	}{
+		{"guild member", func(s *Session) (int64, error) { return s.GuildMemberPermissions("guild", "user") }, "/api/v" + APIVersion + "/guilds/guild/permissions/member/user"},
+		{"guild role", func(s *Session) (int64, error) { return s.GuildRolePermissions("guild", "role") }, "/api/v" + APIVersion + "/guilds/guild/permissions/role/role"},
+		{"channel member", func(s *Session) (int64, error) { return s.ChannelMemberPermissions("channel", "user") }, "/api/v" + APIVersion + "/channels/channel/permissions/member/user"},
+		{"channel role", func(s *Session) (int64, error) { return s.ChannelRolePermissions("channel", "role") }, "/api/v" + APIVersion + "/channels/channel/permissions/role/role"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := computedPermissionsSession(t, func(r *http.Request) (int, string) {
+				if r.URL.Path != tt.want {
+					t.Errorf("path = %s, want %s", r.URL.Path, tt.want)
+				}
+				return http.StatusOK, `{"permissions":"0"}`
+			})
+			permissions, err := tt.call(session)
+			if err != nil || permissions != 0 {
+				t.Fatalf("permissions = %d, err = %v; want 0, nil", permissions, err)
+			}
+		})
+	}
+}
+
+func TestComputedPermissionsRejectsMalformedResponses(t *testing.T) {
+	for _, body := range []string{
+		`null`,
+		`{}`,
+		`{"permissions":null}`,
+		`{"permissions":"not-a-number"}`,
+		`{"permissions":""}`,
+		`{"permissions":8}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			session := computedPermissionsSession(t, func(*http.Request) (int, string) {
+				return http.StatusOK, body
+			})
+			for name, call := range map[string]func() (int64, error){
+				"guild member":   func() (int64, error) { return session.GuildMemberPermissions("guild", "user") },
+				"guild role":     func() (int64, error) { return session.GuildRolePermissions("guild", "role") },
+				"channel member": func() (int64, error) { return session.ChannelMemberPermissions("channel", "user") },
+				"channel role":   func() (int64, error) { return session.ChannelRolePermissions("channel", "role") },
+			} {
+				permissions, err := call()
+				if !errors.Is(err, ErrJSONUnmarshal) {
+					t.Fatalf("%s error = %v, want ErrJSONUnmarshal", name, err)
+				}
+				if permissions != 0 {
+					t.Fatalf("%s permissions = %d, want 0", name, permissions)
+				}
+			}
+		})
+	}
+}
+
+func TestComputedPermissionsReturnsRESTErrors(t *testing.T) {
+	session := computedPermissionsSession(t, func(*http.Request) (int, string) {
+		return http.StatusForbidden, `{"code":50013,"message":"Missing Permissions"}`
+	})
+
+	permissions, err := session.ChannelMemberPermissions("channel", "user")
+	var restErr *RESTError
+	if !errors.As(err, &restErr) || restErr.Message == nil || restErr.Message.Code != ErrCodeMissingPermissions {
+		t.Fatalf("error = %v, want RESTError with code %d", err, ErrCodeMissingPermissions)
+	}
+	if permissions != 0 {
+		t.Fatalf("permissions = %d, want 0", permissions)
+	}
+}
+
+func TestSessionAllowedMentionsPreservesSharedPayloads(t *testing.T) {
+	content := "@everyone <@123> shared announcement"
+	message := func(mentions *MessageAllowedMentions) any {
+		return &MessageSend{Content: content, AllowedMentions: mentions}
+	}
+	messageEdit := func(mentions *MessageAllowedMentions) any {
+		return &MessageEdit{Channel: "channel", ID: "message", Content: &content, AllowedMentions: mentions}
+	}
+	webhook := func(mentions *MessageAllowedMentions) any {
+		return &WebhookParams{Content: content, AllowedMentions: mentions}
+	}
+	webhookEdit := func(mentions *MessageAllowedMentions) any {
+		return &WebhookEdit{Content: &content, AllowedMentions: mentions}
+	}
+	interaction := func(mentions *MessageAllowedMentions) any {
+		return &InteractionResponse{Type: InteractionResponseChannelMessageWithSource, Data: &InteractionResponseData{Content: content, AllowedMentions: mentions}}
+	}
+	tests := []struct {
+		name       string
+		newPayload func(*MessageAllowedMentions) any
+		call       func(*Session, any, string) error
+	}{
+		{"send", message, func(s *Session, payload any, id string) error {
+			_, err := s.ChannelMessageSendComplex(id, payload.(*MessageSend))
+			return err
+		}},
+		{"edit", messageEdit, func(s *Session, payload any, _ string) error {
+			_, err := s.ChannelMessageEditComplex(payload.(*MessageEdit))
+			return err
+		}},
+		{"forum", message, func(s *Session, payload any, id string) error {
+			_, err := s.ForumThreadStartComplex(id, &ThreadStart{Name: "thread", AutoArchiveDuration: 60}, payload.(*MessageSend))
+			return err
+		}},
+		{"webhook", webhook, func(s *Session, payload any, id string) error {
+			_, err := s.WebhookExecute(id, "token", true, payload.(*WebhookParams))
+			return err
+		}},
+		{"webhook_edit", webhookEdit, func(s *Session, payload any, id string) error {
+			_, err := s.WebhookMessageEdit(id, "token", "message", payload.(*WebhookEdit))
+			return err
+		}},
+		{"followup", webhook, func(s *Session, payload any, id string) error {
+			_, err := s.FollowupMessageCreate(&Interaction{AppID: "app", Token: id}, true, payload.(*WebhookParams))
+			return err
+		}},
+		{"followup_edit", webhookEdit, func(s *Session, payload any, id string) error {
+			_, err := s.FollowupMessageEdit(&Interaction{AppID: "app", Token: id}, "message", payload.(*WebhookEdit))
+			return err
+		}},
+		{"interaction", interaction, func(s *Session, payload any, id string) error {
+			return s.InteractionRespond(&Interaction{ID: id, Token: "token"}, payload.(*InteractionResponse))
+		}},
+	}
+	for _, tt := range tests {
+		for _, explicit := range []bool{false, true} {
+			t.Run(tt.name+"/explicit="+strconv.FormatBool(explicit), func(t *testing.T) {
+				var mentions *MessageAllowedMentions
+				if explicit {
+					mentions = &MessageAllowedMentions{Parse: []AllowedMentionType{AllowedMentionTypeUsers}}
+				}
+				payload := tt.newPayload(mentions)
+				before, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var requests atomic.Int32
+				var sessions [2]*Session
+				for i, parse := range [][]AllowedMentionType{{AllowedMentionTypeEveryone}, {}} {
+					s, err := New("")
+					if err != nil {
+						t.Fatal(err)
+					}
+					s.AllowedMentions = &MessageAllowedMentions{Parse: parse}
+					wantParse := parse
+					if explicit {
+						wantParse = mentions.Parse
+					}
+					s.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+						requests.Add(1)
+						var body map[string]json.RawMessage
+						if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+							return nil, err
+						}
+						field := ""
+						switch tt.name {
+						case "forum":
+							field = "message"
+						case "interaction":
+							field = "data"
+						}
+						if field != "" {
+							var nested map[string]json.RawMessage
+							if err := json.Unmarshal(body[field], &nested); err != nil {
+								return nil, err
+							}
+							body = nested
+						}
+						var got MessageAllowedMentions
+						if err := json.Unmarshal(body["allowed_mentions"], &got); err != nil {
+							return nil, err
+						}
+						if !reflect.DeepEqual(got.Parse, wantParse) {
+							return nil, fmt.Errorf("allowed_mentions.parse = %v, want %v", got.Parse, wantParse)
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"result"}`))}, nil
+					})
+					sessions[i] = s
+				}
+
+				const workers = 16
+				start := make(chan struct{})
+				results := make(chan error, workers)
+				for i := range workers {
+					go func() {
+						<-start
+						results <- tt.call(sessions[i%2], payload, strconv.Itoa(i+1))
+					}()
+				}
+				close(start)
+				var firstErr error
+				for range workers {
+					if err := <-results; err != nil && firstErr == nil {
+						firstErr = err
+					}
+				}
+				if firstErr != nil {
+					t.Error(firstErr)
+				}
+				// Both policies must also remain effective when the same payload is reused serially.
+				for i, s := range sessions {
+					if err := tt.call(s, payload, strconv.Itoa(workers+i+1)); err != nil {
+						t.Error(err)
+					}
+				}
+				if requests.Load() != workers+2 {
+					t.Errorf("requests = %d, want %d", requests.Load(), workers+2)
+				}
+				after, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Errorf("caller payload changed: before %s, after %s", before, after)
+				}
+			})
+		}
+	}
+}
+
+func TestRESTHelpersPreserveSharedEmbed(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Session, *MessageEmbed) error
+	}{
+		{"send", func(s *Session, embed *MessageEmbed) error {
+			_, err := s.ChannelMessageSendEmbed("channel", embed)
+			return err
+		}},
+		{"edit", func(s *Session, embed *MessageEmbed) error {
+			_, err := s.ChannelMessageEditEmbed("channel", "message", embed)
+			return err
+		}},
+		{"forum", func(s *Session, embed *MessageEmbed) error {
+			_, err := s.ForumThreadStartEmbed("channel", "thread", 60, embed)
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		for _, embedType := range []EmbedType{"", EmbedTypeRich} {
+			t.Run(tt.name+"/type="+string(embedType), func(t *testing.T) {
+				s, err := New("")
+				if err != nil {
+					t.Fatal(err)
+				}
+				embed := &MessageEmbed{Type: embedType, Title: "Shared announcement", Description: "Read-only content"}
+				var requests atomic.Int32
+				s.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					var payload struct {
+						Embeds  []MessageEmbed `json:"embeds"`
+						Message *MessageSend   `json:"message"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						return nil, err
+					}
+					embeds := payload.Embeds
+					if tt.name == "forum" && payload.Message != nil {
+						for _, item := range payload.Message.Embeds {
+							embeds = append(embeds, *item)
+						}
+					}
+					if len(embeds) != 1 || embeds[0].Title != "Shared announcement" || embeds[0].Description != "Read-only content" {
+						return nil, fmt.Errorf("unexpected request embeds: %+v", embeds)
+					}
+					// Discord defaults an omitted type to rich. Explicit types must survive encoding.
+					if embeds[0].Type != EmbedTypeRich && (embedType != "" || embeds[0].Type != "") {
+						return nil, fmt.Errorf("unexpected request embed type: %q", embeds[0].Type)
+					}
+					requests.Add(1)
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"result"}`))}, nil
+				})
+
+				const workers = 32
+				start := make(chan struct{})
+				results := make(chan error, workers)
+				for range workers {
+					go func() {
+						<-start
+						results <- tt.call(s, embed)
+					}()
+				}
+				close(start)
+				for range workers {
+					if err := <-results; err != nil {
+						t.Error(err)
+					}
+				}
+				if requests.Load() != workers {
+					t.Errorf("requests = %d, want %d", requests.Load(), workers)
+				}
+				if embed.Type != embedType {
+					t.Errorf("shared embed type changed to %q, want %q", embed.Type, embedType)
+				}
+			})
+		}
+	}
+}
+
+func TestRESTLegacyEmbedPreservesSharedPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		edit bool
+		call func(*Session, any) error
+	}{
+		{"send", false, func(s *Session, payload any) error {
+			_, err := s.ChannelMessageSendComplex("channel", payload.(*MessageSend))
+			return err
+		}},
+		{"edit", true, func(s *Session, payload any) error {
+			_, err := s.ChannelMessageEditComplex(payload.(*MessageEdit))
+			return err
+		}},
+		{"forum", false, func(s *Session, payload any) error {
+			_, err := s.ForumThreadStartComplex("channel", &ThreadStart{Name: "thread", AutoArchiveDuration: 60}, payload.(*MessageSend))
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		for _, conflict := range []bool{false, true} {
+			t.Run(tt.name+"/conflict="+strconv.FormatBool(conflict), func(t *testing.T) {
+				embed := &MessageEmbed{Title: "Reusable legacy embed"}
+				var payload any
+				if tt.edit {
+					data := &MessageEdit{Channel: "channel", ID: "message", Embed: embed}
+					if conflict {
+						data.Embeds = &[]*MessageEmbed{embed}
+					}
+					payload = data
+				} else {
+					data := &MessageSend{Embed: embed}
+					if conflict {
+						data.Embeds = []*MessageEmbed{embed}
+					}
+					payload = data
+				}
+				before, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s, err := New("")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var requests atomic.Int32
+				s.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					requests.Add(1)
+					var body struct {
+						MessageSend
+						Message *MessageSend `json:"message"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						return nil, err
+					}
+					embeds := body.Embeds
+					if tt.name == "forum" && body.Message != nil {
+						embeds = body.Message.Embeds
+					}
+					if len(embeds) != 1 || embeds[0].Title != "Reusable legacy embed" {
+						return nil, fmt.Errorf("unexpected request embeds: %+v", embeds)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"result"}`))}, nil
+				})
+
+				const workers = 16
+				start := make(chan struct{})
+				results := make(chan error, workers)
+				for range workers {
+					go func() {
+						<-start
+						results <- tt.call(s, payload)
+					}()
+				}
+				close(start)
+				check := func(err error) {
+					t.Helper()
+					if conflict {
+						if err == nil || err.Error() != "cannot specify both Embed and Embeds" {
+							t.Errorf("error = %v, want conflicting embed fields", err)
+						}
+					} else if err != nil {
+						t.Error(err)
+					}
+				}
+				for range workers {
+					check(<-results)
+				}
+				// The same legacy request must remain valid for subsequent calls too.
+				check(tt.call(s, payload))
+				check(tt.call(s, payload))
+				wantRequests := int32(workers + 2)
+				if conflict {
+					wantRequests = 0
+				}
+				if requests.Load() != wantRequests {
+					t.Errorf("requests = %d, want %d", requests.Load(), wantRequests)
+				}
+				after, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Errorf("caller payload changed: before %s, after %s", before, after)
+				}
+			})
+		}
+	}
+}
+
+func scheduledEventExceptionTime(value time.Time) **time.Time {
+	pointer := &value
+	return &pointer
+}
+
+func scheduledEventExceptionBool(value bool) **bool {
+	pointer := &value
+	return &pointer
+}
+
+func scheduledEventExceptionSession(t *testing.T, handler http.HandlerFunc) *Session {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+	return session
+}
+
+func TestGuildScheduledEventExceptionParams(t *testing.T) {
+	original := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	start := original.Add(time.Hour)
+	end := start.Add(2 * time.Hour)
+	var nullTime *time.Time
+	var nullBool *bool
+
+	tests := []struct {
+		name   string
+		params interface{}
+		want   string
+	}{
+		{
+			name: "create omits unset overrides",
+			params: GuildScheduledEventExceptionCreateParams{
+				OriginalScheduledStartTime: original,
+			},
+			want: `{"original_scheduled_start_time":"2026-07-20T12:00:00Z"}`,
+		},
+		{
+			name: "create sets overrides including false",
+			params: GuildScheduledEventExceptionCreateParams{
+				OriginalScheduledStartTime: original,
+				ScheduledStartTime:         scheduledEventExceptionTime(start),
+				ScheduledEndTime:           scheduledEventExceptionTime(end),
+				IsCanceled:                 scheduledEventExceptionBool(false),
+			},
+			want: `{"original_scheduled_start_time":"2026-07-20T12:00:00Z","scheduled_start_time":"2026-07-20T13:00:00Z","scheduled_end_time":"2026-07-20T15:00:00Z","is_canceled":false}`,
+		},
+		{
+			name: "create clears overrides",
+			params: GuildScheduledEventExceptionCreateParams{
+				OriginalScheduledStartTime: original,
+				ScheduledStartTime:         &nullTime,
+				ScheduledEndTime:           &nullTime,
+				IsCanceled:                 &nullBool,
+			},
+			want: `{"original_scheduled_start_time":"2026-07-20T12:00:00Z","scheduled_start_time":null,"scheduled_end_time":null,"is_canceled":null}`,
+		},
+		{
+			name:   "edit omits unset fields",
+			params: GuildScheduledEventExceptionEditParams{},
+			want:   `{}`,
+		},
+		{
+			name: "edit sets and clears fields",
+			params: GuildScheduledEventExceptionEditParams{
+				ScheduledStartTime: scheduledEventExceptionTime(start),
+				ScheduledEndTime:   &nullTime,
+				IsCanceled:         scheduledEventExceptionBool(true),
+			},
+			want: `{"scheduled_start_time":"2026-07-20T13:00:00Z","scheduled_end_time":null,"is_canceled":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+			assertJSONEqual(t, got, []byte(tt.want))
+		})
+	}
+}
+
+func TestGuildScheduledEventExceptionEndpoints(t *testing.T) {
+	original := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	start := original.Add(time.Hour)
+	end := start.Add(2 * time.Hour)
+	request := 0
+
+	session := scheduledEventExceptionSession(t, func(w http.ResponseWriter, r *http.Request) {
+		request++
+
+		switch request {
+		case 1:
+			if r.Method != http.MethodPost || r.URL.Path != "/guilds/guild/scheduled-events/event/exceptions" {
+				t.Fatalf("request = %s %s, want POST exception collection", r.Method, r.URL.Path)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode create payload returned error: %v", err)
+			}
+			if got := string(payload["original_scheduled_start_time"]); got != `"2026-07-20T12:00:00Z"` {
+				t.Fatalf("original_scheduled_start_time = %s", got)
+			}
+			if got := string(payload["scheduled_start_time"]); got != `"2026-07-20T13:00:00Z"` {
+				t.Fatalf("scheduled_start_time = %s", got)
+			}
+			if got := string(payload["is_canceled"]); got != "false" {
+				t.Fatalf("is_canceled = %s, want false", got)
+			}
+			_, _ = w.Write([]byte(`{"event_id":"event","event_exception_id":"exception","scheduled_start_time":"2026-07-20T13:00:00Z","scheduled_end_time":null,"is_canceled":false}`))
+		case 2:
+			if r.Method != http.MethodPatch || r.URL.Path != "/guilds/guild/scheduled-events/event/exceptions/exception" {
+				t.Fatalf("request = %s %s, want PATCH exception", r.Method, r.URL.Path)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode edit payload returned error: %v", err)
+			}
+			if got := string(payload["scheduled_end_time"]); got != `"2026-07-20T15:00:00Z"` {
+				t.Fatalf("scheduled_end_time = %s", got)
+			}
+			if got := string(payload["is_canceled"]); got != "true" {
+				t.Fatalf("is_canceled = %s, want true", got)
+			}
+			_, _ = w.Write([]byte(`{"event_id":"event","event_exception_id":"exception","scheduled_start_time":"2026-07-20T13:00:00Z","scheduled_end_time":"2026-07-20T15:00:00Z","is_canceled":true}`))
+		case 3:
+			if r.Method != http.MethodGet || r.URL.Path != "/guilds/guild/scheduled-events/event/exception/users" {
+				t.Fatalf("request = %s %s, want GET exception users", r.Method, r.URL.Path)
+			}
+			wantQuery := map[string][]string{
+				"after":       {"after"},
+				"before":      {"before"},
+				"limit":       {"25"},
+				"with_member": {"true"},
+			}
+			if got := map[string][]string(r.URL.Query()); !reflect.DeepEqual(got, wantQuery) {
+				t.Fatalf("query = %#v, want %#v", got, wantQuery)
+			}
+			_, _ = w.Write([]byte(`[{"guild_scheduled_event_id":"event","guild_scheduled_event_exception_id":"exception","user_id":"user","user":{"id":"user","username":"Subscriber"},"member":{"roles":[]},"response":1}]`))
+		case 4:
+			if r.Method != http.MethodGet || r.URL.Path != "/guilds/guild/scheduled-events/event/users/counts" {
+				t.Fatalf("request = %s %s, want GET user counts", r.Method, r.URL.Path)
+			}
+			wantIDs := []string{"exception", "other"}
+			if got := r.URL.Query()["guild_scheduled_event_exception_ids"]; !reflect.DeepEqual(got, wantIDs) {
+				t.Fatalf("exception ids = %#v, want %#v", got, wantIDs)
+			}
+			_, _ = w.Write([]byte(`{"guild_scheduled_event_count":12,"guild_scheduled_event_exception_counts":{"exception":4,"other":8}}`))
+		case 5:
+			if r.Method != http.MethodDelete || r.URL.Path != "/guilds/guild/scheduled-events/event/exceptions/exception" {
+				t.Fatalf("request = %s %s, want DELETE exception", r.Method, r.URL.Path)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %d: %s %s", request, r.Method, r.URL.Path)
+		}
+	})
+
+	created, err := session.GuildScheduledEventExceptionCreate("guild", "event", &GuildScheduledEventExceptionCreateParams{
+		OriginalScheduledStartTime: original,
+		ScheduledStartTime:         scheduledEventExceptionTime(start),
+		IsCanceled:                 scheduledEventExceptionBool(false),
+	})
+	if err != nil {
+		t.Fatalf("GuildScheduledEventExceptionCreate returned error: %v", err)
+	}
+	if created.EventID != "event" || created.EventExceptionID != "exception" || created.ScheduledStartTime == nil || !created.ScheduledStartTime.Equal(start) || created.ScheduledEndTime != nil || created.IsCanceled {
+		t.Fatalf("created exception = %#v", created)
+	}
+
+	edited, err := session.GuildScheduledEventExceptionEdit("guild", "event", "exception", &GuildScheduledEventExceptionEditParams{
+		ScheduledEndTime: scheduledEventExceptionTime(end),
+		IsCanceled:       scheduledEventExceptionBool(true),
+	})
+	if err != nil {
+		t.Fatalf("GuildScheduledEventExceptionEdit returned error: %v", err)
+	}
+	if edited.ScheduledEndTime == nil || !edited.ScheduledEndTime.Equal(end) || !edited.IsCanceled {
+		t.Fatalf("edited exception = %#v", edited)
+	}
+
+	users, err := session.GuildScheduledEventExceptionUsers("guild", "event", "exception", 25, true, "before", "after")
+	if err != nil {
+		t.Fatalf("GuildScheduledEventExceptionUsers returned error: %v", err)
+	}
+	if len(users) != 1 || users[0].GuildScheduledEventExceptionID == nil || *users[0].GuildScheduledEventExceptionID != "exception" || users[0].UserID != "user" || users[0].User == nil || users[0].User.ID != "user" || users[0].Member == nil || users[0].Response != GuildScheduledEventUserResponseInterested {
+		t.Fatalf("exception users = %#v", users)
+	}
+
+	counts, err := session.GuildScheduledEventUserCounts("guild", "event", []string{"exception", "other"})
+	if err != nil {
+		t.Fatalf("GuildScheduledEventUserCounts returned error: %v", err)
+	}
+	if counts.GuildScheduledEventCount != 12 || counts.GuildScheduledEventExceptionCounts["exception"] != 4 || counts.GuildScheduledEventExceptionCounts["other"] != 8 {
+		t.Fatalf("counts = %#v", counts)
+	}
+
+	if err = session.GuildScheduledEventExceptionDelete("guild", "event", "exception"); err != nil {
+		t.Fatalf("GuildScheduledEventExceptionDelete returned error: %v", err)
+	}
+	if request != 5 {
+		t.Fatalf("requests = %d, want 5", request)
+	}
+}
+
+func TestGuildScheduledEventExceptionNullableResponses(t *testing.T) {
+	request := 0
+	session := scheduledEventExceptionSession(t, func(w http.ResponseWriter, r *http.Request) {
+		request++
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		if rawQuery := r.URL.RawQuery; rawQuery != "" {
+			t.Fatalf("query = %q, want empty", rawQuery)
+		}
+
+		switch r.URL.Path {
+		case "/guilds/guild/scheduled-events/event/exception/users":
+			_, _ = w.Write([]byte("null"))
+		case "/guilds/guild/scheduled-events/event/users/counts":
+			_, _ = w.Write([]byte(`{"guild_scheduled_event_count":0,"guild_scheduled_event_exception_counts":{}}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	})
+
+	users, err := session.GuildScheduledEventExceptionUsers("guild", "event", "exception", 0, false, "", "")
+	if err != nil {
+		t.Fatalf("GuildScheduledEventExceptionUsers returned error: %v", err)
+	}
+	if users != nil {
+		t.Fatalf("users = %#v, want nil", users)
+	}
+
+	counts, err := session.GuildScheduledEventUserCounts("guild", "event", nil)
+	if err != nil {
+		t.Fatalf("GuildScheduledEventUserCounts returned error: %v", err)
+	}
+	if counts == nil || counts.GuildScheduledEventCount != 0 || counts.GuildScheduledEventExceptionCounts == nil || len(counts.GuildScheduledEventExceptionCounts) != 0 {
+		t.Fatalf("counts = %#v", counts)
+	}
+	if request != 2 {
+		t.Fatalf("requests = %d, want 2", request)
+	}
+}
+
+func TestGuildScheduledEventExceptionValidation(t *testing.T) {
+	requests := 0
+	session := scheduledEventExceptionSession(t, func(_ http.ResponseWriter, r *http.Request) {
+		requests++
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	})
+
+	if _, err := session.GuildScheduledEventExceptionCreate("guild", "event", nil); err == nil {
+		t.Fatal("GuildScheduledEventExceptionCreate returned nil error for nil data")
+	}
+	if _, err := session.GuildScheduledEventExceptionEdit("guild", "event", "exception", nil); err == nil {
+		t.Fatal("GuildScheduledEventExceptionEdit returned nil error for nil data")
+	}
+	if _, err := session.GuildScheduledEventUserCounts("guild", "event", make([]string, 11)); err == nil {
+		t.Fatal("GuildScheduledEventUserCounts returned nil error for 11 exception ids")
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
+func TestGuildScheduledEventExceptionHTTPFailures(t *testing.T) {
+	requests := 0
+	session := scheduledEventExceptionSession(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, `{"code":180005,"message":"invalid exception"}`, http.StatusBadRequest)
+	})
+
+	original := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "create",
+			call: func() error {
+				_, err := session.GuildScheduledEventExceptionCreate("guild", "event", &GuildScheduledEventExceptionCreateParams{OriginalScheduledStartTime: original})
+				return err
+			},
+		},
+		{
+			name: "edit",
+			call: func() error {
+				_, err := session.GuildScheduledEventExceptionEdit("guild", "event", "exception", &GuildScheduledEventExceptionEditParams{})
+				return err
+			},
+		},
+		{
+			name: "delete",
+			call: func() error {
+				return session.GuildScheduledEventExceptionDelete("guild", "event", "exception")
+			},
+		},
+		{
+			name: "users",
+			call: func() error {
+				_, err := session.GuildScheduledEventExceptionUsers("guild", "event", "exception", 0, false, "", "")
+				return err
+			},
+		},
+		{
+			name: "counts",
+			call: func() error {
+				_, err := session.GuildScheduledEventUserCounts("guild", "event", nil)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err == nil {
+				t.Fatal("call returned nil error")
+			}
+		})
+	}
+	if requests != len(tests) {
+		t.Fatalf("requests = %d, want %d", requests, len(tests))
+	}
+}
+
+func TestGuildScheduledEventExceptionMalformedResponses(t *testing.T) {
+	session := scheduledEventExceptionSession(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("{"))
+	})
+
+	original := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "create",
+			call: func() error {
+				_, err := session.GuildScheduledEventExceptionCreate("guild", "event", &GuildScheduledEventExceptionCreateParams{OriginalScheduledStartTime: original})
+				return err
+			},
+		},
+		{
+			name: "edit",
+			call: func() error {
+				_, err := session.GuildScheduledEventExceptionEdit("guild", "event", "exception", &GuildScheduledEventExceptionEditParams{})
+				return err
+			},
+		},
+		{
+			name: "users",
+			call: func() error {
+				_, err := session.GuildScheduledEventExceptionUsers("guild", "event", "exception", 0, false, "", "")
+				return err
+			},
+		},
+		{
+			name: "counts",
+			call: func() error {
+				_, err := session.GuildScheduledEventUserCounts("guild", "event", nil)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err == nil || !strings.Contains(err.Error(), "unexpected end of JSON input") {
+				t.Fatalf("error = %v, want JSON error", err)
+			}
+		})
+	}
+}
+
+func TestGuildScheduledEventExceptionRejectsNullObjectResponses(t *testing.T) {
+	original := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		body string
+		call func(*Session) error
+	}{
+		{
+			name: "create exception",
+			body: "null",
+			call: func(session *Session) error {
+				_, err := session.GuildScheduledEventExceptionCreate("guild", "event", &GuildScheduledEventExceptionCreateParams{OriginalScheduledStartTime: original})
+				return err
+			},
+		},
+		{
+			name: "edit exception",
+			body: "null",
+			call: func(session *Session) error {
+				_, err := session.GuildScheduledEventExceptionEdit("guild", "event", "exception", &GuildScheduledEventExceptionEditParams{})
+				return err
+			},
+		},
+		{
+			name: "null counts",
+			body: "null",
+			call: func(session *Session) error {
+				_, err := session.GuildScheduledEventUserCounts("guild", "event", nil)
+				return err
+			},
+		},
+		{
+			name: "missing exception counts",
+			body: `{"guild_scheduled_event_count":0,"guild_scheduled_event_exception_counts":null}`,
+			call: func(session *Session) error {
+				_, err := session.GuildScheduledEventUserCounts("guild", "event", nil)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := scheduledEventExceptionSession(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.body))
+			})
+			if err := tt.call(session); !errors.Is(err, ErrJSONUnmarshal) {
+				t.Fatalf("error = %v, want ErrJSONUnmarshal", err)
+			}
+		})
+	}
+}
+
+func TestGuildScheduledEventExceptionFields(t *testing.T) {
+	var event GuildScheduledEvent
+	if err := json.Unmarshal([]byte(`{
+		"id":"event",
+		"guild_id":"guild",
+		"scheduled_start_time":"2026-07-20T12:00:00Z",
+		"guild_scheduled_event_exceptions":[{
+			"event_id":"event",
+			"event_exception_id":"exception",
+			"scheduled_start_time":null,
+			"scheduled_end_time":"2026-07-20T14:00:00Z",
+			"is_canceled":false
+		}],
+		"user_rsvp":{
+			"guild_scheduled_event_id":"event",
+			"guild_scheduled_event_exception_id":null,
+			"user_id":"user",
+			"response":0
+		}
+	}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if len(event.Exceptions) != 1 || event.Exceptions[0].EventExceptionID != "exception" || event.Exceptions[0].ScheduledStartTime != nil || event.Exceptions[0].ScheduledEndTime == nil {
+		t.Fatalf("exceptions = %#v", event.Exceptions)
+	}
+	if event.UserRSVP == nil || event.UserRSVP.UserID != "user" || event.UserRSVP.GuildScheduledEventExceptionID != nil || event.UserRSVP.Response != GuildScheduledEventUserResponseUninterested {
+		t.Fatalf("user rsvp = %#v", event.UserRSVP)
+	}
+}
+
+func voiceStateString(value string) *string {
+	return &value
+}
+
+func voiceStateBool(value bool) *bool {
+	return &value
+}
+
+func voiceStateTime(value time.Time) **time.Time {
+	pointer := &value
+	return &pointer
+}
+
+func newVoiceStateRESTSession(t *testing.T, handler http.Handler) *Session {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	oldEndpointGuilds := EndpointGuilds
+	EndpointGuilds = server.URL + "/guilds/"
+	t.Cleanup(func() {
+		EndpointGuilds = oldEndpointGuilds
+	})
+
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	session.Client = server.Client()
+	return session
+}
+
+func TestUserVoiceStateCurrentUserRoute(t *testing.T) {
+	session := newVoiceStateRESTSession(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if r.URL.Path != "/guilds/guild/voice-states/@me" {
+			t.Fatalf("path = %q, want %q", r.URL.Path, "/guilds/guild/voice-states/@me")
+		}
+		if got := r.Header.Get("X-Voice-Test"); got != "current user" {
+			t.Fatalf("X-Voice-Test = %q, want %q", got, "current user")
+		}
+
+		_, _ = w.Write([]byte(`{
+			"guild_id":"guild",
+			"channel_id":"stage",
+			"user_id":"current",
+			"session_id":"session",
+			"deaf":false,
+			"mute":false,
+			"self_deaf":false,
+			"self_mute":false,
+			"self_video":false,
+			"suppress":true,
+			"request_to_speak_timestamp":null
+		}`))
+	}))
+
+	state, err := session.UserVoiceState("guild", "@me", WithHeader("X-Voice-Test", "current user"))
+	if err != nil {
+		t.Fatalf("UserVoiceState returned error: %v", err)
+	}
+	if state == nil || state.GuildID != "guild" || state.ChannelID != "stage" || state.UserID != "current" || !state.Suppress {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestVoiceStateEditRequests(t *testing.T) {
+	timestamp := time.Date(2026, time.July, 13, 12, 34, 56, 0, time.UTC)
+	var nullTime *time.Time
+
+	tests := []struct {
+		name string
+		path string
+		body string
+		call func(*Session, ...RequestOption) error
+	}{
+		{
+			name: "current user omits unset fields",
+			path: "/guilds/guild/voice-states/@me",
+			body: `{}`,
+			call: func(session *Session, options ...RequestOption) error {
+				return session.CurrentUserVoiceStateEdit("guild", &CurrentUserVoiceStateEditParams{}, options...)
+			},
+		},
+		{
+			name: "current user sends values including false",
+			path: "/guilds/guild/voice-states/@me",
+			body: `{"channel_id":"stage","suppress":false,"request_to_speak_timestamp":"2026-07-13T12:34:56Z"}`,
+			call: func(session *Session, options ...RequestOption) error {
+				return session.CurrentUserVoiceStateEdit("guild", &CurrentUserVoiceStateEditParams{
+					ChannelID:               voiceStateString("stage"),
+					Suppress:                voiceStateBool(false),
+					RequestToSpeakTimestamp: voiceStateTime(timestamp),
+				}, options...)
+			},
+		},
+		{
+			name: "current user clears request to speak",
+			path: "/guilds/guild/voice-states/@me",
+			body: `{"request_to_speak_timestamp":null}`,
+			call: func(session *Session, options ...RequestOption) error {
+				return session.CurrentUserVoiceStateEdit("guild", &CurrentUserVoiceStateEditParams{
+					RequestToSpeakTimestamp: &nullTime,
+				}, options...)
+			},
+		},
+		{
+			name: "user omits unset fields",
+			path: "/guilds/guild/voice-states/user",
+			body: `{}`,
+			call: func(session *Session, options ...RequestOption) error {
+				return session.UserVoiceStateEdit("guild", "user", &UserVoiceStateEditParams{}, options...)
+			},
+		},
+		{
+			name: "user sends values including false",
+			path: "/guilds/guild/voice-states/user",
+			body: `{"channel_id":"stage","suppress":false}`,
+			call: func(session *Session, options ...RequestOption) error {
+				return session.UserVoiceStateEdit("guild", "user", &UserVoiceStateEditParams{
+					ChannelID: voiceStateString("stage"),
+					Suppress:  voiceStateBool(false),
+				}, options...)
+			},
+		},
+	}
+
+	session := newVoiceStateRESTSession(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+
+		name := r.Header.Get("X-Voice-Test")
+		var expectedPath, expectedBody string
+		for _, tt := range tests {
+			if tt.name == name {
+				expectedPath = tt.path
+				expectedBody = tt.body
+				break
+			}
+		}
+		if expectedPath == "" {
+			t.Fatalf("unexpected X-Voice-Test %q", name)
+		}
+		if r.URL.Path != expectedPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, expectedPath)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		assertJSONEqual(t, body, []byte(expectedBody))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(session, WithHeader("X-Voice-Test", tt.name)); err != nil {
+				t.Fatalf("voice state edit returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestVoiceStateEditErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		call func(*Session, ...RequestOption) error
+	}{
+		{
+			name: "current user",
+			path: "/guilds/guild/voice-states/@me",
+			call: func(session *Session, options ...RequestOption) error {
+				return session.CurrentUserVoiceStateEdit("guild", &CurrentUserVoiceStateEditParams{}, options...)
+			},
+		},
+		{
+			name: "user",
+			path: "/guilds/guild/voice-states/user",
+			call: func(session *Session, options ...RequestOption) error {
+				return session.UserVoiceStateEdit("guild", "user", &UserVoiceStateEditParams{}, options...)
+			},
+		},
+	}
+
+	session := newVoiceStateRESTSession(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+
+		name := r.Header.Get("X-Voice-Test")
+		var expectedPath string
+		for _, tt := range tests {
+			if tt.name == name {
+				expectedPath = tt.path
+				break
+			}
+		}
+		if expectedPath == "" {
+			t.Fatalf("unexpected X-Voice-Test %q", name)
+		}
+		if r.URL.Path != expectedPath {
+			t.Fatalf("path = %q, want %q", r.URL.Path, expectedPath)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":50035,"message":"Invalid Form Body"}`))
+	}))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call(session, WithHeader("X-Voice-Test", tt.name))
+			if err == nil {
+				t.Fatal("voice state edit returned nil error")
+			}
+
+			var restErr *RESTError
+			if !errors.As(err, &restErr) {
+				t.Fatalf("error = %T, want *RESTError", err)
+			}
+			if restErr.Response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", restErr.Response.StatusCode, http.StatusBadRequest)
+			}
+		})
 	}
 }

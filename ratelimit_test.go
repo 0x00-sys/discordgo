@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unsafe"
 )
@@ -1021,4 +1022,420 @@ func sendBenchReq(endpoint string, rl *RateLimiter) {
 	headers.Set("Date", time.Now().Format(time.RFC850))
 
 	bucket.Release(headers)
+}
+
+func TestRateLimitFractionalSecondsPreserveDeadline(t *testing.T) {
+	for _, source := range []string{"route-header", "resource-body", "global-body"} {
+		for _, delay := range []struct {
+			seconds string
+			want    time.Duration
+		}{{"2.3", 2300 * time.Millisecond}, {"64.57", 64570 * time.Millisecond}} {
+			t.Run(fmt.Sprintf("%s/%s", source, delay.seconds), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					session, err := New("Bot test")
+					if err != nil {
+						t.Fatal(err)
+					}
+					attempts := 0
+					session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						attempts++
+						status, body := http.StatusOK, `{}`
+						headers := make(http.Header)
+						if attempts == 1 {
+							if source == "route-header" {
+								headers.Set("X-RateLimit-Remaining", "0")
+								headers.Set("X-RateLimit-Reset-After", delay.seconds)
+							} else {
+								status = http.StatusTooManyRequests
+								body = fmt.Sprintf(`{"message":"limited","retry_after":%s,"global":%t}`, delay.seconds, source == "global-body")
+							}
+						}
+						return &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+					})
+					request := func(bucket string) error {
+						_, err := session.RequestWithBucketID(http.MethodGet, "https://discord.com/"+bucket, nil, bucket, WithRetryOnRatelimit(false))
+						return err
+					}
+					started := time.Now()
+					err = request("limited")
+					if source == "route-header" {
+						if err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						var limited *RateLimitError
+						if !errors.As(err, &limited) {
+							t.Fatalf("first error = %v, want RateLimitError", err)
+						}
+						if limited.RetryAfter != delay.want {
+							t.Errorf("reported retry delay = %v, want %v", limited.RetryAfter, delay.want)
+						}
+					}
+					nextBucket := "limited"
+					if source == "global-body" {
+						nextBucket = "other"
+					}
+					if err := request(nextBucket); err != nil {
+						t.Fatal(err)
+					}
+					if elapsed := time.Since(started); elapsed != delay.want {
+						t.Errorf("second request sent after %v, want %v", elapsed, delay.want)
+					}
+					if attempts != 2 {
+						t.Fatalf("requests sent = %d, want 2", attempts)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestGlobalRateLimitPreservesLongestDeadline(t *testing.T) {
+	for _, authenticated := range []bool{true, false} {
+		for _, longerFirst := range []bool{true, false} {
+			t.Run(fmt.Sprintf("authenticated=%t/longerFirst=%t", authenticated, longerFirst), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					limiter := NewRatelimiter()
+					limiter.unauthenticatedGlobal = new(int64)
+					// Both requests are already in flight before either limit is known.
+					first, err := limiter.lockBucketContext(context.Background(), "first", authenticated)
+					if err != nil {
+						t.Fatal(err)
+					}
+					second, err := limiter.lockBucketContext(context.Background(), "second", authenticated)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resets := []string{"1", "0.1"}
+					if !longerFirst {
+						resets[0], resets[1] = resets[1], resets[0]
+					}
+					for i, bucket := range []*Bucket{first, second} {
+						if err := bucket.Release(http.Header{
+							"X-Ratelimit-Global":      {"true"},
+							"X-Ratelimit-Reset-After": {resets[i]},
+						}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					started := time.Now()
+					next, err := limiter.lockBucketContext(context.Background(), "next", authenticated)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := next.Release(nil); err != nil {
+						t.Fatal(err)
+					}
+					if elapsed := time.Since(started); elapsed != time.Second {
+						t.Fatalf("next request waited %v, want longest global delay of 1s", elapsed)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestRateLimitHeadersApplyBeforeBodyRead(t *testing.T) {
+	for _, scope := range []string{"resource", "global-flag", "global-scope"} {
+		for _, bodyFailed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/bodyFailed=%t", scope, bodyFailed), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					session, err := New("Bot test")
+					if err != nil {
+						t.Fatal(err)
+					}
+					headers := http.Header{"Retry-After": {"1"}}
+					switch scope {
+					case "resource":
+						headers.Set("X-RateLimit-Scope", "shared")
+						headers.Set("X-RateLimit-Remaining", "9")
+						headers.Set("X-RateLimit-Reset-After", "0.1")
+					case "global-flag":
+						headers.Set("X-RateLimit-Global", "true")
+					case "global-scope":
+						headers.Set("X-RateLimit-Scope", "global")
+					}
+					reader, writer := io.Pipe()
+					var attempts atomic.Int32
+					session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						if attempts.Add(1) == 1 {
+							return &http.Response{StatusCode: http.StatusTooManyRequests, Header: headers, Body: reader, Request: req}, nil
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+					})
+					request := func(bucket string) error {
+						_, err := session.RequestWithBucketID(http.MethodGet, "https://discord.com/"+bucket, nil, bucket, WithRetryOnRatelimit(false))
+						return err
+					}
+					first := make(chan error, 1)
+					go func() { first <- request("limited") }()
+					pending := true
+					defer func() {
+						_ = writer.CloseWithError(io.ErrUnexpectedEOF)
+						if pending {
+							if err := <-first; !errors.Is(err, io.ErrUnexpectedEOF) {
+								t.Errorf("first request error = %v, want unexpected EOF", err)
+							}
+						}
+					}()
+					// The first request has received its headers and is waiting for
+					// the body. A known cooldown must already protect later calls.
+					synctest.Wait()
+					if attempts.Load() != 1 {
+						t.Fatal("first request did not reach its response body")
+					}
+					if bodyFailed {
+						_ = writer.CloseWithError(io.ErrUnexpectedEOF)
+						err := <-first
+						pending = false
+						if !errors.Is(err, io.ErrUnexpectedEOF) {
+							t.Fatalf("first request error = %v, want unexpected EOF", err)
+						}
+					}
+					started := time.Now()
+					nextBucket := "other"
+					if scope == "resource" {
+						if err := request("other"); err != nil {
+							t.Fatal(err)
+						}
+						if elapsed := time.Since(started); elapsed != 0 {
+							t.Errorf("unrelated bucket delayed by resource limit: %v", elapsed)
+						}
+						nextBucket = "limited"
+					}
+					if err := request(nextBucket); err != nil {
+						t.Fatal(err)
+					}
+					if elapsed := time.Since(started); elapsed != time.Second {
+						t.Errorf("next request waited %v, want Retry-After delay of 1s", elapsed)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestResourceRateLimitDelaysOtherRequests(t *testing.T) {
+	for _, tc := range []struct {
+		retry bool
+		idle  time.Duration
+	}{{}, {retry: true}, {idle: rateLimitBucketTTL + time.Second}} {
+		t.Run(fmt.Sprintf("retry=%t/idle=%v", tc.retry, tc.idle), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				delay := time.Second + tc.idle
+				seconds := fmt.Sprintf("%.0f", delay.Seconds())
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				session.SyncEvents = true
+				limited := make(chan struct{})
+				session.AddHandler(func(_ *Session, _ *RateLimit) { close(limited) })
+				var attempts atomic.Int32
+				session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Path == "/limited" && attempts.Add(1) == 1 {
+						// Resource limits can leave normal route quota available.
+						return &http.Response{
+							StatusCode: http.StatusTooManyRequests,
+							Header: http.Header{
+								"Retry-After":             {seconds},
+								"X-Ratelimit-Remaining":   {"9"},
+								"X-Ratelimit-Reset-After": {"0.1"},
+								"X-Ratelimit-Scope":       {"shared"},
+							},
+							Body:    io.NopCloser(strings.NewReader(`{"message":"The resource is being rate limited.","retry_after":` + seconds + `,"global":false}`)),
+							Request: req,
+						}, nil
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+				})
+				request := func(bucket string) error {
+					_, err := session.RequestWithBucketID(http.MethodGet, "https://discord.com/"+bucket, nil, bucket, WithRetryOnRatelimit(tc.retry))
+					return err
+				}
+				started := time.Now()
+				first := make(chan error, 1)
+				go func() { first <- request("limited") }()
+				if tc.retry {
+					<-limited
+					// The original request is now waiting to retry.
+					synctest.Wait()
+				} else {
+					var rateLimitErr *RateLimitError
+					if err := <-first; !errors.As(err, &rateLimitErr) {
+						t.Fatalf("first request error = %v, want RateLimitError", err)
+					}
+				}
+				// Long resource limits must also survive idle bucket cleanup.
+				time.Sleep(tc.idle)
+				if err := request("other"); err != nil {
+					t.Fatal(err)
+				}
+				if elapsed := time.Since(started) - tc.idle; elapsed != 0 {
+					t.Errorf("unrelated bucket waited %v", elapsed)
+				}
+				if err := request("limited"); err != nil {
+					t.Fatal(err)
+				}
+				if elapsed := time.Since(started); elapsed != delay {
+					t.Errorf("next request to limited resource sent after %v, want %v", elapsed, delay)
+				}
+				if tc.retry {
+					if err := <-first; err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := int32(2)
+				if tc.retry {
+					want++
+				}
+				if got := attempts.Load(); got != want {
+					t.Errorf("limited attempts = %d, want %d", got, want)
+				}
+			})
+		})
+	}
+}
+
+func TestResourceRateLimitPreservesLongestBodyDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		session, err := New("Bot test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var attempts atomic.Int32
+		bodies := make(chan *io.PipeWriter, 2)
+		session.Client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if attempts.Add(1) <= 2 {
+				reader, writer := io.Pipe()
+				bodies <- writer
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     http.Header{"X-Ratelimit-Remaining": {"9"}},
+					Body:       reader,
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: req}, nil
+		})
+		request := func() error {
+			_, err := session.RequestWithBucketID(http.MethodGet, "https://discord.com/limited", nil, "limited", WithRetryOnRatelimit(false))
+			return err
+		}
+		done := make(chan error, 2)
+		writers := make([]*io.PipeWriter, 0, 2)
+		pending := 0
+		defer func() {
+			for _, writer := range writers {
+				_ = writer.Close()
+			}
+			for range pending {
+				<-done
+			}
+		}()
+		for range 2 {
+			pending++
+			go func() { done <- request() }()
+			writers = append(writers, <-bodies)
+			// Each request releases the shared bucket before its body arrives.
+			synctest.Wait()
+		}
+		for i, seconds := range []string{"1", "0.1"} {
+			if _, err := io.WriteString(writers[i], `{"message":"limited","retry_after":`+seconds+`,"global":false}`); err != nil {
+				t.Fatal(err)
+			}
+			if err := writers[i].Close(); err != nil {
+				t.Fatal(err)
+			}
+			var rateLimitErr *RateLimitError
+			err := <-done
+			pending--
+			if !errors.As(err, &rateLimitErr) {
+				t.Fatalf("request error = %v, want RateLimitError", err)
+			}
+		}
+		started := time.Now()
+		if err := request(); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(started); elapsed != time.Second {
+			t.Fatalf("next request waited %v, want longest body deadline of 1s", elapsed)
+		}
+	})
+}
+
+func TestBucketWaitRechecksGlobalLimit(t *testing.T) {
+	for _, initialGlobal := range []bool{false, true} {
+		for _, unauthenticated := range []bool{false, true} {
+			for _, cancelWait := range []bool{false, true} {
+				t.Run(fmt.Sprintf("initialGlobal=%v/unauthenticated=%v/cancel=%v", initialGlobal, unauthenticated, cancelWait), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						limiter := NewRatelimiter()
+						// Keep the unauthenticated deadline local to this test.
+						limiter.unauthenticatedGlobal = new(int64)
+						bucket, err := limiter.lockBucketContext(context.Background(), "waiting", !unauthenticated)
+						if err != nil {
+							t.Fatal(err)
+						}
+						// This request is already in flight when the first limit arrives.
+						other, err := limiter.lockBucketContext(context.Background(), "other", !unauthenticated)
+						if err != nil {
+							t.Fatal(err)
+						}
+						headers := http.Header{
+							"X-Ratelimit-Remaining":   {"0"},
+							"X-Ratelimit-Reset-After": {"0.1"},
+						}
+						if initialGlobal {
+							headers.Set("X-RateLimit-Global", "true")
+						}
+						if err := bucket.Release(headers); err != nil {
+							t.Fatal(err)
+						}
+						ctx := context.Background()
+						if cancelWait {
+							var cancel context.CancelFunc
+							ctx, cancel = context.WithTimeout(ctx, 500*time.Millisecond)
+							defer cancel()
+						}
+						done := make(chan error, 1)
+						started := time.Now()
+						go func() {
+							locked, err := limiter.LockBucketObjectContext(ctx, bucket)
+							if err == nil {
+								err = locked.Release(nil)
+							}
+							done <- err
+						}()
+						// The waiter has computed its first delay and is asleep.
+						synctest.Wait()
+						headers.Set("X-RateLimit-Global", "true")
+						headers.Set("X-RateLimit-Reset-After", "1")
+						if err := other.Release(headers); err != nil {
+							t.Fatal(err)
+						}
+						err = <-done
+						if cancelWait {
+							if !errors.Is(err, context.DeadlineExceeded) {
+								t.Errorf("wait error = %v, want context deadline exceeded", err)
+							}
+						} else if err != nil || time.Since(started) < time.Second {
+							t.Errorf("wait = %v, error = %v; want at least one second and no error", time.Since(started), err)
+						}
+						if active := atomic.LoadInt32(&bucket.activeRequests); active != 0 {
+							t.Errorf("activeRequests = %d, want zero", active)
+						}
+						// Cancellation must also release the bucket's acquisition queue.
+						locked, err := limiter.LockBucketObjectContext(context.Background(), bucket)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := locked.Release(nil); err != nil {
+							t.Fatal(err)
+						}
+					})
+				})
+			}
+		}
+	}
 }
