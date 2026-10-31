@@ -3017,7 +3017,7 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		}
 		if s.TrackMembers {
 			if t.Status == StatusOffline && (t.User == nil ||
-				(!t.avatarPresent && t.User.Avatar == "" && !t.globalNamePresent && t.User.GlobalName == "")) {
+				(!t.avatarPresent && t.User.Avatar == "" && !t.globalNamePresent && t.User.GlobalName == "" && t.User.Discriminator == "")) {
 				return
 			}
 			if t.User == nil || t.User.ID == "" {
@@ -3044,6 +3044,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				m = copyMember(m)
 				if t.Status != StatusOffline && m.User != nil && t.User.Username != "" {
 					m.User.Username = t.User.Username
+				}
+				if m.User != nil && t.User.Discriminator != "" {
+					m.User.Discriminator = t.User.Discriminator
 				}
 				if m.User != nil && (t.avatarPresent || t.User.Avatar != "") {
 					m.User.Avatar = t.User.Avatar
