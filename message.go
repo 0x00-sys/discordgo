@@ -287,6 +287,13 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	}
 	m.Nonce = string(v.RawNonce)
 	linkMessageInteractionMemberUser(m)
+	if m.Resolved != nil {
+		for _, member := range m.Resolved.Members {
+			if member != nil {
+				member.GuildID = m.GuildID
+			}
+		}
+	}
 	return err
 }
 
