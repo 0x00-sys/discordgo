@@ -1483,15 +1483,16 @@ func TestVoiceReconnectSnapshotsJoinState(t *testing.T) {
 			second = !second
 		}
 	}()
-	defer func() {
-		close(stopMutating)
-		<-mutatorDone
-	}()
-
 	reconnectDone := make(chan struct{})
 	go func() {
 		voice.reconnectWithResume(false, nil, nil)
 		close(reconnectDone)
+	}()
+	defer func() {
+		closeChannel(stopMutating)
+		<-mutatorDone
+		_ = voice.Disconnect()
+		<-reconnectDone
 	}()
 
 	var join voiceChannelJoinData
@@ -1508,6 +1509,14 @@ func TestVoiceReconnectSnapshotsJoinState(t *testing.T) {
 	if !coherentFirst && !coherentSecond {
 		t.Fatalf("reconnect sent mixed join state: %#v", join)
 	}
+	// The snapshot has reached the wire. Finish readiness on that channel
+	// instead of continuing to move the fixture between unrelated channels.
+	closeChannel(stopMutating)
+	<-mutatorDone
+	voice.Lock()
+	voice.ChannelID = *join.ChannelID
+	voice.Ready = true
+	voice.Unlock()
 	select {
 	case <-reconnectDone:
 	case <-time.After(3 * time.Second):
