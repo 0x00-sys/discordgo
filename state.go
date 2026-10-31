@@ -529,7 +529,7 @@ func presenceAddToGuild(guild *Guild, presence *Presence) error {
 			//ID Is a mandatory field so you should not need to check if it is empty
 			updated.User.ID = presence.User.ID
 
-			if presence.User.Avatar != "" {
+			if presence.avatarPresent || presence.User.Avatar != "" {
 				updated.User.Avatar = presence.User.Avatar
 			}
 			if presence.User.Discriminator != "" {
