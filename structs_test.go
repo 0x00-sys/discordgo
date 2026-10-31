@@ -10,6 +10,7 @@ package discordgo
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1220,5 +1221,396 @@ func TestDocumentedErrorCodes(t *testing.T) {
 		if tt.code != tt.want {
 			t.Errorf("%s = %d, want %d", tt.name, tt.code, tt.want)
 		}
+	}
+}
+
+func TestApplicationCurrentResponseFields(t *testing.T) {
+	var application Application
+	if err := json.Unmarshal([]byte(`{"type":4,"explicit_content_filter":1,"max_participants":100}`), &application); err != nil {
+		t.Fatalf("Unmarshal values returned error: %v", err)
+	}
+	if application.Type == nil || *application.Type != ApplicationTypeGuildRoleSubscriptions {
+		t.Fatalf("Type = %v", application.Type)
+	}
+	if application.ExplicitContentFilter != ApplicationExplicitContentFilterAlways {
+		t.Fatalf("ExplicitContentFilter = %v", application.ExplicitContentFilter)
+	}
+	if application.MaxParticipants == nil || *application.MaxParticipants != 100 {
+		t.Fatalf("MaxParticipants = %v", application.MaxParticipants)
+	}
+
+	application = Application{}
+	if err := json.Unmarshal([]byte(`{"type":null,"explicit_content_filter":0,"max_participants":null}`), &application); err != nil {
+		t.Fatalf("Unmarshal nulls returned error: %v", err)
+	}
+	if application.Type != nil || application.MaxParticipants != nil || application.ExplicitContentFilter != ApplicationExplicitContentFilterInherit {
+		t.Fatalf("nullable fields = %#v", application)
+	}
+
+	application = Application{}
+	if err := json.Unmarshal([]byte(`{}`), &application); err != nil {
+		t.Fatalf("Unmarshal omitted fields returned error: %v", err)
+	}
+	if application.Type != nil || application.MaxParticipants != nil {
+		t.Fatalf("omitted nullable fields = %#v", application)
+	}
+}
+
+func TestContentScanningFlagsJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		wire       int
+		attachment MessageAttachmentFlags
+		embed      MessageEmbedFlags
+		mediaWire  int
+		media      ContentScanMetadataFlags
+	}{
+		{"explicit", 16, MessageAttachmentFlagsContainsExplicitContent, MessageEmbedFlagsContainsExplicitContent, 1, ContentScanMetadataFlagsIsExplicitContent},
+		{"gore", 64, MessageAttachmentFlagsContainsGoreContent, MessageEmbedFlagsContainsGoreContent, 2, ContentScanMetadataFlagsIsGoreContent},
+		{"self harm", 128, MessageAttachmentFlagsContainsSelfHarmContent, MessageEmbedFlagsContainsSelfHarmContent, 4, ContentScanMetadataFlagsIsSelfHarmContent},
+		{"combined", 208, MessageAttachmentFlagsContainsExplicitContent | MessageAttachmentFlagsContainsGoreContent | MessageAttachmentFlagsContainsSelfHarmContent,
+			MessageEmbedFlagsContainsExplicitContent | MessageEmbedFlagsContainsGoreContent | MessageEmbedFlagsContainsSelfHarmContent, 7,
+			ContentScanMetadataFlagsIsExplicitContent | ContentScanMetadataFlagsIsGoreContent | ContentScanMetadataFlagsIsSelfHarmContent},
+		{"other flags", 32, MessageAttachmentFlagsIsAnimated, MessageEmbedFlagsIsContentInventoryEntry, 0, 0},
+		{"unknown bits", 1048592, MessageAttachmentFlagsContainsExplicitContent | 1<<20, MessageEmbedFlagsContainsExplicitContent | 1<<20, 1048577, ContentScanMetadataFlagsIsExplicitContent | 1<<20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type payload struct {
+				Attachment MessageAttachment         `json:"attachment"`
+				Embed      MessageEmbed              `json:"embed"`
+				Media      UnfurledMediaItem         `json:"media"`
+				Resolved   ResolvedUnfurledMediaItem `json:"resolved"`
+			}
+			raw := fmt.Sprintf(`{"attachment":{"flags":%d},"embed":{"flags":%d},"media":{"content_scan_metadata":{"flags":%d}},"resolved":{"content_scan_metadata":{"flags":%d}}}`, tc.wire, tc.wire, tc.mediaWire, tc.mediaWire)
+			var got payload
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Attachment.Flags != tc.attachment || got.Embed.Flags != tc.embed {
+				t.Fatalf("attachment/embed flags = %d/%d, want %d/%d", got.Attachment.Flags, got.Embed.Flags, tc.attachment, tc.embed)
+			}
+			for _, metadata := range []*ContentScanMetadata{got.Media.ContentScanMetadata, got.Resolved.ContentScanMetadata} {
+				if metadata == nil || metadata.Flags != tc.media {
+					t.Fatalf("scan metadata = %+v, want flags %d", metadata, tc.media)
+				}
+			}
+			data, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var roundTrip payload
+			if err := json.Unmarshal(data, &roundTrip); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, roundTrip) {
+				t.Fatal("content scanning fields changed after JSON round trip")
+			}
+		})
+	}
+}
+
+func TestContentScanMetadataPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want *ContentScanMetadata
+	}{
+		{"absent", `{"url":"attachment://image.png"}`, nil},
+		{"null", `{"url":"attachment://image.png","content_scan_metadata":null}`, nil},
+		{"zero flags", `{"url":"attachment://image.png","content_scan_metadata":{"flags":0}}`, &ContentScanMetadata{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var media UnfurledMediaItem
+			var resolved ResolvedUnfurledMediaItem
+			for _, target := range []interface{}{&media, &resolved} {
+				if err := json.Unmarshal([]byte(tc.raw), target); err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(data, &fields); err != nil {
+					t.Fatal(err)
+				}
+				metadata, present := fields["content_scan_metadata"]
+				if present != (tc.want != nil) || (present && string(metadata) != `{"flags":0}`) {
+					t.Fatalf("%T marshaled scan metadata = %s, present = %t", target, metadata, present)
+				}
+			}
+			if !reflect.DeepEqual(media.ContentScanMetadata, tc.want) || !reflect.DeepEqual(resolved.ContentScanMetadata, tc.want) {
+				t.Fatalf("unexpected metadata: media %+v, resolved %+v", media.ContentScanMetadata, resolved.ContentScanMetadata)
+			}
+		})
+	}
+	data, err := json.Marshal(MessageEmbed{Title: "existing embed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"title":"existing embed"}` {
+		t.Fatalf("zero embed flags changed existing JSON: %s", data)
+	}
+}
+
+func TestMessageUpdateContentScanning(t *testing.T) {
+	var initial MessageCreate
+	if err := json.Unmarshal([]byte(`{
+		"id":"message","channel_id":"channel","content":"media",
+		"attachments":[{"id":"attachment"}],"embeds":[{"type":"image"}],
+		"components":[{"type":12,"items":[{"media":{"url":"attachment://image.png"}}]}]
+	}`), &initial); err != nil {
+		t.Fatal(err)
+	}
+	state := newMessageUpdateState(t, initial.Message)
+	update := unmarshalMessageUpdate(t, `{
+		"id":"message","channel_id":"channel",
+		"attachments":[{"id":"attachment","flags":208}],
+		"embeds":[{"type":"components","flags":208,"components":[
+			{"type":17,"components":[{"type":13,"file":{"url":"attachment://image.png","content_scan_metadata":{"flags":4}}}]}]}],
+		"components":[
+			{"type":12,"items":[{"media":{"url":"attachment://image.png","content_scan_metadata":{"flags":1}}}]},
+			{"type":9,"components":[{"type":10,"content":"preview"}],"accessory":{"type":11,"media":{"url":"attachment://image.png","content_scan_metadata":{"flags":2}}}}
+		]
+	}`)
+	if err := state.OnInterface(&Session{StateEnabled: true}, update); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := state.Message("channel", "message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []*Message{update.Message, cached} {
+		if len(message.Attachments) != 1 || message.Attachments[0].Flags != 208 || len(message.Embeds) != 1 || message.Embeds[0].Flags != 208 {
+			t.Fatalf("message did not retain attachment/embed flags: %+v", message)
+		}
+		gallery := message.Components[0].(*MediaGallery)
+		thumbnail := message.Components[1].(*Section).Accessory.(*Thumbnail)
+		file := message.Embeds[0].Components[0].(*Container).Components[0].(*FileComponent)
+		for _, tc := range []struct {
+			metadata *ContentScanMetadata
+			want     ContentScanMetadataFlags
+		}{
+			{gallery.Items[0].Media.ContentScanMetadata, ContentScanMetadataFlagsIsExplicitContent},
+			{thumbnail.Media.ContentScanMetadata, ContentScanMetadataFlagsIsGoreContent},
+			{file.File.ContentScanMetadata, ContentScanMetadataFlagsIsSelfHarmContent},
+		} {
+			if tc.metadata == nil || tc.metadata.Flags != tc.want {
+				t.Fatalf("nested scan metadata = %+v, want flags %d", tc.metadata, tc.want)
+			}
+		}
+	}
+	before := update.BeforeUpdate
+	if cached.Content != "media" || before == nil || before.Attachments[0].Flags != 0 || before.Embeds[0].Flags != 0 || before.Components[0].(*MediaGallery).Items[0].Media.ContentScanMetadata != nil {
+		t.Fatal("scan update changed omitted content or the pre-update message")
+	}
+}
+
+func messageCreateWithMember(memberFields string) []byte {
+	return []byte(`{
+		"id":"message",
+		"channel_id":"channel",
+		"guild_id":"guild",
+		"content":"hello",
+		"timestamp":"2026-10-13T12:00:00.000000+00:00",
+		"author":{"id":"user","username":"User"},
+		"member":{
+			"roles":["role"],
+			"nick":"Nick",
+			"joined_at":"2025-05-16T22:51:16.692000+00:00",
+			"flags":0,
+			"communication_disabled_until":null` + memberFields + `
+		}
+	}`)
+}
+
+func TestMessageCreateMemberUnusualDMActivityUntil(t *testing.T) {
+	want := time.Date(2026, time.October, 14, 9, 30, 15, 692000000, time.UTC)
+
+	tests := []struct {
+		name   string
+		fields string
+		want   *time.Time
+	}{
+		{name: "set", fields: `,"unusual_dm_activity_until":"2026-10-14T09:30:15.692000+00:00"`, want: &want},
+		{name: "null", fields: `,"unusual_dm_activity_until":null`},
+		{name: "absent", fields: ``},
+		{name: "malformed string", fields: `,"unusual_dm_activity_until":"not-a-time"`},
+		{name: "empty string", fields: `,"unusual_dm_activity_until":""`},
+		{name: "number", fields: `,"unusual_dm_activity_until":1760434215`},
+		{name: "object", fields: `,"unusual_dm_activity_until":{"until":"2026-10-14T09:30:15Z"}`},
+		{name: "bool", fields: `,"unusual_dm_activity_until":true`},
+		{name: "array", fields: `,"unusual_dm_activity_until":["2026-10-14T09:30:15Z"]`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m MessageCreate
+			if err := json.Unmarshal(messageCreateWithMember(tt.fields), &m); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+
+			// The rest of the message and member must survive whatever the field holds.
+			if m.Message == nil || m.ID != "message" || m.Content != "hello" {
+				t.Fatalf("message = %#v, want message with ID and content intact", m.Message)
+			}
+			if m.Author == nil || m.Author.ID != "user" {
+				t.Fatalf("Author = %#v, want user", m.Author)
+			}
+			if m.Member == nil {
+				t.Fatal("Member is nil")
+			}
+			if m.Member.Nick != "Nick" || len(m.Member.Roles) != 1 || m.Member.Roles[0] != "role" {
+				t.Fatalf("Member = %#v, want nick and roles intact", m.Member)
+			}
+			if m.Member.User != m.Author || m.Member.GuildID != "guild" {
+				t.Fatal("Member was not linked to Author and guild")
+			}
+			if m.Member.JoinedAt.IsZero() {
+				t.Fatal("Member.JoinedAt is zero, want joined_at intact")
+			}
+
+			got := m.Member.UnusualDMActivityUntil
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("UnusualDMActivityUntil = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil || !got.Equal(*tt.want) {
+				t.Fatalf("UnusualDMActivityUntil = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMemberUnmarshalStillRejectsOtherMalformedFields(t *testing.T) {
+	var m Member
+	err := json.Unmarshal([]byte(`{"joined_at":"not-a-time","unusual_dm_activity_until":"2026-10-14T09:30:15Z"}`), &m)
+	if err == nil {
+		t.Fatal("json.Unmarshal returned nil error, want joined_at to stay strict")
+	}
+}
+
+func TestGuildMemberEventsUnusualDMActivityUntil(t *testing.T) {
+	data := []byte(`{
+		"guild_id":"guild",
+		"user":{"id":"user","username":"User"},
+		"roles":["role"],
+		"nick":"Nick",
+		"unusual_dm_activity_until":"2026-10-14T09:30:15Z"
+	}`)
+	want := time.Date(2026, time.October, 14, 9, 30, 15, 0, time.UTC)
+
+	check := func(t *testing.T, member *Member) {
+		t.Helper()
+		if member == nil {
+			t.Fatal("Member is nil")
+		}
+		if member.GuildID != "guild" || member.User == nil || member.User.ID != "user" || member.Nick != "Nick" {
+			t.Fatalf("Member = %#v, want guild, user and nick intact", member)
+		}
+		if member.UnusualDMActivityUntil == nil || !member.UnusualDMActivityUntil.Equal(want) {
+			t.Fatalf("UnusualDMActivityUntil = %v, want %v", member.UnusualDMActivityUntil, want)
+		}
+	}
+
+	t.Run("add", func(t *testing.T) {
+		var e GuildMemberAdd
+		if err := json.Unmarshal(data, &e); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		check(t, e.Member)
+	})
+	t.Run("update", func(t *testing.T) {
+		var e GuildMemberUpdate
+		if err := json.Unmarshal(data, &e); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		check(t, e.Member)
+		if e.BeforeUpdate != nil {
+			t.Fatalf("BeforeUpdate = %#v, want nil", e.BeforeUpdate)
+		}
+	})
+	t.Run("remove", func(t *testing.T) {
+		var e GuildMemberRemove
+		if err := json.Unmarshal(data, &e); err != nil {
+			t.Fatalf("json.Unmarshal returned error: %v", err)
+		}
+		check(t, e.Member)
+		if e.BeforeDelete != nil {
+			t.Fatalf("BeforeDelete = %#v, want nil", e.BeforeDelete)
+		}
+	})
+	t.Run("event registry", func(t *testing.T) {
+		for _, eventType := range []string{guildMemberAddEventType, guildMemberUpdateEventType, guildMemberRemoveEventType} {
+			value := registeredInterfaceProviders[eventType].New()
+			if err := json.Unmarshal(data, value); err != nil {
+				t.Fatalf("%s: json.Unmarshal returned error: %v", eventType, err)
+			}
+		}
+	})
+}
+
+func TestInteractionResolvedMemberUnusualDMActivityUntil(t *testing.T) {
+	// Shape taken from the resolved data examples in Discord's component reference.
+	var resolved ComponentInteractionDataResolved
+	err := json.Unmarshal([]byte(`{
+		"members":{
+			"1111111111111111111":{
+				"avatar":null,
+				"banner":null,
+				"collectibles":null,
+				"communication_disabled_until":null,
+				"flags":0,
+				"joined_at":"2025-05-16T22:51:16.692000+00:00",
+				"nick":null,
+				"pending":false,
+				"permissions":"2248473465835073",
+				"premium_since":null,
+				"roles":["2222222222222222222"],
+				"unusual_dm_activity_until":null
+			}
+		},
+		"users":{
+			"1111111111111111111":{"id":"1111111111111111111","username":"User"}
+		}
+	}`), &resolved)
+	if err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	member := resolved.Members["1111111111111111111"]
+	if member == nil {
+		t.Fatal("resolved member is nil")
+	}
+	if member.UnusualDMActivityUntil != nil {
+		t.Fatalf("UnusualDMActivityUntil = %v, want nil", member.UnusualDMActivityUntil)
+	}
+	if member.Permissions != 2248473465835073 || len(member.Roles) != 1 {
+		t.Fatalf("member = %#v, want permissions and roles intact", member)
+	}
+}
+
+func TestMemberMarshalUnusualDMActivityUntil(t *testing.T) {
+	plain, err := json.Marshal(&Member{Nick: "Nick"})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(plain), "unusual_dm_activity_until") {
+		t.Fatalf("member JSON = %s, want no unusual_dm_activity_until key when nil", plain)
+	}
+
+	until := time.Date(2026, time.October, 14, 9, 30, 15, 0, time.UTC)
+	data, err := json.Marshal(&Member{Nick: "Nick", UnusualDMActivityUntil: &until})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+
+	var member Member
+	if err := json.Unmarshal(data, &member); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if member.UnusualDMActivityUntil == nil || !member.UnusualDMActivityUntil.Equal(until) {
+		t.Fatalf("UnusualDMActivityUntil = %v, want %v", member.UnusualDMActivityUntil, until)
 	}
 }
