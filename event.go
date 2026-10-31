@@ -269,10 +269,17 @@ func setGuildIds(g *Guild) {
 	}
 
 	for _, vs := range g.VoiceStates {
-		if vs == nil {
-			continue
-		}
-		vs.GuildID = g.ID
+		setVoiceStateGuildID(vs, g.ID)
+	}
+}
+
+func setVoiceStateGuildID(state *VoiceState, guildID string) {
+	if state == nil {
+		return
+	}
+	state.GuildID = guildID
+	if state.Member != nil {
+		state.Member.GuildID = guildID
 	}
 }
 
@@ -315,6 +322,10 @@ func (s *Session) onInterfaceData(i interface{}) error {
 	case *GuildUpdate:
 		if t != nil {
 			setGuildIds(t.Guild)
+		}
+	case *VoiceStateUpdate:
+		if t != nil && t.VoiceState != nil {
+			setVoiceStateGuildID(t.VoiceState, t.GuildID)
 		}
 	}
 	return s.State.OnInterface(s, i)

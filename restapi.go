@@ -5798,6 +5798,9 @@ func (s *Session) UserVoiceState(guildID string, userID string, options ...Reque
 	}
 
 	err = unmarshal(body, &state)
+	if err == nil {
+		setVoiceStateGuildID(state, guildID)
+	}
 	return
 }
 
