@@ -6101,6 +6101,18 @@ func (s *Session) LobbyMessageModerationMetadataUpdate(lobbyID, messageID string
 	return
 }
 
+// GameDirectMessageModerationMetadataUpdate sets app-scoped moderation metadata
+// for a Social SDK game direct message using a Bot token. The two user IDs are
+// the DM participants, in either order. Metadata-only updates do not fire
+// webhook events; Discord delivers them to active game sessions only.
+// https://docs.discord.com/developers/discord-social-sdk/how-to/integrate-moderation#dm-messages
+func (s *Session) GameDirectMessageModerationMetadataUpdate(userID1, userID2, messageID string, metadata map[string]string, options ...RequestOption) (err error) {
+	endpoint := EndpointGameDirectMessageModerationMetadata(userID1, userID2, messageID)
+	bucketID := EndpointGameDirectMessageModerationMetadata(userID1, userID2, "")
+	_, err = s.RequestWithBucketID("PUT", endpoint, metadata, bucketID, options...)
+	return
+}
+
 // LobbyChannelInviteCreate creates a linked-channel invite for the current user
 // using a Bearer token with the sdk.social_layer scope.
 func (s *Session) LobbyChannelInviteCreate(lobbyID string, options ...RequestOption) (invite *LobbyInvite, err error) {
