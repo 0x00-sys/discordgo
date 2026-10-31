@@ -39,6 +39,7 @@ checked: **October 31, 2026**.
 | Aug 5 | File type filters for uploads and attachment options | ✅ `FileTypes` on file upload components and command options |
 | Aug 5 | Channel `application_id` can be `null` | Nothing to add. Decodes cleanly |
 | Jul 16 | `app_permissions` on resolved interaction channels | ✅ `Channel.AppPermissions` |
+| Jul 7 | Riot Games connections removed from user connections | Nothing to add |
 | Jun 24 | Attachment editing and `is_spoiler` | ✅ `MessageAttachment.IsSpoiler`, `MessageAttachmentFlagsIsSpoiler` |
 | Jun 16 | Subscription status values corrected | ✅ `SubscriptionStatusInactive` = 1, `SubscriptionStatusEnding` = 2 |
 | Jun 10 | Privileged intent policy changes | Nothing to add. Policy only |
@@ -86,7 +87,7 @@ left out because they don't touch the HTTP or gateway API. Full list:
 
 By the numbers, since the fork started:
 
-- 449 merged pull requests
+- 450 merged pull requests
 - 96 new `Session` methods (232 to 328)
 - 150 new exported types
 - About 41,700 lines of new tests, all run with the race detector
@@ -100,7 +101,7 @@ mostly in the gateway and voice reconnect paths. Many later fixes were small
 cache or metadata inconsistencies, so the pull request count overstates how
 broken things were.
 
-Every change ships with tests and gets an independent review. That gives real
+Every change ships with tests run under the race detector. That gives real
 confidence, but the tests use synthetic payloads. They don't prove behavior
 across real Discord reconnects, voice handshakes and outages. Voice and
 reconnect lifecycle handling is the most complex part of the library and has
