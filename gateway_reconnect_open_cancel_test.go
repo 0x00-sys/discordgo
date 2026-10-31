@@ -39,7 +39,7 @@ func TestReconnectCanceledBeforeOpenDoesNotDial(t *testing.T) {
 	}()
 	go func() {
 		defer close(done)
-		session.reconnect()
+		session.reconnect(session.reconnectCancelSignal())
 	}()
 	select {
 	case <-paused:

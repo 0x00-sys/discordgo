@@ -684,7 +684,7 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 				// There has been an error reading, close the websocket so that
 				// OnDisconnect event is emitted.
-				closed, err := s.closeWithCodeForConnection(wsConn, closeCode, shouldStartNewGatewaySessionOnClose(readErr))
+				closed, cancel, err := s.closeWithCodeForConnection(wsConn, closeCode, shouldStartNewGatewaySessionOnClose(readErr))
 				if err != nil {
 					s.log(LogWarning, "error closing session connection, %s", err)
 				}
@@ -698,7 +698,7 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 				}
 
 				s.log(LogInformational, "calling reconnect() now")
-				s.reconnect()
+				s.reconnect(cancel)
 			}
 
 			return
@@ -823,11 +823,11 @@ func (s *Session) heartbeat(wsConn *websocket.Conn, listening <-chan interface{}
 			} else {
 				s.log(LogError, "haven't gotten a heartbeat ACK for heartbeat sent %v ago, triggering a reconnection", time.Since(lastSent))
 			}
-			closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
+			closed, cancel, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
 			if !closed {
 				return
 			}
-			s.reconnect()
+			s.reconnect(cancel)
 			return
 		}
 		s.Lock()
@@ -1262,11 +1262,11 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 	// Must immediately disconnect from gateway and reconnect to new gateway.
 	if e.Operation == 7 {
 		s.log(LogInformational, "Closing and reconnecting in response to Op7")
-		closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
+		closed, cancel, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, false)
 		if !closed {
 			return e, nil
 		}
-		s.reconnect()
+		s.reconnect(cancel)
 		return e, nil
 	}
 
@@ -1285,12 +1285,12 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		// than leaving the gateway closed or repeatedly attempting a resume
 		// that cannot be known to be valid.
 		// Reset resume state atomically with the owning connection's close.
-		closed, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, err != nil || !resumable)
+		closed, cancel, _ := s.closeWithCodeForConnection(wsConn, websocket.CloseServiceRestart, err != nil || !resumable)
 		if !closed {
 			return e, err
 		}
 
-		s.reconnect()
+		s.reconnect(cancel)
 		return e, err
 	}
 
@@ -1787,12 +1787,11 @@ func (s *Session) disconnectVoiceConnections() {
 	}
 }
 
-func (s *Session) reconnect() {
+func (s *Session) reconnect(cancel <-chan struct{}) {
 
 	s.log(LogInformational, "called")
 
 	var err error
-	cancel := s.reconnectCancelSignal()
 
 	if s.ShouldReconnectOnError {
 
@@ -1918,24 +1917,26 @@ func (s *Session) CloseWithCode(closeCode int) (err error) {
 }
 
 func (s *Session) closeWithCode(closeCode int, cancelReconnect bool) (err error) {
-	_, err = s.closeGatewayConnection(nil, closeCode, cancelReconnect, false)
+	_, _, err = s.closeGatewayConnection(nil, closeCode, cancelReconnect, false)
 	return
 }
 
 // closeWithCodeForConnection closes the session only if wsConn is still the
-// current gateway connection.
-func (s *Session) closeWithCodeForConnection(wsConn *websocket.Conn, closeCode int, resetGatewayResume bool) (closed bool, err error) {
+// current gateway connection, and returns that connection's cancellation signal.
+func (s *Session) closeWithCodeForConnection(wsConn *websocket.Conn, closeCode int, resetGatewayResume bool) (closed bool, cancel <-chan struct{}, err error) {
 	return s.closeGatewayConnection(wsConn, closeCode, false, resetGatewayResume)
 }
 
-func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, cancelReconnect, resetGatewayResume bool) (closed bool, err error) {
+func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, cancelReconnect, resetGatewayResume bool) (closed bool, cancel <-chan struct{}, err error) {
 
 	s.log(LogInformational, "called")
 	s.Lock()
 	if wsConn != nil && s.wsConn != wsConn {
 		s.Unlock()
-		return false, nil
+		return false, nil, nil
 	}
+	// Capture before Disconnect callbacks can Close and explicitly Open again.
+	cancel = s.reconnectCancel
 	s.gatewayOpen = nil
 
 	if cancelReconnect {
@@ -1982,5 +1983,5 @@ func (s *Session) closeGatewayConnection(wsConn *websocket.Conn, closeCode int, 
 	s.log(LogInformational, "emit disconnect event")
 	s.handleEvent(disconnectEventType, &Disconnect{})
 
-	return true, err
+	return true, cancel, err
 }
