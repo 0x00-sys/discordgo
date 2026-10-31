@@ -1005,7 +1005,7 @@ func (s *State) guildSoundboardSoundsReplace(guildID string, sounds []*Soundboar
 	return nil
 }
 
-func (s *State) guildScheduledEventAdd(event *GuildScheduledEvent) (*GuildScheduledEvent, error) {
+func (s *State) guildScheduledEventAdd(event *GuildScheduledEvent, preserveUserCount bool) (*GuildScheduledEvent, error) {
 	if event == nil || event.ID == "" || event.GuildID == "" {
 		return nil, ErrStateInvalidData
 	}
@@ -1022,7 +1022,11 @@ func (s *State) guildScheduledEventAdd(event *GuildScheduledEvent) (*GuildSchedu
 	updated.GuildScheduledEvents = append([]*GuildScheduledEvent(nil), guild.GuildScheduledEvents...)
 	for i, cached := range guild.GuildScheduledEvents {
 		if cached != nil && cached.ID == event.ID {
-			updated.GuildScheduledEvents[i] = copyGuildScheduledEvent(event)
+			copied := copyGuildScheduledEvent(event)
+			if preserveUserCount {
+				copied.UserCount = cached.UserCount
+			}
+			updated.GuildScheduledEvents[i] = copied
 			s.replaceGuild(guild, &updated)
 			return copyGuildScheduledEvent(cached), nil
 		}
@@ -2747,12 +2751,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 		if t == nil || t.GuildScheduledEvent == nil {
 			return ErrStateInvalidData
 		}
-		_, err = s.guildScheduledEventAdd(t.GuildScheduledEvent)
+		_, err = s.guildScheduledEventAdd(t.GuildScheduledEvent, false)
 	case *GuildScheduledEventUpdate:
 		if t == nil || t.GuildScheduledEvent == nil {
 			return ErrStateInvalidData
 		}
-		t.BeforeUpdate, err = s.guildScheduledEventAdd(t.GuildScheduledEvent)
+		t.BeforeUpdate, err = s.guildScheduledEventAdd(t.GuildScheduledEvent, t.userCountMissing)
 	case *GuildScheduledEventDelete:
 		if t == nil || t.GuildScheduledEvent == nil {
 			return ErrStateInvalidData
