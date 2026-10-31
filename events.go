@@ -500,7 +500,7 @@ type PresenceUpdate struct {
 	GuildID string `json:"guild_id"`
 }
 
-// UnmarshalJSON retains whether the partial user supplied its avatar.
+// UnmarshalJSON retains which nullable fields the partial user supplied.
 func (p *PresenceUpdate) UnmarshalJSON(data []byte) error {
 	type presenceUpdate PresenceUpdate
 	var decoded presenceUpdate
@@ -512,13 +512,15 @@ func (p *PresenceUpdate) UnmarshalJSON(data []byte) error {
 	}
 	var fields struct {
 		User struct {
-			Avatar json.RawMessage `json:"avatar"`
+			Avatar     json.RawMessage `json:"avatar"`
+			GlobalName json.RawMessage `json:"global_name"`
 		} `json:"user"`
 	}
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	p.avatarPresent = len(fields.User.Avatar) != 0
+	p.globalNamePresent = len(fields.User.GlobalName) != 0
 	return nil
 }
 

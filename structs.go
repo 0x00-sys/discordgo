@@ -2619,8 +2619,9 @@ type Presence struct {
 	Since        *int         `json:"since"`
 	ClientStatus ClientStatus `json:"client_status"`
 
-	// Decoded presence updates distinguish an omitted avatar from a null clear.
-	avatarPresent bool
+	// Decoded presence updates distinguish omitted user fields from null clears.
+	avatarPresent     bool
+	globalNamePresent bool
 }
 
 // A TimeStamps struct contains start and end times used in the rich presence "playing .." Game
