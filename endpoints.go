@@ -332,6 +332,11 @@ var (
 	}
 	EndpointLobbyMemberInvites = func(lID, uID string) string { return EndpointLobbyMember(lID, uID) + "/invites" }
 
+	EndpointPartnerSDK                          = EndpointAPI + "partner-sdk/"
+	EndpointGameDirectMessageModerationMetadata = func(uID1, uID2, mID string) string {
+		return EndpointPartnerSDK + "dms/" + uID1 + "/" + uID2 + "/messages/" + mID + "/moderation-metadata"
+	}
+
 	EndpointOAuth2                     = EndpointAPI + "oauth2/"
 	EndpointOAuth2CurrentAuthorization = EndpointOAuth2 + "@me"
 	EndpointOAuth2Keys                 = EndpointOAuth2 + "keys"
