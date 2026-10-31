@@ -532,6 +532,9 @@ func presenceAddToGuild(guild *Guild, presence *Presence) error {
 			if presence.avatarPresent || presence.User.Avatar != "" {
 				updated.User.Avatar = presence.User.Avatar
 			}
+			if presence.globalNamePresent || presence.User.GlobalName != "" {
+				updated.User.GlobalName = presence.User.GlobalName
+			}
 			if presence.User.Discriminator != "" {
 				updated.User.Discriminator = presence.User.Discriminator
 			}
@@ -3013,7 +3016,8 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			}
 		}
 		if s.TrackMembers {
-			if t.Status == StatusOffline && (t.User == nil || (!t.avatarPresent && t.User.Avatar == "")) {
+			if t.Status == StatusOffline && (t.User == nil ||
+				(!t.avatarPresent && t.User.Avatar == "" && !t.globalNamePresent && t.User.GlobalName == "")) {
 				return
 			}
 			if t.User == nil || t.User.ID == "" {
@@ -3043,6 +3047,9 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 				}
 				if m.User != nil && (t.avatarPresent || t.User.Avatar != "") {
 					m.User.Avatar = t.User.Avatar
+				}
+				if m.User != nil && (t.globalNamePresent || t.User.GlobalName != "") {
+					m.User.GlobalName = t.User.GlobalName
 				}
 			}
 
