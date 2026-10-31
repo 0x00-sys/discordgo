@@ -82,6 +82,7 @@ const (
 )
 
 type gatewaySendRateLimiter struct {
+	presenceMu     sync.Mutex // Serializes presence admission through write completion.
 	mu             sync.Mutex
 	connection     *websocket.Conn
 	cancel         chan struct{}
@@ -1148,11 +1149,27 @@ func (s *Session) gatewayWriteJSON(data interface{}) (err error) {
 		return ErrWSNotFound
 	}
 	_, presence := data.(updateStatusOp)
+	if presence {
+		s.gatewaySendRateLimiter.presenceMu.Lock()
+		defer s.gatewaySendRateLimiter.presenceMu.Unlock()
+	}
 	if !s.gatewaySendRateLimiter.acquire(wsConn, presence) {
 		return ErrWSNotFound
 	}
 
-	return s.writeGatewayJSON(wsConn, data)
+	err = s.writeGatewayJSON(wsConn, data)
+	if err == nil && presence {
+		limiter := &s.gatewaySendRateLimiter
+		limiter.mu.Lock()
+		if limiter.connection == wsConn {
+			// Admission may precede the actual write by a socket or mutex
+			// delay. Keep the slot occupied until 20 seconds after completion.
+			last := (limiter.presenceNext + gatewayPresenceRateLimit - 1) % gatewayPresenceRateLimit
+			limiter.presenceSentAt[last] = limiter.timeNow()
+		}
+		limiter.mu.Unlock()
+	}
+	return err
 }
 
 func (s *Session) writeGatewayJSON(wsConn *websocket.Conn, data interface{}) (err error) {
