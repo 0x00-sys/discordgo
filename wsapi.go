@@ -1547,7 +1547,11 @@ func (s *Session) channelVoiceJoin(gID, cID string, mute, deaf bool, retryVoice 
 	err = voice.waitUntilConnected(cID, previousClose)
 	if err != nil {
 		s.log(LogWarning, "error waiting for voice to connect, %s", err)
+		// Channel changes commit their join version after the gateway write.
+		// Serialize cleanup with that commit before checking ownership.
+		s.voiceMutex.Lock()
 		voice.closeWithJoinVersion(&joinVersion)
+		s.voiceMutex.Unlock()
 		return
 	}
 
