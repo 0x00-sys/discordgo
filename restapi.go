@@ -2048,6 +2048,51 @@ func (s *Session) GuildRoleMemberCounts(guildID string, options ...RequestOption
 	return
 }
 
+// GuildMemberPermissions returns a member's computed guild permissions, combining their roles with @everyone.
+// https://docs.discord.com/developers/resources/guild#get-guild-member-permissions
+// guildID   : The ID of a Guild.
+// userID    : The ID of a User.
+func (s *Session) GuildMemberPermissions(guildID, userID string, options ...RequestOption) (int64, error) {
+	body, err := s.RequestWithBucketID("GET", EndpointGuildMemberPermissions(guildID, userID), nil, EndpointGuildMemberPermissions(guildID, ""), options...)
+	if err != nil {
+		return 0, err
+	}
+	return unmarshalComputedPermissions(body)
+}
+
+// GuildRolePermissions returns the combined guild permissions of a role and @everyone.
+// Other roles and member-specific restrictions are not included.
+// https://docs.discord.com/developers/resources/guild#get-guild-role-permissions
+// guildID   : The ID of a Guild.
+// roleID    : The ID of a Role.
+func (s *Session) GuildRolePermissions(guildID, roleID string, options ...RequestOption) (int64, error) {
+	body, err := s.RequestWithBucketID("GET", EndpointGuildRolePermissions(guildID, roleID), nil, EndpointGuildRolePermissions(guildID, ""), options...)
+	if err != nil {
+		return 0, err
+	}
+	return unmarshalComputedPermissions(body)
+}
+
+// unmarshalComputedPermissions decodes the stringified bitfield returned by the
+// computed permission endpoints. A missing or null field is an error rather
+// than a zero bitfield, which would be indistinguishable from no permissions.
+func unmarshalComputedPermissions(body []byte) (int64, error) {
+	var response *struct {
+		Permissions *string `json:"permissions"`
+	}
+	if err := unmarshal(body, &response); err != nil {
+		return 0, err
+	}
+	if response == nil || response.Permissions == nil {
+		return 0, fmt.Errorf("%w: permissions response is missing permissions", ErrJSONUnmarshal)
+	}
+	permissions, err := strconv.ParseInt(*response.Permissions, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", ErrJSONUnmarshal, err)
+	}
+	return permissions, nil
+}
+
 // GuildPruneCount Returns the number of members that would be removed in a prune operation.
 // Requires MANAGE_GUILD and KICK_MEMBERS, or ADMINISTRATOR when the guild has GuildFeaturePruneRequiresAdmin.
 // https://docs.discord.com/developers/resources/guild#get-guild-prune-count
@@ -3414,6 +3459,57 @@ func (s *Session) ChannelPermissionDelete(channelID, targetID string, options ..
 
 	_, err = s.RequestWithBucketID("DELETE", EndpointChannelPermission(channelID, targetID), nil, EndpointChannelPermission(channelID, ""), options...)
 	return
+}
+
+// ChannelMemberPermissions returns a member's computed permissions in a channel,
+// including their roles and member-specific overwrites, with implicit permission masking applied.
+// Threads use their parent channel's overwrites. Requires VIEW_CHANNEL, and CONNECT for voice and stage channels.
+// https://docs.discord.com/developers/resources/channel#get-channel-member-permissions
+// channelID : The ID of a Channel.
+// userID    : The ID of a User.
+func (s *Session) ChannelMemberPermissions(channelID, userID string, options ...RequestOption) (int64, error) {
+	return s.ChannelMemberPermissionsWithOptions(channelID, userID, nil, options...)
+}
+
+// ChannelMemberPermissionsWithOptions returns a member's computed permissions in a channel.
+// Discord never applies implicit permission masking when the target member is a bot.
+// channelID : The ID of a Channel.
+// userID    : The ID of a User.
+// query     : Optional query parameters.
+func (s *Session) ChannelMemberPermissionsWithOptions(channelID, userID string, query *ChannelPermissionsOptions, options ...RequestOption) (int64, error) {
+	return s.channelComputedPermissions(EndpointChannelMemberPermissions(channelID, userID), EndpointChannelMemberPermissions(channelID, ""), query, options...)
+}
+
+// ChannelRolePermissions returns the permissions granted by a role together with @everyone in a channel,
+// applying their channel overwrites, with implicit permission masking applied.
+// Other roles and member-specific overwrites are not included. Threads use their parent channel's overwrites.
+// Requires VIEW_CHANNEL, and CONNECT for voice and stage channels.
+// https://docs.discord.com/developers/resources/channel#get-channel-role-permissions
+// channelID : The ID of a Channel.
+// roleID    : The ID of a Role.
+func (s *Session) ChannelRolePermissions(channelID, roleID string, options ...RequestOption) (int64, error) {
+	return s.ChannelRolePermissionsWithOptions(channelID, roleID, nil, options...)
+}
+
+// ChannelRolePermissionsWithOptions returns the permissions granted by a role together with @everyone in a channel.
+// channelID : The ID of a Channel.
+// roleID    : The ID of a Role.
+// query     : Optional query parameters.
+func (s *Session) ChannelRolePermissionsWithOptions(channelID, roleID string, query *ChannelPermissionsOptions, options ...RequestOption) (int64, error) {
+	return s.channelComputedPermissions(EndpointChannelRolePermissions(channelID, roleID), EndpointChannelRolePermissions(channelID, ""), query, options...)
+}
+
+func (s *Session) channelComputedPermissions(endpoint, bucketID string, query *ChannelPermissionsOptions, options ...RequestOption) (int64, error) {
+	uri := endpoint
+	if query != nil && query.Implicit != nil {
+		uri += "?" + url.Values{"implicit": {strconv.FormatBool(*query.Implicit)}}.Encode()
+	}
+
+	body, err := s.RequestWithBucketID("GET", uri, nil, bucketID, options...)
+	if err != nil {
+		return 0, err
+	}
+	return unmarshalComputedPermissions(body)
 }
 
 // ChannelMessageCrosspost cross posts a message in a news channel to followers
