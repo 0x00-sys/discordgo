@@ -344,6 +344,26 @@ type GuildScheduledEventUpdate struct {
 	*GuildScheduledEvent
 	// BeforeUpdate will be nil if the scheduled event was not previously cached in the state cache.
 	BeforeUpdate *GuildScheduledEvent `json:"-"`
+
+	// Omission is distinct from an explicit subscriber count of zero.
+	userCountMissing bool
+}
+
+// UnmarshalJSON preserves whether the optional subscriber count was supplied.
+func (e *GuildScheduledEventUpdate) UnmarshalJSON(data []byte) error {
+	type event GuildScheduledEventUpdate
+	e.userCountMissing = false
+	if err := json.Unmarshal(data, (*event)(e)); err != nil {
+		return err
+	}
+	var fields struct {
+		UserCount json.RawMessage `json:"user_count"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	e.userCountMissing = len(fields.UserCount) == 0
+	return nil
 }
 
 // GuildScheduledEventDelete is the data for a GuildScheduledEventDelete event.
