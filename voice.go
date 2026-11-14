@@ -84,6 +84,9 @@ type VoiceConnection struct {
 
 	// Used to allow blocking until connected
 	connected chan bool
+	// Created by a waiting join and closed when Ready is published, so the
+	// join wakes at once instead of at its next poll.
+	readyChanged chan struct{}
 
 	// Used to pass the sessionid from onVoiceStateUpdate
 	// sessionRecv chan string UNUSED ATM
@@ -93,6 +96,9 @@ type VoiceConnection struct {
 	nonceCounter   uint32
 	sequence       int64
 	sequenceSet    bool
+	// Counts heartbeat ACKs (op 6) received while their websocket was
+	// current, so an ACK on a replaced websocket never vouches for a new one.
+	heartbeatAcks uint64
 
 	daveMu                      sync.Mutex
 	dave                        VoiceDAVESession
@@ -522,27 +528,49 @@ func (v *VoiceConnection) waitUntilConnected(channelID string, previousClose <-c
 	disconnectCancel := v.disconnectCancel
 	v.Unlock()
 
-	i := 0
+	deadline := time.NewTimer(11 * time.Second)
+	defer deadline.Stop()
+	// Readiness can also be reached without publishing Ready, for example
+	// when the channel changes on a transport that is already ready, so
+	// keep polling as a fallback.
+	poll := time.NewTicker(time.Second)
+	defer poll.Stop()
+	expired := false
 	for {
-		v.RLock()
+		// Recheck ownership on every wake: a notification only means some
+		// transport became ready, not that it serves this channel.
+		v.Lock()
 		ready := v.Ready && v.ChannelID == channelID && (previousClose == nil || v.close != previousClose)
-		v.RUnlock()
+		if !ready && v.readyChanged == nil {
+			v.readyChanged = make(chan struct{})
+		}
+		readyChanged := v.readyChanged
+		v.Unlock()
 		if ready {
 			return nil
 		}
-
-		if i > 10 {
+		if expired {
 			return fmt.Errorf("timeout waiting for voice")
 		}
 
-		timer := time.NewTimer(time.Second)
 		select {
-		case <-timer.C:
+		case <-readyChanged:
+		case <-poll.C:
+		case <-deadline.C:
+			expired = true
 		case <-disconnectCancel:
-			timer.Stop()
 			return ErrWSNotFound
 		}
-		i++
+	}
+}
+
+// publishReadyLocked marks the transport ready and wakes waiting joins.
+// The caller must hold v's lock.
+func (v *VoiceConnection) publishReadyLocked() {
+	v.Ready = true
+	if v.readyChanged != nil {
+		close(v.readyChanged)
+		v.readyChanged = nil
 	}
 }
 
@@ -1002,6 +1030,14 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 		// TODO: maybe actually implement this, seems cool
 		return
 
+	case 6: // HEARTBEAT ACK
+		v.Lock()
+		if wsConn != nil && v.wsConn == wsConn && v.close == eventClose {
+			v.heartbeatAcks++
+		}
+		v.Unlock()
+		return
+
 	case 4: // udp encryption secret key
 		op4 := voiceOP4{}
 		if err := json.Unmarshal(e.RawData, &op4); err != nil {
@@ -1054,7 +1090,6 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 			opusRecv = v.OpusRecv
 			receive = !v.deaf
 			startTransport = true
-			v.Ready = true
 		}
 		v.Unlock()
 		if err := v.onDAVESessionDescription(wsConn, eventClose, op4.DAVEProtocolVersion); err != nil {
@@ -1063,6 +1098,17 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 			return
 		}
 
+		if startTransport {
+			// Publish readiness only once setup succeeded, and only if this
+			// transport still owns the connection. A join must not report
+			// success for a transport that is failing or was replaced.
+			v.Lock()
+			startTransport = !v.Ready && v.wsConn == wsConn && v.close == eventClose && v.udpConn == udpConn
+			if startTransport {
+				v.publishReadyLocked()
+			}
+			v.Unlock()
+		}
 		if startTransport {
 			go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
 			if receive {
@@ -1226,9 +1272,14 @@ func setVoiceNonce(nonce []byte, counter uint32) {
 	binary.BigEndian.PutUint32(nonce[:4], counter)
 }
 
-func encryptVoicePacket(aead cipher.AEAD, nonce, opus, header []byte) []byte {
-	packet := make([]byte, len(header), len(header)+len(opus)+aead.Overhead()+4)
-	copy(packet, header)
+// encryptVoicePacket writes the sealed RTP packet into dst, growing it when it
+// is too small, and returns the packet. dst must not overlap opus, nonce or
+// header. The UDP write copies the packet, so a sender reuses dst per frame.
+func encryptVoicePacket(dst []byte, aead cipher.AEAD, nonce, opus, header []byte) []byte {
+	if need := len(header) + len(opus) + aead.Overhead() + 4; cap(dst) < need {
+		dst = make([]byte, 0, need)
+	}
+	packet := append(dst[:0], header...)
 	packet = aead.Seal(packet, nonce, opus, header)
 	return append(packet, nonce[:4]...)
 }
@@ -1291,22 +1342,41 @@ type voiceHeartbeatData struct {
 // wsHeartbeat sends regular heartbeats to voice Discord so it knows the client
 // is still connected.  If you do not send these heartbeats Discord will
 // disconnect the websocket connection after a few seconds.
+// A heartbeat that is not acknowledged (op 6) within one interval closes the
+// websocket so the listener can resume on a fresh one.
 func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struct{}, i time.Duration) {
 
 	if close == nil || wsConn == nil || i <= 0 || i > maxGatewayHeartbeatIntervalMsec {
 		return
 	}
 
+	interval := i * time.Millisecond
 	var err error
-	ticker := time.NewTicker(i * time.Millisecond)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// A dead peer can keep accepting writes into kernel buffers, so only a
+	// missing ACK reveals it. Each written heartbeat gets one full interval,
+	// measured from the end of its write, for an ACK to arrive.
+	ackTimer := time.NewTimer(interval)
+	ackTimer.Stop()
+	defer ackTimer.Stop()
+	var ackDeadline <-chan time.Time
+	var acksBefore uint64
 	for {
 		v.RLock()
 		current := v.wsConn == wsConn && v.close == close
 		endpoint := v.endpoint
+		acks := v.heartbeatAcks
 		v.RUnlock()
 		if !current {
 			return
+		}
+		if ackDeadline != nil && acks > acksBefore {
+			ackTimer.Stop()
+			ackDeadline = nil
+		}
+		if ackDeadline == nil {
+			acksBefore = acks
 		}
 
 		v.log(LogDebug, "sending heartbeat packet")
@@ -1328,12 +1398,32 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 			v.log(LogError, "error sending heartbeat to voice endpoint %s, %s", endpoint, err)
 			return
 		}
+		if ackDeadline == nil {
+			// While an earlier heartbeat is still unacknowledged, keep its
+			// deadline so a dead peer is not given extra time.
+			ackTimer.Reset(interval)
+			ackDeadline = ackTimer.C
+		}
 
-		select {
-		case <-ticker.C:
-			// continue loop and send heartbeat
-		case <-close:
-			return
+		for waiting := true; waiting; {
+			select {
+			case <-ticker.C:
+				// continue loop and send heartbeat
+				waiting = false
+			case <-ackDeadline:
+				v.RLock()
+				acks = v.heartbeatAcks
+				v.RUnlock()
+				if acks <= acksBefore {
+					// The listener sees the closed socket and resumes.
+					_ = wsConn.Close()
+					v.log(LogError, "voice endpoint %s did not acknowledge a heartbeat within %v, reconnecting", endpoint, interval)
+					return
+				}
+				ackDeadline = nil
+			case <-close:
+				return
+			}
 		}
 	}
 }
@@ -1588,6 +1678,9 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	var err error
 	udpHeader := make([]byte, 12)
 	var nonce []byte
+	// Reused for every packet. It never leaves this goroutine: only the
+	// AEAD from newVoiceAEAD and the UDP write, which copies it, see it.
+	var sendbuf []byte
 	var lastPacketAt time.Time
 	sentAudio := false
 	silenceFrames := 0
@@ -1725,7 +1818,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		}
 		setVoiceNonce(nonce, nonceCounter)
 
-		sendbuf := encryptVoicePacket(aead, nonce, recvbuf, udpHeader)
+		sendbuf = encryptVoicePacket(sendbuf, aead, nonce, recvbuf, udpHeader)
 
 		_, err = udpConn.Write(sendbuf)
 
