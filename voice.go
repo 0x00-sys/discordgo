@@ -1272,9 +1272,14 @@ func setVoiceNonce(nonce []byte, counter uint32) {
 	binary.BigEndian.PutUint32(nonce[:4], counter)
 }
 
-func encryptVoicePacket(aead cipher.AEAD, nonce, opus, header []byte) []byte {
-	packet := make([]byte, len(header), len(header)+len(opus)+aead.Overhead()+4)
-	copy(packet, header)
+// encryptVoicePacket writes the sealed RTP packet into dst, growing it when it
+// is too small, and returns the packet. dst must not overlap opus, nonce or
+// header. The UDP write copies the packet, so a sender reuses dst per frame.
+func encryptVoicePacket(dst []byte, aead cipher.AEAD, nonce, opus, header []byte) []byte {
+	if need := len(header) + len(opus) + aead.Overhead() + 4; cap(dst) < need {
+		dst = make([]byte, 0, need)
+	}
+	packet := append(dst[:0], header...)
 	packet = aead.Seal(packet, nonce, opus, header)
 	return append(packet, nonce[:4]...)
 }
@@ -1673,6 +1678,9 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 	var err error
 	udpHeader := make([]byte, 12)
 	var nonce []byte
+	// Reused for every packet. It never leaves this goroutine: only the
+	// AEAD from newVoiceAEAD and the UDP write, which copies it, see it.
+	var sendbuf []byte
 	var lastPacketAt time.Time
 	sentAudio := false
 	silenceFrames := 0
@@ -1810,7 +1818,7 @@ func (v *VoiceConnection) opusSender(udpConn *net.UDPConn, close <-chan struct{}
 		}
 		setVoiceNonce(nonce, nonceCounter)
 
-		sendbuf := encryptVoicePacket(aead, nonce, recvbuf, udpHeader)
+		sendbuf = encryptVoicePacket(sendbuf, aead, nonce, recvbuf, udpHeader)
 
 		_, err = udpConn.Write(sendbuf)
 
