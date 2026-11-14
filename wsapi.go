@@ -1766,6 +1766,10 @@ const identifyConcurrencyMargin = 250 * time.Millisecond
 // token in this process. Tests shorten its window.
 var gatewayIdentifyLimiter = &identifyLimiter{window: 5 * time.Second}
 
+// identifyAcquireTestHook runs after acquire has picked a bucket and before
+// it reserves it. Tests use it to force interleavings.
+var identifyAcquireTestHook func(mapping int)
+
 var errIdentifySlotExpired = errors.New("gateway connection took too long to reach IDENTIFY")
 
 type identifyLimiter struct {
@@ -1884,42 +1888,88 @@ func (l *identifyLimiter) gatewayBot(ctx context.Context, app *identifyApp, fetc
 // If the slot is held longer than holdLimit it is taken back and beginSend
 // reports false.
 func (l *identifyLimiter) acquire(ctx context.Context, app *identifyApp, shard, maxConcurrency int, holdLimit time.Duration) (*identifySlot, error) {
-	l.mu.Lock()
+	var b *identifyBucket
+	for {
+		l.mu.Lock()
+		if app.maxConcurrency == 0 && maxConcurrency > 0 {
+			// The session learned max_concurrency earlier. Share it so
+			// sessions without it use the same mapping.
+			app.maxConcurrency = maxConcurrency
+		}
+		mapping := l.mappingLocked(app)
+		key := identifyBucketKey{maxConcurrency: mapping, key: shard % mapping}
+		b = app.buckets[key]
+		if b == nil {
+			b = &identifyBucket{slot: make(chan struct{}, 1)}
+			app.buckets[key] = b
+		}
+		// Buckets from another mapping may cover this shard too, for
+		// example an IDENTIFY sent with the fallback mapping before
+		// max_concurrency was learned. Wait until they are idle and cooled
+		// down first.
+		others := otherMappingBucketsLocked(app, mapping)
+		l.mu.Unlock()
+		if identifyAcquireTestHook != nil {
+			identifyAcquireTestHook(mapping)
+		}
+
+		for _, other := range others {
+			if err := l.drain(ctx, app, other); err != nil {
+				return nil, err
+			}
+		}
+
+		select {
+		case b.slot <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+
+		// The mapping may have changed, or a session on another mapping may
+		// have taken its bucket, while this one was waiting. Give the slot
+		// back and start over in that case. A session on the old mapping
+		// always yields here, so the two cannot keep undoing each other.
+		l.mu.Lock()
+		stale := l.mappingLocked(app) != mapping
+		if !stale {
+			now := time.Now()
+			for _, k := range otherMappingBucketsLocked(app, mapping) {
+				if other := app.buckets[k]; len(other.slot) > 0 || other.next.After(now) {
+					stale = true
+					break
+				}
+			}
+		}
+		l.mu.Unlock()
+		if !stale {
+			break
+		}
+		<-b.slot
+	}
+	return l.waitCooldown(ctx, b, holdLimit)
+}
+
+// mappingLocked returns the max_concurrency used to map shards to buckets.
+func (l *identifyLimiter) mappingLocked(app *identifyApp) int {
 	if app.maxConcurrency > 0 {
-		maxConcurrency = app.maxConcurrency
+		return app.maxConcurrency
 	}
-	if maxConcurrency <= 0 {
-		maxConcurrency = 1
-	}
-	key := identifyBucketKey{maxConcurrency: maxConcurrency, key: shard % maxConcurrency}
-	b := app.buckets[key]
-	if b == nil {
-		b = &identifyBucket{slot: make(chan struct{}, 1)}
-		app.buckets[key] = b
-	}
-	// Buckets from another mapping may cover this shard too, for example an
-	// IDENTIFY sent with the fallback mapping before max_concurrency was
-	// learned. Wait until they are idle and cooled down first.
-	var others []*identifyBucket
-	for k, other := range app.buckets {
-		if k.maxConcurrency != maxConcurrency {
-			others = append(others, other)
+	return 1
+}
+
+func otherMappingBucketsLocked(app *identifyApp, mapping int) []identifyBucketKey {
+	var others []identifyBucketKey
+	for k := range app.buckets {
+		if k.maxConcurrency != mapping {
+			others = append(others, k)
 		}
 	}
-	l.mu.Unlock()
+	return others
+}
 
-	for _, other := range others {
-		if err := l.drain(ctx, other); err != nil {
-			return nil, err
-		}
-	}
-
-	select {
-	case b.slot <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
+// waitCooldown waits out the cooldown of the bucket whose slot the caller
+// holds and returns the slot.
+func (l *identifyLimiter) waitCooldown(ctx context.Context, b *identifyBucket, holdLimit time.Duration) (*identifySlot, error) {
 	// Only the slot holder changes next.
 	l.mu.Lock()
 	wait := time.Until(b.next)
@@ -1942,9 +1992,16 @@ func (l *identifyLimiter) acquire(ctx context.Context, app *identifyApp, shard, 
 	return slot, nil
 }
 
-// drain waits until no session holds b and its cooldown has passed. It leaves
-// b unused.
-func (l *identifyLimiter) drain(ctx context.Context, b *identifyBucket) error {
+// drain waits until no session holds the bucket at key and its cooldown has
+// passed, without using it. A bucket left over from an old mapping is then
+// removed, so later sessions do not wait on it again.
+func (l *identifyLimiter) drain(ctx context.Context, app *identifyApp, key identifyBucketKey) error {
+	l.mu.Lock()
+	b := app.buckets[key]
+	l.mu.Unlock()
+	if b == nil {
+		return nil
+	}
 	select {
 	case b.slot <- struct{}{}:
 	case <-ctx.Done():
@@ -1954,17 +2011,21 @@ func (l *identifyLimiter) drain(ctx context.Context, b *identifyBucket) error {
 	l.mu.Lock()
 	wait := time.Until(b.next)
 	l.mu.Unlock()
-	if wait <= 0 {
-		return nil
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	l.mu.Lock()
+	if app.buckets[key] == b && key.maxConcurrency != l.mappingLocked(app) && !b.next.After(time.Now()) {
+		delete(app.buckets, key)
 	}
+	l.mu.Unlock()
+	return nil
 }
 
 const (

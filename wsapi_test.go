@@ -3162,6 +3162,68 @@ func TestIdentifyLimiterIndependentTokensDoNotBlock(t *testing.T) {
 	})
 }
 
+// A session can pick a bucket under the fallback mapping and pause before
+// reserving it while another session learns max_concurrency and takes the
+// bucket for the same rate_limit_key. The paused session must not then send
+// alongside it.
+func TestIdentifyLimiterMappingChangeDuringAcquire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+
+		paused := make(chan struct{})
+		resume := make(chan struct{})
+		var once sync.Once
+		identifyAcquireTestHook = func(mapping int) {
+			if mapping == 1 {
+				once.Do(func() {
+					close(paused)
+					<-resume
+				})
+			}
+		}
+		t.Cleanup(func() { identifyAcquireTestHook = nil })
+
+		start := time.Now()
+		fallbackSent := make(chan time.Duration, 1)
+		go func() {
+			// max_concurrency unknown: mapping 1.
+			slot, err := l.acquire(context.Background(), app, 1, 0, time.Hour)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			fallbackSent <- time.Since(start)
+			slot.beginSend()
+			slot.sent()
+			slot.release()
+		}()
+		<-paused
+
+		// Shard 3 knows max_concurrency 2 and shares rate_limit_key 1.
+		slot, err := l.acquire(context.Background(), app, 3, 2, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		close(resume)
+		synctest.Wait()
+		select {
+		case at := <-fallbackSent:
+			t.Fatalf("fallback session got a slot at %v while shard 3 held bucket 1", at)
+		default:
+		}
+		slot.beginSend()
+		slot.sent()
+		slot.release()
+
+		want := 5*time.Second + identifyConcurrencyMargin
+		if at := <-fallbackSent; at != want {
+			t.Fatalf("fallback session identified at %v, want %v after shard 3", at, want)
+		}
+	})
+}
+
 func TestIdentifyLimiterBucketsProceedInParallel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &identifyLimiter{window: 5 * time.Second}
