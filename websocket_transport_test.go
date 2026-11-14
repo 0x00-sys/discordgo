@@ -153,6 +153,46 @@ func (p *countingBufferPool) Get() interface{} {
 	return p.Pool.Get()
 }
 
+// pipeListener serves in-memory connections, so benchmarks that open many
+// connections do not run out of local ports.
+type pipeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newPipeListener() *pipeListener {
+	return &pipeListener{conns: make(chan net.Conn), closed: make(chan struct{})}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr { return &net.UnixAddr{Name: "pipe", Net: "pipe"} }
+
+func (l *pipeListener) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	select {
+	case l.conns <- server:
+		return client, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // BenchmarkDialWebsocketIdleHeap reports the live heap per idle connection
 // after one heartbeat has been written on each. The server side of every
 // connection is in the same process and counted too, so compare the
@@ -160,7 +200,25 @@ func (p *countingBufferPool) Get() interface{} {
 // cost alone.
 func BenchmarkDialWebsocketIdleHeap(b *testing.B) {
 	const conns = 200
-	endpoint := newIdleWebsocketServer(b)
+	listener := newPipeListener()
+	upgrader := websocket.Upgrader{}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})}
+	go server.Serve(listener)
+	defer server.Close()
+	// Default buffer settings, as in websocket.DefaultDialer.
+	dialer := &websocket.Dialer{NetDialContext: listener.DialContext}
+
 	var perConn float64
 	for b.Loop() {
 		var before, after runtime.MemStats
@@ -168,7 +226,7 @@ func BenchmarkDialWebsocketIdleHeap(b *testing.B) {
 		runtime.ReadMemStats(&before)
 		open := make([]*websocket.Conn, 0, conns)
 		for range conns {
-			conn, err := dialWebsocket(context.Background(), websocket.DefaultDialer, endpoint, nil)
+			conn, err := dialWebsocket(context.Background(), dialer, "ws://pipe/", nil)
 			if err != nil {
 				b.Fatal(err)
 			}
