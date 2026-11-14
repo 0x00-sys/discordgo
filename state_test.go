@@ -7347,6 +7347,41 @@ func BenchmarkStatePresenceUpdateGuildSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkStatePresenceUpdateMemberCount measures PRESENCE_UPDATE with
+// default tracking as guild size grows. The event user is partial (only id
+// is required); this one carries no member fields, so the member is unchanged.
+func BenchmarkStatePresenceUpdateMemberCount(b *testing.B) {
+	for _, size := range []int{1000, 10000, 100000} {
+		b.Run("members="+strconv.Itoa(size), func(b *testing.B) {
+			members := make([]*Member, size)
+			presences := make([]*Presence, size)
+			for i := range members {
+				id := "user-" + strconv.Itoa(i)
+				members[i] = &Member{GuildID: "guild", User: &User{ID: id, Username: id}, Roles: []string{"role"}}
+				presences[i] = &Presence{User: &User{ID: id}, Status: StatusOnline}
+			}
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild", Members: members, Presences: presences, MemberCount: size}); err != nil {
+				b.Fatal(err)
+			}
+			session := &Session{StateEnabled: true, State: state}
+			userID := "user-" + strconv.Itoa(size/2)
+			updates := [2]*PresenceUpdate{
+				{GuildID: "guild", Presence: Presence{User: &User{ID: userID}, Status: StatusIdle}},
+				{GuildID: "guild", Presence: Presence{User: &User{ID: userID}, Status: StatusOnline}},
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := state.OnInterface(session, updates[i%2]); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkStateMemberUpdateGuildSnapshot(b *testing.B) {
 	members := make([]*Member, 1000)
 	for i := range members {
