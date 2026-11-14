@@ -1458,7 +1458,7 @@ func TestReconnectBacksOffWhenGatewayDropsAfterReady(t *testing.T) {
 				if err != nil {
 					return
 				}
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
 					return
 				}
@@ -1564,7 +1564,7 @@ func TestReconnectDelaysOnlyEarlyDrops(t *testing.T) {
 				if err != nil {
 					return
 				}
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				n := atomic.AddInt32(&conns, 1)
 				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
 					return
@@ -1610,7 +1610,7 @@ func TestReconnectDelaysOnlyEarlyDrops(t *testing.T) {
 			if err := session.Open(); err != nil {
 				t.Fatal(err)
 			}
-			defer session.Close()
+			defer func() { _ = session.Close() }()
 
 			time.Sleep(100 * time.Millisecond)
 			close(drop)
@@ -1648,7 +1648,7 @@ func TestReconnectFlapBackoffStopsOnClose(t *testing.T) {
 	var dials int32
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			atomic.AddInt32(&dials, 1)
 			return nil, errors.New("dial failed")
 		},
@@ -1697,7 +1697,7 @@ func TestReconnectFlapBackoffDoesNotCompeteWithOpen(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		atomic.AddInt32(&conns, 1)
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
 			return
@@ -1748,7 +1748,7 @@ func TestReconnectFlapBackoffDoesNotCompeteWithOpen(t *testing.T) {
 	if err := session.Open(); err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	session.RLock()
 	opened := session.wsConn
 	session.RUnlock()
@@ -1777,7 +1777,7 @@ func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
 			return
@@ -2063,7 +2063,7 @@ func TestListenAsyncHandlersSeeTheirOwnPayload(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for i := range messages {
 			_, message := payload(i)
 			messageType := websocket.TextMessage
@@ -2084,7 +2084,7 @@ func TestListenAsyncHandlersSeeTheirOwnPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	session, err := New("Bot token")
 	if err != nil {
 		t.Fatal(err)
@@ -2147,7 +2147,7 @@ func TestOnEventReleasesMessageBeforeReconnect(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _, _ = conn.ReadMessage()
 	}))
 	defer server.Close()
@@ -2156,7 +2156,7 @@ func TestOnEventReleasesMessageBeforeReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	session, err := New("Bot token")
 	if err != nil {
 		t.Fatal(err)
@@ -2166,10 +2166,10 @@ func TestOnEventReleasesMessageBeforeReconnect(t *testing.T) {
 	releasedAtDial := make(chan int32, 1)
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			select {
 			case releasedAtDial <- releases.Load():
-				go session.Close()
+				go func() { _ = session.Close() }()
 			default:
 			}
 			return nil, errors.New("dial failed")
@@ -2222,7 +2222,7 @@ func TestGatewayReadBufferReleasesOnReadError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var b gatewayReadBuffer
 	if _, _, err := b.readMessage(conn); err == nil {
@@ -2296,20 +2296,19 @@ func BenchmarkGatewayListen(b *testing.B) {
 				if err != nil {
 					return
 				}
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				raw := conn.UnderlyingConn()
-				for n := range start {
-					for i := 0; i < n; i++ {
-						if _, err := raw.Write(frame); err != nil {
-							return
-						}
-					}
-					// A close frame ends this round of listen.
-					if _, err := raw.Write([]byte{0x88, 0x02, 0x03, 0xe8}); err != nil {
-						return
-					}
+				n, ok := <-start
+				if !ok {
 					return
 				}
+				for i := 0; i < n; i++ {
+					if _, err := raw.Write(frame); err != nil {
+						return
+					}
+				}
+				// A close frame ends this round of listen.
+				_, _ = raw.Write([]byte{0x88, 0x02, 0x03, 0xe8})
 			}))
 			defer server.Close()
 
@@ -2317,7 +2316,7 @@ func BenchmarkGatewayListen(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			session, err := New("Bot token")
 			if err != nil {
 				b.Fatal(err)
@@ -2355,7 +2354,7 @@ func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
 	releaseLog := make(chan struct{})
 	defer closeChannel(releaseLog)
 	var blockLog sync.Once
-	Logger = func(msgL, caller int, format string, a ...interface{}) {
+	Logger = func(_, _ int, format string, a ...interface{}) {
 		if strings.Contains(fmt.Sprintf(format, a...), "error sending heartbeat") {
 			blockLog.Do(func() {
 				close(logReached)
@@ -2627,7 +2626,7 @@ func TestGatewayRateLimitWaitStopsOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	waitStarted := make(chan struct{})
 	session := &Session{
@@ -2779,7 +2778,7 @@ func captureGatewayWrites(t *testing.T, count int, call func(*Session) error) []
 			readErr <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for i := 0; i < count; i++ {
 			if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -2801,7 +2800,7 @@ func captureGatewayWrites(t *testing.T, count int, call func(*Session) error) []
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	session := &Session{wsConn: conn, sequence: new(int64)}
 	if err := call(session); err != nil {
@@ -2832,7 +2831,7 @@ func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for {
 			if _, _, err = conn.ReadMessage(); err != nil {
@@ -2905,7 +2904,7 @@ func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for {
 			if _, _, err = conn.ReadMessage(); err != nil {
@@ -2960,7 +2959,7 @@ func TestHeartbeatReconnectsAfterOneMissedAck(t *testing.T) {
 	conn, peer := newGatewayTestConnection(t)
 	closeCode := make(chan int, 1)
 	heartbeats := make(chan int, 16)
-	peer.SetCloseHandler(func(code int, text string) error {
+	peer.SetCloseHandler(func(code int, _ string) error {
 		closeCode <- code
 		return nil
 	})
@@ -3355,7 +3354,7 @@ func TestReconnectCanceledAfterOpenKeepsNewerSession(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		if err := c.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
 			return
@@ -3429,7 +3428,7 @@ func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 	var attempts int32
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			atomic.AddInt32(&attempts, 1)
 			select {
 			case attempted <- struct{}{}:
@@ -3474,7 +3473,7 @@ func TestReconnectDoesNotStartAfterClose(t *testing.T) {
 	attempted := make(chan struct{}, 1)
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			select {
 			case attempted <- struct{}{}:
 			default:
@@ -3518,7 +3517,7 @@ func TestOpenAfterCloseCanDial(t *testing.T) {
 	var attempts int32
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			atomic.AddInt32(&attempts, 1)
 			return nil, errors.New("dial failed")
 		},
@@ -3674,7 +3673,7 @@ func TestOpenHelloDoesNotBlockClose(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		close(connected)
 		<-unblockServer
 	}))
@@ -3734,7 +3733,7 @@ func newGatewayOpenTestServerWithHello(t *testing.T, hello []byte, startupPacket
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
 			return
@@ -3763,7 +3762,7 @@ func newGatewayTricklingStartupTestServer(t *testing.T, gap time.Duration, trick
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
 			return
@@ -5025,7 +5024,7 @@ func TestListenDropsCorruptCompressedFrame(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for _, message := range [][]byte{corrupt, good} {
 			if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
 				return
@@ -5040,7 +5039,7 @@ func TestListenDropsCorruptCompressedFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	session, err := New("Bot token")
 	if err != nil {
 		t.Fatal(err)

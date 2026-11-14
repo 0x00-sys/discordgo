@@ -141,7 +141,7 @@ func BenchmarkMultipartBodyWithJSONFile(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		b.Cleanup(func() { file.Close() })
+		b.Cleanup(func() { _ = file.Close() })
 
 		for _, tc := range []struct {
 			name   string
@@ -184,7 +184,7 @@ func TestReaderSizeHintCountsFromCurrentOffset(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { file.Close() })
+		t.Cleanup(func() { _ = file.Close() })
 		if _, err := file.Seek(offset, io.SeekStart); err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +208,7 @@ func TestReaderSizeHintCountsFromCurrentOffset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { pipeReader.Close(); pipeWriter.Close() })
+	t.Cleanup(func() { _ = pipeReader.Close(); _ = pipeWriter.Close() })
 
 	tests := []struct {
 		name   string
@@ -250,7 +250,7 @@ func TestMultipartBodyPresizesKnownFileSizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { file.Close() })
+	t.Cleanup(func() { _ = file.Close() })
 
 	// Names that escaping lengthens and an invalid content type that gets
 	// replaced must still fit in the estimate.

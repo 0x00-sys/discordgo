@@ -853,12 +853,12 @@ func TestVoiceOpusSenderPacketsAcrossFrameSizes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer server.Close()
+			defer func() { _ = server.Close() }()
 			client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 			aead, err := newVoiceAEAD(mode, make([]int, 32))
 			if err != nil {
 				t.Fatal(err)
@@ -937,12 +937,12 @@ func BenchmarkOpusSenderPacket(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer server.Close()
+			defer func() { _ = server.Close() }()
 			client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer client.Close()
+			defer func() { _ = client.Close() }()
 			aead, err := newVoiceAEAD(mode, make([]int, 32))
 			if err != nil {
 				b.Fatal(err)

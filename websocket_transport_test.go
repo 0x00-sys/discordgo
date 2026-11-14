@@ -68,7 +68,7 @@ func newIdleWebsocketServer(t testing.TB) string {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
@@ -96,7 +96,7 @@ func TestDialWebsocketIdleConnectionHoldsNoWriteBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestDialWebsocketKeepsCustomWriteBufferSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestDialWebsocketKeepsCustomWriteBufferSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,15 +207,15 @@ func BenchmarkDialWebsocketIdleHeap(b *testing.B) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
 			}
 		}
 	})}
-	go server.Serve(listener)
-	defer server.Close()
+	go func() { _ = server.Serve(listener) }()
+	defer func() { _ = server.Close() }()
 	// Default buffer settings, as in websocket.DefaultDialer.
 	dialer := &websocket.Dialer{NetDialContext: listener.DialContext}
 
