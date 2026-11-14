@@ -1102,6 +1102,14 @@ func (s *State) updateGuildScheduledEventUserCount(guildID, eventID string, delt
 }
 
 func (s *State) replaceChannel(oldChannel, newChannel *Channel) {
+	// Guild channels carry their guild ID; go straight to that guild and
+	// only fall back to the full scan when the channel is not found there.
+	if newChannel.GuildID != "" {
+		if guild, ok := s.guildMap[newChannel.GuildID]; ok && guild != nil && s.replaceChannelInGuild(guild, oldChannel, newChannel) {
+			return
+		}
+	}
+
 	for i, channel := range s.PrivateChannels {
 		if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
 			s.PrivateChannels[i] = newChannel
@@ -1113,25 +1121,32 @@ func (s *State) replaceChannel(oldChannel, newChannel *Channel) {
 		if guild == nil {
 			continue
 		}
-		for i, channel := range guild.Channels {
-			if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
-				updated := *guild
-				updated.Channels = append([]*Channel(nil), guild.Channels...)
-				updated.Channels[i] = newChannel
-				s.replaceGuild(guild, &updated)
-				return
-			}
-		}
-		for i, thread := range guild.Threads {
-			if thread == oldChannel || (thread != nil && thread.ID == newChannel.ID) {
-				updated := *guild
-				updated.Threads = append([]*Channel(nil), guild.Threads...)
-				updated.Threads[i] = newChannel
-				s.replaceGuild(guild, &updated)
-				return
-			}
+		if s.replaceChannelInGuild(guild, oldChannel, newChannel) {
+			return
 		}
 	}
+}
+
+func (s *State) replaceChannelInGuild(guild *Guild, oldChannel, newChannel *Channel) bool {
+	for i, channel := range guild.Channels {
+		if channel == oldChannel || (channel != nil && channel.ID == newChannel.ID) {
+			updated := *guild
+			updated.Channels = append([]*Channel(nil), guild.Channels...)
+			updated.Channels[i] = newChannel
+			s.replaceGuild(guild, &updated)
+			return true
+		}
+	}
+	for i, thread := range guild.Threads {
+		if thread == oldChannel || (thread != nil && thread.ID == newChannel.ID) {
+			updated := *guild
+			updated.Threads = append([]*Channel(nil), guild.Threads...)
+			updated.Threads[i] = newChannel
+			s.replaceGuild(guild, &updated)
+			return true
+		}
+	}
+	return false
 }
 
 // ChannelAdd adds a channel to the current world state, or
