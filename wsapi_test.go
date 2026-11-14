@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1322,6 +1323,452 @@ func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
 	}
 }
 
+// Sessions dropped together, as in a network blip or gateway restart, must not
+// retry in lockstep. Without jitter, every retry round of thousands of
+// sessions in one process lands in the same few milliseconds.
+func TestReconnectRetriesAreSpreadAcrossSessions(t *testing.T) {
+	const sessions = 20
+	var (
+		mu       sync.Mutex
+		accepted = map[string]*websocket.Conn{}
+		attempts = map[string][]time.Time{}
+		dropped  atomic.Bool
+	)
+	upgrader := websocket.Upgrader{}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if dropped.Load() {
+			mu.Lock()
+			attempts[r.URL.Path] = append(attempts[r.URL.Path], time.Now())
+			mu.Unlock()
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		resumeURL := "ws" + strings.TrimPrefix(server.URL, "http") + r.URL.Path
+		ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"spread","resume_gateway_url":"` + resumeURL + `","user":{"id":"1"},"guilds":[]}}`
+		// Register before READY: Open returns once READY is read.
+		mu.Lock()
+		accepted[r.URL.Path] = conn
+		mu.Unlock()
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+			return
+		}
+	}))
+	defer server.Close()
+
+	all := make([]*Session, sessions)
+	for i := range all {
+		session, err := New("Bot test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session.LogLevel = -1
+		session.gateway = "ws" + strings.TrimPrefix(server.URL, "http") + "/s" + strconv.Itoa(i)
+		if err := session.Open(); err != nil {
+			t.Fatal(err)
+		}
+		all[i] = session
+	}
+	defer func() {
+		for _, session := range all {
+			_ = session.Close()
+		}
+	}()
+
+	dropped.Store(true)
+	mu.Lock()
+	for _, conn := range accepted {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, ""), time.Now().Add(time.Second))
+		_ = conn.Close()
+	}
+	mu.Unlock()
+	time.Sleep(4 * time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var first, last time.Time
+	for path, times := range attempts {
+		if len(times) < 2 {
+			t.Fatalf("%s retried %d times, want at least 2", path, len(times))
+		}
+		// The first retry after the drop is immediate; compare the second.
+		retry := times[1]
+		if first.IsZero() || retry.Before(first) {
+			first = retry
+		}
+		if retry.After(last) {
+			last = retry
+		}
+	}
+	if len(attempts) != sessions {
+		t.Fatalf("sessions that retried = %d, want %d", len(attempts), sessions)
+	}
+	if spread := last.Sub(first); spread < 250*time.Millisecond {
+		t.Fatalf("second reconnect attempts of %d sessions spread over %v, want >= 250ms", sessions, spread)
+	}
+}
+
+func TestJitteredGatewayBackoffStaysWithinBounds(t *testing.T) {
+	for _, d := range []time.Duration{time.Second, 2 * time.Second, 64 * time.Second, 600 * time.Second} {
+		const samples = 10000
+		var total time.Duration
+		lowest, highest := d*2, time.Duration(0)
+		for range samples {
+			got := jitteredGatewayBackoff(d)
+			if got < d/2 || got >= d+d/2 {
+				t.Fatalf("jitteredGatewayBackoff(%v) = %v, want in [%v, %v)", d, got, d/2, d+d/2)
+			}
+			total += got
+			lowest = min(lowest, got)
+			highest = max(highest, got)
+		}
+		// The whole range is used and the mean delay is unchanged.
+		if lowest > d*6/10 || highest < d*14/10 {
+			t.Fatalf("jitteredGatewayBackoff(%v) ranged over [%v, %v], want close to [%v, %v)", d, lowest, highest, d/2, d+d/2)
+		}
+		if mean := total / samples; mean < d*95/100 || mean > d*105/100 {
+			t.Fatalf("jitteredGatewayBackoff(%v) mean = %v, want about %v", d, mean, d)
+		}
+	}
+	if got := jitteredGatewayBackoff(0); got != 0 {
+		t.Fatalf("jitteredGatewayBackoff(0) = %v, want 0", got)
+	}
+}
+
+// A gateway that accepts every session and drops it right after READY must
+// not be redialed in a tight loop. With close 4009 every cycle is a new
+// Identify, and Discord resets the token after 1000 Identify calls a day.
+func TestReconnectBacksOffWhenGatewayDropsAfterReady(t *testing.T) {
+	for _, closeCode := range []int{4000, 4009} {
+		t.Run(strconv.Itoa(closeCode), func(t *testing.T) {
+			var identifies, resumes int32
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+					return
+				}
+				_, message, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var op struct {
+					Op int `json:"op"`
+				}
+				_ = json.Unmarshal(message, &op)
+				ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"flap","user":{"id":"1"},"guilds":[]}}`
+				if op.Op == 6 {
+					atomic.AddInt32(&resumes, 1)
+					ready = `{"op":0,"s":2,"t":"RESUMED","d":{}}`
+				} else {
+					atomic.AddInt32(&identifies, 1)
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+					return
+				}
+				_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, ""), time.Now().Add(time.Second))
+				time.Sleep(10 * time.Millisecond)
+			}))
+			defer server.Close()
+
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel = -1
+			if err := session.Open(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2 * time.Second)
+			_ = session.Close()
+
+			// Any backoff starting near one second allows only a handful of
+			// sessions in two seconds; the bound leaves room for jitter.
+			got := atomic.LoadInt32(&identifies) + atomic.LoadInt32(&resumes)
+			t.Logf("gateway sessions started in 2s = %d (identify=%d resume=%d)",
+				got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
+			if got > 10 {
+				t.Fatalf("gateway sessions started in 2s = %d (identify=%d resume=%d), want <= 10",
+					got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
+			}
+		})
+	}
+}
+
+func TestNextGatewayFlapDelay(t *testing.T) {
+	const stableAfter = 30 * time.Second
+
+	// Each early drop doubles the delay from 1s up to the cap.
+	want := []time.Duration{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 600, 600}
+	var delay time.Duration
+	for i, w := range want {
+		delay = nextGatewayFlapDelay(delay, time.Second, stableAfter)
+		if delay != w*time.Second {
+			t.Fatalf("delay after early drop %d = %v, want %v", i+1, delay, w*time.Second)
+		}
+	}
+	// Discord allows 1000 Identify calls a day, one per 86.4s. Even the
+	// shortest jittered wait at the cap must stay above that.
+	if maxGatewayFlapDelay/2 < 90*time.Second {
+		t.Fatalf("shortest wait at the cap = %v, want >= 90s", maxGatewayFlapDelay/2)
+	}
+
+	// A connection that stayed up long enough resets the delay, and the
+	// next early drop starts over from 1s.
+	if delay = nextGatewayFlapDelay(delay, stableAfter, stableAfter); delay != 0 {
+		t.Fatalf("delay after stable connection = %v, want 0", delay)
+	}
+	if delay = nextGatewayFlapDelay(delay, 0, stableAfter); delay != time.Second {
+		t.Fatalf("delay after early drop following reset = %v, want 1s", delay)
+	}
+}
+
+// Only connections that drop soon after opening are delayed. A connection
+// that stayed up past the threshold and then drops or receives Op 7 is
+// redialed at once, even after earlier flaps.
+func TestReconnectDelaysOnlyEarlyDrops(t *testing.T) {
+	cases := []struct {
+		name          string
+		stableAfter   time.Duration
+		op7           bool
+		wantImmediate bool
+		wantDelay     time.Duration
+	}{
+		{name: "close after stable connection", stableAfter: 50 * time.Millisecond, wantImmediate: true},
+		{name: "op 7 after stable connection", stableAfter: 50 * time.Millisecond, op7: true, wantImmediate: true},
+		{name: "close soon after open", stableAfter: time.Hour, wantDelay: maxGatewayFlapDelay},
+		{name: "op 7 soon after open", stableAfter: time.Hour, op7: true, wantDelay: maxGatewayFlapDelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var conns int32
+			drop := make(chan struct{})
+			redialed := make(chan struct{}, 1)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				n := atomic.AddInt32(&conns, 1)
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+					return
+				}
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+				ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"stable","user":{"id":"1"},"guilds":[]}}`
+				if n > 1 {
+					ready = `{"op":0,"s":2,"t":"RESUMED","d":{}}`
+					select {
+					case redialed <- struct{}{}:
+					default:
+					}
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+					return
+				}
+				if n == 1 {
+					<-drop
+					if tc.op7 {
+						_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":7,"d":null}`))
+					} else {
+						_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, ""), time.Now().Add(time.Second))
+					}
+				}
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}))
+			defer server.Close()
+
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel = -1
+			session.gatewayStableAfter = tc.stableAfter
+			// Earlier flaps already pushed the delay up.
+			session.gatewayFlapDelay = 300 * time.Second
+			if err := session.Open(); err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			time.Sleep(100 * time.Millisecond)
+			close(drop)
+
+			wait := 5 * time.Second
+			if !tc.wantImmediate {
+				wait = 300 * time.Millisecond
+			}
+			select {
+			case <-redialed:
+				if !tc.wantImmediate {
+					t.Fatal("redialed at once after a connection dropped soon after opening")
+				}
+			case <-time.After(wait):
+				if tc.wantImmediate {
+					t.Fatalf("not redialed within %v after a stable connection dropped", wait)
+				}
+			}
+			session.RLock()
+			delay := session.gatewayFlapDelay
+			session.RUnlock()
+			if delay != tc.wantDelay {
+				t.Fatalf("flap delay = %v, want %v", delay, tc.wantDelay)
+			}
+		})
+	}
+}
+
+func TestReconnectFlapBackoffStopsOnClose(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	var dials int32
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			atomic.AddInt32(&dials, 1)
+			return nil, errors.New("dial failed")
+		},
+	}
+	// The connection dropped right after opening, after earlier flaps.
+	session.Lock()
+	session.gatewayOpenedAt = time.Now()
+	session.gatewayFlapDelay = maxGatewayFlapDelay
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect(session.reconnectCancelSignal())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reconnect returned without waiting")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := atomic.LoadInt32(&dials); got != 0 {
+		t.Fatalf("dial attempts during backoff = %d, want 0", got)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not stop after Close")
+	}
+	if got := atomic.LoadInt32(&dials); got != 0 {
+		t.Fatalf("dial attempts after Close = %d, want 0", got)
+	}
+}
+
+// A user Open during the flap backoff wins. The waiting reconnect must not
+// dial a second connection or replace the one Open made.
+func TestReconnectFlapBackoffDoesNotCompeteWithOpen(t *testing.T) {
+	var conns int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		atomic.AddInt32(&conns, 1)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"READY","d":{"session_id":"open","user":{"id":"1"},"guilds":[]}}`)); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.Lock()
+	session.gatewayOpenedAt = time.Now()
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect(session.reconnectCancelSignal())
+		close(done)
+	}()
+	// Wait until reconnect has started its backoff.
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.RLock()
+		waiting := session.gatewayOpenedAt.IsZero()
+		session.RUnlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reconnect did not start its backoff")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := session.Open(); err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	session.RLock()
+	opened := session.wsConn
+	session.RUnlock()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not return after its backoff")
+	}
+	session.RLock()
+	current := session.wsConn
+	session.RUnlock()
+	if current != opened {
+		t.Fatal("reconnect replaced the connection opened during its backoff")
+	}
+	if got := atomic.LoadInt32(&conns); got != 1 {
+		t.Fatalf("gateway connections = %d, want 1", got)
+	}
+}
+
 func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 	serverDone := make(chan struct{})
 	upgrader := websocket.Upgrader{}
@@ -1598,6 +2045,298 @@ func TestListenDoesNotCloseReplacementConnection(t *testing.T) {
 
 	close(oldListening)
 	close(newListening)
+}
+
+// listen reuses one pooled read buffer for every message. Async handlers that
+// run after the next message has been read must still see their own payload.
+func TestListenAsyncHandlersSeeTheirOwnPayload(t *testing.T) {
+	const messages = 300
+	payload := func(i int) (string, []byte) {
+		// Vary the size so later messages overwrite earlier ones partially.
+		d := `{"user_id":"` + strconv.Itoa(i) + `","channel_id":"` + strings.Repeat(strconv.Itoa(i%10), 1+(i*37)%2000) + `"}`
+		return d, []byte(`{"op":0,"s":` + strconv.Itoa(i+1) + `,"t":"TYPING_START","d":` + d + `}`)
+	}
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for i := range messages {
+			_, message := payload(i)
+			messageType := websocket.TextMessage
+			if i%3 == 0 {
+				messageType = websocket.BinaryMessage
+				message = compressedGatewayPayload(t, message)
+			}
+			if err := conn.WriteMessage(messageType, message); err != nil {
+				return
+			}
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.StateEnabled = false
+	session.ShouldReconnectOnError = false
+
+	var wg sync.WaitGroup
+	wg.Add(2 * messages)
+	var bad atomic.Int32
+	session.AddHandler(func(_ *Session, e *Event) {
+		defer wg.Done()
+		time.Sleep(time.Duration(e.Sequence%5) * time.Millisecond)
+		if want, _ := payload(int(e.Sequence - 1)); string(e.RawData) != want {
+			if bad.Add(1) == 1 {
+				t.Errorf("event %d RawData = %.80s, want %.80s", e.Sequence, e.RawData, want)
+			}
+		}
+	})
+	session.AddHandler(func(_ *Session, e *TypingStart) {
+		defer wg.Done()
+		time.Sleep(time.Millisecond)
+		i, err := strconv.Atoi(e.UserID)
+		if err != nil || e.ChannelID != strings.Repeat(strconv.Itoa(i%10), 1+(i*37)%2000) {
+			if bad.Add(1) == 1 {
+				t.Errorf("TYPING_START user %q has channel %.40q", e.UserID, e.ChannelID)
+			}
+		}
+	})
+	session.Lock()
+	session.wsConn = conn
+	listening := make(chan interface{})
+	session.listening = listening
+	session.Unlock()
+
+	session.listen(conn, listening)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handlers did not run for every message")
+	}
+	if n := bad.Load(); n != 0 {
+		t.Fatalf("%d handler calls saw another message's payload", n)
+	}
+}
+
+// An Op 7 reconnects synchronously from the listen goroutine and can wait
+// for minutes. The read buffer must already be back in the pool by then.
+func TestOnEventReleasesMessageBeforeReconnect(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	var releases atomic.Int32
+	releasedAtDial := make(chan int32, 1)
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			select {
+			case releasedAtDial <- releases.Load():
+				go session.Close()
+			default:
+			}
+			return nil, errors.New("dial failed")
+		},
+	}
+	session.Lock()
+	session.wsConn = conn
+	session.listening = make(chan interface{})
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = session.onEventForConnectionReleasing(conn, websocket.TextMessage, []byte(`{"op":7,"d":null}`), func() { releases.Add(1) })
+	}()
+	select {
+	case got := <-releasedAtDial:
+		if got != 1 {
+			t.Fatalf("releases before reconnect dialed = %d, want 1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Op 7 did not reconnect")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect did not stop after Close")
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("releases = %d, want 1", got)
+	}
+}
+
+func TestGatewayReadBufferReleasesOnReadError(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		raw := conn.UnderlyingConn()
+		// A text frame that announces 100 bytes, then the connection
+		// drops after 10 of them.
+		_, _ = raw.Write(append([]byte{0x81, 100}, `{"op":0,"d`...))
+		_ = raw.Close()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	var b gatewayReadBuffer
+	if _, _, err := b.readMessage(conn); err == nil {
+		t.Fatal("readMessage() of a truncated frame returned nil error")
+	}
+	if b.buf != nil {
+		t.Fatal("read buffer still held after a read error")
+	}
+}
+
+func TestGatewayReadBufferDoesNotPoolLargeBuffers(t *testing.T) {
+	large := bytes.NewBuffer(make([]byte, 0, 2*maxPooledGatewayReadBuffer))
+	b := gatewayReadBuffer{buf: large}
+	b.release()
+	if b.buf != nil {
+		t.Fatal("release kept the buffer")
+	}
+	for range 10 {
+		got := gatewayReadBufferPool.Get().(*bytes.Buffer)
+		if got == large {
+			t.Fatalf("pool returned a %d byte buffer, want at most %d", got.Cap(), maxPooledGatewayReadBuffer)
+		}
+	}
+	b.release() // a second release is a no-op
+}
+
+// BenchmarkGatewayListen measures one received dispatch end to end through
+// listen: websocket read, decode and dispatch.
+func BenchmarkGatewayListen(b *testing.B) {
+	small := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"user_id":"80351110224678912","channel_id":"613425648685547541","guild_id":"613425648685547541","timestamp":1700000000}}`)
+	large := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"user_id":"80351110224678912","channel_id":"613425648685547541","guild_id":"613425648685547541","timestamp":1700000000,"padding":"` + strings.Repeat("x", 32<<10) + `"}}`)
+	// A realistic large dispatch: a GUILD_MEMBERS_CHUNK with 100 members
+	// and their presences, about 46 KiB.
+	var chunk strings.Builder
+	chunk.WriteString(`{"op":0,"s":42,"t":"GUILD_MEMBERS_CHUNK","d":{"guild_id":"613425648685547541","chunk_index":0,"chunk_count":1,"members":[`)
+	for i := range 100 {
+		if i > 0 {
+			chunk.WriteByte(',')
+		}
+		id := strconv.FormatInt(80351110224678912+int64(i), 10)
+		chunk.WriteString(`{"user":{"id":"` + id + `","username":"member` + strconv.Itoa(i) + `","global_name":"Member ` + strconv.Itoa(i) + `","avatar":"a_1b2c3d4e5f60718293a4b5c6d7e8f901","discriminator":"0","public_flags":64},"nick":null,"avatar":null,"roles":["613425648685547542","613425648685547543"],"joined_at":"2024-03-01T12:34:56.789000+00:00","premium_since":null,"deaf":false,"mute":false,"flags":0,"pending":false}`)
+	}
+	chunk.WriteString(`],"presences":[`)
+	for i := range 100 {
+		if i > 0 {
+			chunk.WriteByte(',')
+		}
+		chunk.WriteString(`{"user":{"id":"` + strconv.FormatInt(80351110224678912+int64(i), 10) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
+	}
+	chunk.WriteString(`]}}`)
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{{"small", small}, {"32KiB", large}, {"members_chunk", []byte(chunk.String())}} {
+		b.Run(tc.name, func(b *testing.B) {
+			var header []byte
+			switch n := len(tc.payload); {
+			case n < 126:
+				header = []byte{0x81, byte(n)}
+			case n < 1<<16:
+				header = []byte{0x81, 126, byte(n >> 8), byte(n)}
+			default:
+				b.Fatal("payload too large")
+			}
+			frame := append(header, tc.payload...)
+
+			start := make(chan int)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				raw := conn.UnderlyingConn()
+				for n := range start {
+					for i := 0; i < n; i++ {
+						if _, err := raw.Write(frame); err != nil {
+							return
+						}
+					}
+					// A close frame ends this round of listen.
+					if _, err := raw.Write([]byte{0x88, 0x02, 0x03, 0xe8}); err != nil {
+						return
+					}
+					return
+				}
+			}))
+			defer server.Close()
+
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer conn.Close()
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.LogLevel = -1
+			session.StateEnabled = false
+			session.SyncEvents = true
+			session.ShouldReconnectOnError = false
+			session.wsConn = conn
+			listening := make(chan interface{})
+			session.listening = listening
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.payload)))
+			b.ResetTimer()
+			start <- b.N
+			session.listen(conn, listening)
+		})
+	}
 }
 
 func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
@@ -3529,6 +4268,119 @@ func TestPeekGatewayCompressedEvent(t *testing.T) {
 	}
 }
 
+func TestDecodeGatewayEvent(t *testing.T) {
+	payload := []byte(`{"op":0,"s":7,"t":"TYPING_START","d":{"user_id":"1","channel_id":"2"}}`)
+	compressed := compressedGatewayPayload(t, payload)
+	badChecksum := bytes.Clone(compressed)
+	badChecksum[len(badChecksum)-1] ^= 0xff
+	badDeflate := bytes.Clone(compressed)
+	badDeflate[2] = 0xff
+
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+		wantErr     bool
+	}{
+		{"text", websocket.TextMessage, payload, false},
+		{"text with trailing whitespace", websocket.TextMessage, append(bytes.Clone(payload), " \n"...), false},
+		{"text with trailing value", websocket.TextMessage, append(bytes.Clone(payload), `{"op":11}`...), true},
+		{"text truncated", websocket.TextMessage, payload[:len(payload)-1], true},
+		{"compressed", websocket.BinaryMessage, compressed, false},
+		{"compressed truncated", websocket.BinaryMessage, compressed[:len(compressed)/2], true},
+		{"compressed without checksum", websocket.BinaryMessage, compressed[:len(compressed)-4], true},
+		{"compressed bad checksum", websocket.BinaryMessage, badChecksum, true},
+		{"compressed bad deflate data", websocket.BinaryMessage, badDeflate, true},
+		{"compressed trailing value", websocket.BinaryMessage, compressedGatewayPayload(t, append(bytes.Clone(payload), `{"op":11}`...)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := decodeGatewayEvent(tc.messageType, tc.message)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("decodeGatewayEvent() = %#v, want error", e)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeGatewayEvent() error = %v", err)
+			}
+			if e.Operation != 0 || e.Sequence != 7 || e.Type != "TYPING_START" || string(e.RawData) != `{"user_id":"1","channel_id":"2"}` {
+				t.Fatalf("decodeGatewayEvent() = %#v", e)
+			}
+		})
+	}
+}
+
+// RawData must not share memory with the pooled inflate buffer, which the
+// next compressed payload overwrites.
+func TestDecodeGatewayEventRawDataSurvivesBufferReuse(t *testing.T) {
+	first, err := decodeGatewayEvent(websocket.BinaryMessage, compressedGatewayPayload(t, []byte(`{"op":0,"t":"A","d":{"value":"first"}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		if _, err := decodeGatewayEvent(websocket.BinaryMessage, compressedGatewayPayload(t, []byte(`{"op":0,"t":"B","d":{"value":"other"}}`))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(first.RawData) != `{"value":"first"}` {
+		t.Fatalf("RawData changed after later payloads: %s", first.RawData)
+	}
+}
+
+// A corrupt compressed frame is dropped and the listen loop keeps going.
+func TestListenDropsCorruptCompressedFrame(t *testing.T) {
+	good := compressedGatewayPayload(t, []byte(`{"op":0,"s":1,"t":"TYPING_START","d":{"user_id":"good","channel_id":"2"}}`))
+	corrupt := compressedGatewayPayload(t, []byte(`{"op":0,"s":2,"t":"TYPING_START","d":{"user_id":"corrupt","channel_id":"2"}}`))
+	corrupt[len(corrupt)-1] ^= 0xff
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for _, message := range [][]byte{corrupt, good} {
+			if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+				return
+			}
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.StateEnabled = false
+	session.SyncEvents = true
+	session.ShouldReconnectOnError = false
+	var users []string
+	session.AddHandler(func(_ *Session, e *TypingStart) {
+		users = append(users, e.UserID)
+	})
+	session.Lock()
+	session.wsConn = conn
+	listening := make(chan interface{})
+	session.listening = listening
+	session.Unlock()
+
+	session.listen(conn, listening)
+
+	if len(users) != 1 || users[0] != "good" {
+		t.Fatalf("dispatched TYPING_START users = %q, want [good]", users)
+	}
+}
+
 func TestGatewayCompressedDispatchConcurrentReuse(t *testing.T) {
 	message := compressedGatewayPayload(t, []byte(`{"op":11,"s":42,"d":null}`))
 	const goroutines = 32
@@ -3558,6 +4410,58 @@ func TestGatewayCompressedDispatchConcurrentReuse(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+// gatewayMembersChunkPayload builds a GUILD_MEMBERS_CHUNK dispatch with n
+// members and presences, a realistic large gateway payload.
+func gatewayMembersChunkPayload(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"op":0,"s":42,"t":"GUILD_MEMBERS_CHUNK","d":{"guild_id":"613425648685547541","chunk_index":0,"chunk_count":1,"members":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		id := strconv.FormatInt(80351110224678912+int64(i), 10)
+		b.WriteString(`{"user":{"id":"` + id + `","username":"member` + strconv.Itoa(i) + `","global_name":"Member ` + strconv.Itoa(i) + `","avatar":"a_1b2c3d4e5f60718293a4b5c6d7e8f901","discriminator":"0","public_flags":64},"nick":null,"avatar":null,"roles":["613425648685547542","613425648685547543"],"joined_at":"2024-03-01T12:34:56.789000+00:00","premium_since":null,"deaf":false,"mute":false,"flags":0,"pending":false}`)
+	}
+	b.WriteString(`],"presences":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"user":{"id":"` + strconv.FormatInt(80351110224678912+int64(i), 10) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
+	}
+	b.WriteString(`]}}`)
+	return []byte(b.String())
+}
+
+func BenchmarkGatewayMembersChunkDispatch(b *testing.B) {
+	payload := gatewayMembersChunkPayload(100)
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+	}{
+		{"text", websocket.TextMessage, payload},
+		{"zlib", websocket.BinaryMessage, compressedGatewayPayload(b, payload)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.StateEnabled = false
+			session.SyncEvents = true
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			for b.Loop() {
+				if _, err = session.onEvent(tc.messageType, tc.message); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -3660,6 +4564,37 @@ func BenchmarkGatewayUnconsumedDispatch(b *testing.B) {
 				})
 			}
 		}
+	}
+}
+
+// gatewayPresenceUpdatePayload is a typical PRESENCE_UPDATE, the most frequent
+// dispatch for bots with the presence intent.
+var gatewayPresenceUpdatePayload = []byte(`{"op":0,"s":42,"t":"PRESENCE_UPDATE","d":{"user":{"id":"80351110224678912"},"status":"online","guild_id":"613425648685547541","client_status":{"desktop":"online"},"activities":[{"type":0,"timestamps":{"start":1700000000000},"state":"In a match","session_id":"aa2f8a9d6f1c4b0e","name":"Some Game","id":"5cb2b8ab0bcd0b0","details":"Ranked","created_at":1700000000123,"assets":{"large_text":"Map","large_image":"mp:external/abc/def.png"},"application_id":"356875570916753438"}]}}`)
+
+func BenchmarkGatewayPresenceDispatch(b *testing.B) {
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+	}{
+		{"text", websocket.TextMessage, gatewayPresenceUpdatePayload},
+		{"zlib", websocket.BinaryMessage, compressedGatewayPayload(b, gatewayPresenceUpdatePayload)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.StateEnabled = false
+			session.SyncEvents = true
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err = session.onEvent(tc.messageType, tc.message); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

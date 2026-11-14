@@ -10179,6 +10179,8 @@ func TestPresenceUpdateClearsExplicitNullAvatar(t *testing.T) {
 	}{
 		{name: "clear_online", avatar: `,"avatar":null`},
 		{name: "clear_offline", avatar: `,"avatar":null`, offline: true},
+		{name: "clear_mixed_case_key", avatar: `,"AVATAR":null`},
+		{name: "clear_escaped_key", avatar: `,"\u0061vatar":null`},
 		{name: "replace", avatar: `,"avatar":"new-avatar"`, wantAvatar: "new-avatar"},
 		{name: "omit", wantAvatar: "old-avatar"},
 		{name: "malformed_avatar", avatar: `,"avatar":123`, wantAvatar: "old-avatar"},
@@ -10327,6 +10329,7 @@ func TestPresenceUpdateRefreshesCachedGlobalName(t *testing.T) {
 			{name: "omit", want: "old-name"},
 			{name: "replace_offline", field: `,"global_name":"new-name"`, want: "new-name", offline: true},
 			{name: "clear_offline", field: `,"global_name":null`, offline: true},
+			{name: "clear_mixed_case_key", field: `,"Global_Name":null`},
 			{name: "omit_offline", want: "old-name", offline: true},
 			{name: "malformed", field: `,"global_name":123`, want: "old-name"},
 			{name: "programmatic_zero", want: "old-name", programmatic: true},

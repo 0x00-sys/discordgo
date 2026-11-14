@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -515,6 +516,8 @@ func (s *Session) open(retryCancel <-chan struct{}) error {
 		s.VoiceConnections = make(map[string]*VoiceConnection)
 	}
 
+	s.gatewayOpenedAt = time.Now()
+
 	// Start reading messages from Discord.
 	go s.listen(wsConn, s.listening)
 
@@ -632,26 +635,47 @@ func (s *Session) openGatewayControlEvent(messageType int, message []byte, expec
 }
 
 func peekGatewayEvent(messageType int, message []byte) (*Event, error) {
-	var reader io.Reader
-	reader = bytes.NewBuffer(message)
+	return decodeGatewayEvent(messageType, message)
+}
 
+// maxPooledGatewayInflateBuffer keeps one large payload, such as READY or
+// GUILD_CREATE, from pinning its inflate buffer in the pool.
+const maxPooledGatewayInflateBuffer = 64 << 10
+
+var gatewayInflateBufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+// decodeGatewayEvent decodes one gateway payload, inflating it first when it
+// is a zlib compressed binary message. A compressed payload is read to the
+// end of its zlib stream, so a bad checksum or a truncated stream is an
+// error. Event.RawData is a json.RawMessage and gets its own copy of the
+// bytes, so the inflate buffer is reused once decoding returns.
+func decodeGatewayEvent(messageType int, message []byte) (*Event, error) {
 	if messageType == websocket.BinaryMessage {
-		z, err := acquireGatewayZlibReader(reader)
+		z, err := acquireGatewayZlibReader(bytes.NewReader(message))
 		if err != nil {
 			return nil, err
 		}
-		defer releaseGatewayZlibReader(z)
-
-		reader = z
+		buf := gatewayInflateBufferPool.Get().(*bytes.Buffer)
+		defer func() {
+			if buf.Cap() <= maxPooledGatewayInflateBuffer {
+				buf.Reset()
+				gatewayInflateBufferPool.Put(buf)
+			}
+		}()
+		buf.Reset()
+		_, err = buf.ReadFrom(z)
+		if closeErr := releaseGatewayZlibReader(z); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return nil, err
+		}
+		message = buf.Bytes()
 	}
 
 	var e *Event
-	decoder := json.NewDecoder(reader)
-	if err := decoder.Decode(&e); err != nil {
-		return e, err
-	}
-
-	return e, nil
+	err := json.Unmarshal(message, &e)
+	return e, err
 }
 
 // listen polls the websocket connection for events, it will stop when the
@@ -660,9 +684,12 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 	s.log(LogInformational, "called")
 
+	var readBuffer gatewayReadBuffer
+	releaseReadBuffer := readBuffer.release
+
 	for {
 
-		messageType, message, err := wsConn.ReadMessage()
+		messageType, message, err := readBuffer.readMessage(wsConn)
 
 		if err != nil {
 			readErr := err
@@ -708,13 +735,58 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 		select {
 
 		case <-listening:
+			readBuffer.release()
 			return
 
 		default:
-			_, _ = s.onEventForConnection(wsConn, messageType, message)
+			// The buffer goes back to the pool as soon as the message is
+			// decoded, before handlers run or an Op 7/Op 9 reconnects.
+			_, _ = s.onEventForConnectionReleasing(wsConn, messageType, message, releaseReadBuffer)
+			readBuffer.release()
 
 		}
 	}
+}
+
+// maxPooledGatewayReadBuffer keeps one large payload, such as READY or
+// GUILD_CREATE, from pinning its read buffer in the pool.
+const maxPooledGatewayReadBuffer = 64 << 10
+
+var gatewayReadBufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+// gatewayReadBuffer holds the pooled buffer for the message listen is
+// handling. Idle connections hold no buffer.
+type gatewayReadBuffer struct {
+	buf *bytes.Buffer
+}
+
+// readMessage reads the next message into a pooled buffer. The returned bytes
+// are valid until release is called.
+func (b *gatewayReadBuffer) readMessage(wsConn *websocket.Conn) (int, []byte, error) {
+	b.release()
+	messageType, r, err := wsConn.NextReader()
+	if err != nil {
+		return messageType, nil, err
+	}
+	b.buf = gatewayReadBufferPool.Get().(*bytes.Buffer)
+	b.buf.Reset()
+	if _, err := b.buf.ReadFrom(r); err != nil {
+		b.release()
+		return messageType, nil, err
+	}
+	return messageType, b.buf.Bytes(), nil
+}
+
+// release returns the buffer to the pool. It is safe to call more than once.
+func (b *gatewayReadBuffer) release() {
+	if b.buf == nil {
+		return
+	}
+	if b.buf.Cap() <= maxPooledGatewayReadBuffer {
+		b.buf.Reset()
+		gatewayReadBufferPool.Put(b.buf)
+	}
+	b.buf = nil
 }
 
 func shouldReconnectOnGatewayClose(err error) bool {
@@ -1208,34 +1280,17 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 }
 
 func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, message []byte) (*Event, error) {
+	return s.onEventForConnectionReleasing(wsConn, messageType, message, nil)
+}
 
-	var err error
-	var reader io.Reader
-	reader = bytes.NewBuffer(message)
+// onEventForConnectionReleasing is onEventForConnection that calls release,
+// when not nil, once message is no longer needed. The decoded Event holds its
+// own copy of the payload, so release runs before any handler.
+func (s *Session) onEventForConnectionReleasing(wsConn *websocket.Conn, messageType int, message []byte, release func()) (*Event, error) {
 
-	// If this is a compressed message, uncompress it.
-	if messageType == websocket.BinaryMessage {
-
-		z, err2 := acquireGatewayZlibReader(reader)
-		if err2 != nil {
-			s.log(LogError, "error uncompressing websocket message, %s", err)
-			return nil, err2
-		}
-
-		defer func() {
-			err3 := releaseGatewayZlibReader(z)
-			if err3 != nil {
-				s.log(LogWarning, "error closing zlib, %s", err)
-			}
-		}()
-
-		reader = z
-	}
-
-	// Decode the event into an Event struct.
-	var e *Event
-	decoder := json.NewDecoder(reader)
-	if err = decoder.Decode(&e); err != nil {
+	// Decode the event into an Event struct, inflating it first if needed.
+	e, err := decodeGatewayEvent(messageType, message)
+	if err != nil {
 		s.log(LogError, "error decoding websocket message, %s", err)
 		return e, err
 	}
@@ -1243,6 +1298,16 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		err = fmt.Errorf("invalid gateway event")
 		s.log(LogError, "error decoding websocket message, %s", err)
 		return nil, err
+	}
+	if release != nil {
+		if e.Operation != 0 && s.LogLevel >= LogWarning {
+			// The unknown Op warning below logs the raw message.
+			// Non-dispatch payloads are small, so keep a copy.
+			message = bytes.Clone(message)
+		} else {
+			message = nil
+		}
+		release()
 	}
 
 	// Redacting the payload is expensive; skip it unless the message
@@ -1887,6 +1952,18 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 
 	if s.ShouldReconnectOnError {
 
+		// A healthy connection that drops is redialed at once. A gateway
+		// that keeps dropping connections soon after they open gets a
+		// growing delay instead, so a session cannot burn through its
+		// daily Identify limit in a tight loop.
+		if delay := s.gatewayFlapBackoff(); delay > 0 {
+			s.log(LogWarning, "gateway connection dropped soon after opening, waiting %v before reconnecting", delay)
+			if !waitForGatewayReconnect(delay, cancel) {
+				s.log(LogInformational, "reconnect canceled during backoff")
+				return
+			}
+		}
+
 		wait := time.Duration(1)
 
 		for {
@@ -1936,16 +2013,7 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 
 			s.log(LogError, "error reconnecting to gateway, %s", err)
 
-			timer := time.NewTimer(wait * time.Second)
-			select {
-			case <-timer.C:
-			case <-cancel:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
+			if !waitForGatewayReconnect(jitteredGatewayBackoff(wait*time.Second), cancel) {
 				s.log(LogInformational, "reconnect canceled during backoff")
 				return
 			}
@@ -1955,6 +2023,74 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 			}
 		}
 	}
+}
+
+const (
+	// defaultGatewayStableAfter is how long a gateway connection must stay
+	// open before a drop counts as isolated and is redialed at once.
+	defaultGatewayStableAfter = 30 * time.Second
+
+	// Delays for redialing a gateway that keeps dropping connections soon
+	// after they open. Every such cycle can cost an Identify, and Discord
+	// allows 1000 a day (one per 86.4s), so the cap must stay well above
+	// that. With jitter the capped delay is never shorter than 300s.
+	minGatewayFlapDelay = time.Second
+	maxGatewayFlapDelay = 600 * time.Second
+)
+
+// nextGatewayFlapDelay returns the delay before redialing a connection that
+// stayed open for connected. Drops after a stable connection reset it to
+// zero; repeated early drops double it from minGatewayFlapDelay up to
+// maxGatewayFlapDelay.
+func nextGatewayFlapDelay(previous, connected, stableAfter time.Duration) time.Duration {
+	if connected >= stableAfter {
+		return 0
+	}
+	return min(max(2*previous, minGatewayFlapDelay), maxGatewayFlapDelay)
+}
+
+// gatewayFlapBackoff updates the flap delay for the connection that just
+// dropped and returns the jittered time to wait before redialing it.
+func (s *Session) gatewayFlapBackoff() time.Duration {
+	s.Lock()
+	defer s.Unlock()
+
+	if s.gatewayOpenedAt.IsZero() {
+		// No connection opened since the last reconnect started.
+		return 0
+	}
+	connected := time.Since(s.gatewayOpenedAt)
+	s.gatewayOpenedAt = time.Time{}
+
+	stableAfter := s.gatewayStableAfter
+	if stableAfter <= 0 {
+		stableAfter = defaultGatewayStableAfter
+	}
+	s.gatewayFlapDelay = nextGatewayFlapDelay(s.gatewayFlapDelay, connected, stableAfter)
+	return jitteredGatewayBackoff(s.gatewayFlapDelay)
+}
+
+// waitForGatewayReconnect waits for d and reports false if cancel closed
+// first.
+func waitForGatewayReconnect(d time.Duration, cancel <-chan struct{}) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-cancel:
+		return false
+	}
+}
+
+// jitteredGatewayBackoff returns a delay in [d/2, 3d/2), so sessions that
+// lost their connections together spread their retries out instead of
+// redialing in lockstep. The mean delay stays d.
+func jitteredGatewayBackoff(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return d/2 + mrand.N(d)
 }
 
 func (s *Session) reconnectCancelSignal() <-chan struct{} {

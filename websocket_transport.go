@@ -14,11 +14,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// websocketWriteBufferPool lends write buffers to gateway and voice
+// connections only while a message is being written. They idle between
+// heartbeats, so a dedicated 4 KiB buffer per connection is mostly unused.
+// Gorilla wants one pool per buffer size; it is only used with the default.
+var websocketWriteBufferPool = &sync.Pool{}
+
 // dialWebsocket cancels both dialing and the subsequent TLS/HTTP
 // handshake. The pinned websocket dialer uses context for TCP dialing and
 // deadlines, but does not close an established transport on cancellation.
 func dialWebsocket(ctx context.Context, dialer *websocket.Dialer, endpoint string, header http.Header) (*websocket.Conn, error) {
 	copyDialer := *dialer
+	if copyDialer.WriteBufferPool == nil && copyDialer.WriteBufferSize == 0 {
+		copyDialer.WriteBufferPool = websocketWriteBufferPool
+	}
 	var httpProxy bool
 	if dialer.Proxy != nil {
 		copyDialer.Proxy = func(req *http.Request) (*url.URL, error) {

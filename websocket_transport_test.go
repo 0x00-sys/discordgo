@@ -12,9 +12,15 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
+	"reflect"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +56,198 @@ func TestWebsocketMasksDoNotFollowMathRand(t *testing.T) {
 	if matches == 4 {
 		t.Fatal("all four WebSocket masks were predictable from math/rand seed 42")
 	}
+}
+
+// newIdleWebsocketServer accepts websocket connections and reads from them
+// until they close.
+func newIdleWebsocketServer(t testing.TB) string {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return "ws" + strings.TrimPrefix(server.URL, "http")
+}
+
+// websocketWriteBufferLen reads gorilla's private write buffer. The test is
+// skipped if a gorilla update renames the field.
+func websocketWriteBufferLen(t *testing.T, conn *websocket.Conn) int {
+	t.Helper()
+	field := reflect.ValueOf(conn).Elem().FieldByName("writeBuf")
+	if !field.IsValid() || field.Kind() != reflect.Slice {
+		t.Skip("gorilla/websocket no longer has a writeBuf []byte field")
+	}
+	return field.Len()
+}
+
+func TestDialWebsocketIdleConnectionHoldsNoWriteBuffer(t *testing.T) {
+	endpoint := newIdleWebsocketServer(t)
+	conn, err := dialWebsocket(context.Background(), websocket.DefaultDialer, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Gateway and voice connections idle between infrequent heartbeats.
+	// Keeping a 4 KiB write buffer per idle connection costs about 40 MB
+	// for 10,000 sessions in one process.
+	if n := websocketWriteBufferLen(t, conn); n != 0 {
+		t.Fatalf("idle connection holds a %d byte write buffer", n)
+	}
+}
+
+// A dialer that sets its own write buffer size or pool keeps it, and the
+// caller's dialer is never modified.
+func TestDialWebsocketKeepsCustomWriteBufferSettings(t *testing.T) {
+	endpoint := newIdleWebsocketServer(t)
+	dialer := &websocket.Dialer{WriteBufferSize: 8192}
+	conn, err := dialWebsocket(context.Background(), dialer, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
+		t.Fatal(err)
+	}
+	if n := websocketWriteBufferLen(t, conn); n != 8192+14 {
+		t.Fatalf("custom WriteBufferSize connection holds a %d byte write buffer, want %d", n, 8192+14)
+	}
+	if dialer.WriteBufferPool != nil {
+		t.Fatal("dialWebsocket modified the caller's dialer")
+	}
+
+	pool := &countingBufferPool{}
+	conn, err = dialWebsocket(context.Background(), &websocket.Dialer{WriteBufferPool: pool}, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
+		t.Fatal(err)
+	}
+	if pool.gets.Load() == 0 {
+		t.Fatal("custom WriteBufferPool was not used")
+	}
+}
+
+type countingBufferPool struct {
+	sync.Pool
+	gets atomic.Int32
+}
+
+func (p *countingBufferPool) Get() interface{} {
+	p.gets.Add(1)
+	return p.Pool.Get()
+}
+
+// pipeListener serves in-memory connections, so benchmarks that open many
+// connections do not run out of local ports.
+type pipeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newPipeListener() *pipeListener {
+	return &pipeListener{conns: make(chan net.Conn), closed: make(chan struct{})}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr { return &net.UnixAddr{Name: "pipe", Net: "pipe"} }
+
+func (l *pipeListener) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	select {
+	case l.conns <- server:
+		return client, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// BenchmarkDialWebsocketIdleHeap reports the live heap per idle connection
+// after one heartbeat has been written on each. The server side of every
+// connection is in the same process and counted too, so compare the
+// heap-B/conn metric between versions rather than reading it as the client
+// cost alone.
+func BenchmarkDialWebsocketIdleHeap(b *testing.B) {
+	const conns = 200
+	listener := newPipeListener()
+	upgrader := websocket.Upgrader{}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})}
+	go server.Serve(listener)
+	defer server.Close()
+	// Default buffer settings, as in websocket.DefaultDialer.
+	dialer := &websocket.Dialer{NetDialContext: listener.DialContext}
+
+	var perConn float64
+	for b.Loop() {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		open := make([]*websocket.Conn, 0, conns)
+		for range conns {
+			conn, err := dialWebsocket(context.Background(), dialer, "ws://pipe/", nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
+				b.Fatal(err)
+			}
+			open = append(open, conn)
+		}
+		// Let the server read the heartbeats and settle.
+		time.Sleep(50 * time.Millisecond)
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		perConn += (float64(after.HeapAlloc) - float64(before.HeapAlloc)) / conns
+		runtime.KeepAlive(open)
+		for _, conn := range open {
+			_ = conn.Close()
+		}
+		// Let the server side connections finish before the next round.
+		time.Sleep(50 * time.Millisecond)
+	}
+	b.ReportMetric(perConn/float64(b.N), "heap-B/conn")
 }
 
 func TestGatewayOpenHandlesProxyStatusWithoutReason(t *testing.T) {
