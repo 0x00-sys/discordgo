@@ -2,7 +2,11 @@ package discordgo
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
@@ -35,6 +39,159 @@ func TestVoiceChannelEffectSendSoundIDUnmarshal(t *testing.T) {
 				t.Fatalf("SoundID = %q, want %q", event.SoundID, tt.want)
 			}
 		})
+	}
+}
+
+func TestPresenceUpdateRecordsSuppliedUserFields(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		payload               string
+		avatar, globalName    bool
+		wantAvatar, wantError bool
+	}{
+		{name: "id_only", payload: `{"user":{"id":"1"},"status":"online"}`},
+		{name: "null_avatar", payload: `{"user":{"id":"1","avatar":null},"status":"online"}`, avatar: true},
+		{name: "avatar_and_name", payload: `{"user":{"id":"1","avatar":"a","global_name":"g"},"status":"online"}`, avatar: true, globalName: true, wantAvatar: true},
+		{name: "escaped_key", payload: `{"user":{"id":"1","\u0061vatar":null},"status":"online"}`, avatar: true},
+		{name: "key_text_elsewhere", payload: `{"user":{"id":"1"},"status":"online","activities":[{"name":"\"avatar\" global_name","type":0}]}`},
+		{name: "activity_key", payload: `{"user":{"id":"1"},"status":"online","activities":[{"name":"x","type":0,"avatar":"y"}]}`},
+		{name: "malformed_avatar", payload: `{"user":{"id":"1","avatar":123},"status":"online"}`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var update PresenceUpdate
+			err := json.Unmarshal([]byte(tc.payload), &update)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("Unmarshal error = %v, want error %t", err, tc.wantError)
+			}
+			if update.User == nil || update.User.ID != "1" || update.Status != StatusOnline {
+				t.Fatalf("decoded update = %+v", update)
+			}
+			if update.avatarPresent != tc.avatar || update.globalNamePresent != tc.globalName {
+				t.Fatalf("avatar/global_name present = %t/%t, want %t/%t", update.avatarPresent, update.globalNamePresent, tc.avatar, tc.globalName)
+			}
+			if (update.User.Avatar == "a") != tc.wantAvatar {
+				t.Fatalf("avatar = %q", update.User.Avatar)
+			}
+		})
+	}
+}
+
+// presenceUpdateTwoPass is PresenceUpdate.UnmarshalJSON before the fast
+// path: it always runs the second pass over the payload.
+func presenceUpdateTwoPass(data []byte) (PresenceUpdate, error) {
+	type presenceUpdate PresenceUpdate
+	var decoded presenceUpdate
+	err := json.Unmarshal(data, &decoded)
+	p := PresenceUpdate(decoded)
+	if err != nil {
+		return p, err
+	}
+	var fields struct {
+		User struct {
+			Avatar     json.RawMessage `json:"avatar"`
+			GlobalName json.RawMessage `json:"global_name"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return p, err
+	}
+	p.avatarPresent = len(fields.User.Avatar) != 0
+	p.globalNamePresent = len(fields.User.GlobalName) != 0
+	return p, nil
+}
+
+// caseVariants returns every ASCII upper/lower case spelling of name.
+func caseVariants(name string) []string {
+	variants := []string{""}
+	for _, c := range name {
+		var next []string
+		for _, v := range variants {
+			next = append(next, v+strings.ToLower(string(c)))
+			if upper := strings.ToUpper(string(c)); upper != strings.ToLower(string(c)) {
+				next = append(next, v+upper)
+			}
+		}
+		variants = next
+	}
+	return variants
+}
+
+// encoding/json matches keys case-insensitively, so "AVATAR" or "Global_Name"
+// in the user object must still be recorded as supplied, exactly as the two
+// pass decode does.
+func TestPresenceUpdateMatchesTwoPassDecode(t *testing.T) {
+	var payloads []string
+	for _, key := range caseVariants("avatar") {
+		payloads = append(payloads,
+			`{"user":{"id":"1","`+key+`":null},"status":"online"}`,
+			`{"user":{"id":"1","`+key+`":"a"},"status":"online"}`,
+			`{"user":{"id":"1","avatar":"a","`+key+`":null},"status":"online"}`,
+			`{"user":{"id":"1"},"status":"online","activities":[{"name":"x","type":0,"`+key+`":"y"}]}`,
+		)
+	}
+	for _, key := range caseVariants("global_name") {
+		payloads = append(payloads,
+			`{"user":{"id":"1","`+key+`":null},"status":"online"}`,
+			`{"user":{"id":"1","`+key+`":"g"},"status":"online"}`,
+		)
+	}
+	for _, user := range caseVariants("user") {
+		payloads = append(payloads,
+			`{"`+user+`":{"id":"1","Avatar":null,"GLOBAL_NAME":null},"status":"online"}`,
+			`{"`+user+`":{"id":"1"},"status":"online"}`,
+		)
+	}
+	payloads = append(payloads,
+		`{"user":{"id":"1"},"status":"online"}`,
+		`{"user":{"id":"1","\u0041VATAR":null},"status":"online"}`,
+		`{"user":{"id":"1","glob\u0061l_name":null},"status":"online"}`,
+		`{"user":{"id":"1","avatar\u0000":null},"status":"online"}`,
+		`{"user":{"id":"1","avatarx":null,"xglobal_name":null},"status":"online"}`,
+		`{"user":{"id":"1","name":"\"AVATAR\""},"status":"online"}`,
+		`{"user":{"id":"1"},"status":"online","activities":[{"name":"\"Avatar\" Global_Name","type":0}]}`,
+		`{"user":{"id":"1","AVATAR":123},"status":"online"}`,
+		`{"user":{"id":"1","avatar":null}}`,
+		`{"user":{"id":"1"}}`,
+		`{"user":{"id":"1"},"status":5}`,
+		`{"user":{"id":"1","avatar":null},"status":5}`,
+	)
+
+	for _, payload := range payloads {
+		want, wantErr := presenceUpdateTwoPass([]byte(payload))
+		var got PresenceUpdate
+		gotErr := json.Unmarshal([]byte(payload), &got)
+		if (gotErr != nil) != (wantErr != nil) {
+			t.Fatalf("%s: error = %v, two pass error = %v", payload, gotErr, wantErr)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s:\ngot       %+v (avatar %t, global_name %t)\ntwo pass  %+v (avatar %t, global_name %t)",
+				payload, got, got.avatarPresent, got.globalNamePresent, want, want.avatarPresent, want.globalNamePresent)
+		}
+	}
+}
+
+// The fast path only looks for ASCII case variants of the key names. That is
+// only exact if no other rune folds to one of their letters, which is true for
+// these names but not for every name (K and S have non-ASCII folds).
+func TestPresenceUserFieldNamesHaveOnlyASCIIFolds(t *testing.T) {
+	for _, c := range "avatarglobal_name" {
+		for r := unicode.SimpleFold(c); r != c; r = unicode.SimpleFold(r) {
+			if r >= utf8.RuneSelf {
+				t.Fatalf("%q folds to non-ASCII %q", c, r)
+			}
+		}
+	}
+}
+
+func BenchmarkPresenceUpdateUnmarshal(b *testing.B) {
+	payload := []byte(`{"user":{"id":"80351110224678912"},"status":"online","guild_id":"613425648685547541","client_status":{"desktop":"online"},"activities":[{"type":0,"timestamps":{"start":1700000000000},"state":"In a match","session_id":"aa2f8a9d6f1c4b0e","name":"Some Game","id":"5cb2b8ab0bcd0b0","details":"Ranked","created_at":1700000000123,"assets":{"large_text":"Map","large_image":"mp:external/abc/def.png"},"application_id":"356875570916753438"}]}`)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		var update PresenceUpdate
+		if err := json.Unmarshal(payload, &update); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
