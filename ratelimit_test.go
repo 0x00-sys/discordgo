@@ -831,50 +831,50 @@ var routeScopedCalls = []struct {
 	name string
 	call func(s *Session, major, minor string)
 }{
-	{"GuildEmoji", func(s *Session, major, minor string) { s.GuildEmoji(major, minor) }},
-	{"GuildSticker", func(s *Session, major, minor string) { s.GuildSticker(major, minor) }},
-	{"GuildSoundboardSound", func(s *Session, major, minor string) { s.GuildSoundboardSound(major, minor) }},
+	{"GuildEmoji", func(s *Session, major, minor string) { _, _ = s.GuildEmoji(major, minor) }},
+	{"GuildSticker", func(s *Session, major, minor string) { _, _ = s.GuildSticker(major, minor) }},
+	{"GuildSoundboardSound", func(s *Session, major, minor string) { _, _ = s.GuildSoundboardSound(major, minor) }},
 	{"GuildSoundboardSoundEdit", func(s *Session, major, minor string) {
-		s.GuildSoundboardSoundEdit(major, minor, &SoundboardSoundParams{})
+		_, _ = s.GuildSoundboardSoundEdit(major, minor, &SoundboardSoundParams{})
 	}},
-	{"GuildSoundboardSoundDelete", func(s *Session, major, minor string) { s.GuildSoundboardSoundDelete(major, minor) }},
-	{"ApplicationEmoji", func(s *Session, major, minor string) { s.ApplicationEmoji(major, minor) }},
-	{"ChannelMessageCrosspost", func(s *Session, major, minor string) { s.ChannelMessageCrosspost(major, minor) }},
-	{"PollExpire", func(s *Session, major, minor string) { s.PollExpire(major, minor) }},
-	{"ApplicationCommand", func(s *Session, major, minor string) { s.ApplicationCommand(major, "", minor) }},
-	{"ApplicationCommandGuild", func(s *Session, major, minor string) { s.ApplicationCommand("application", major, minor) }},
+	{"GuildSoundboardSoundDelete", func(s *Session, major, minor string) { _ = s.GuildSoundboardSoundDelete(major, minor) }},
+	{"ApplicationEmoji", func(s *Session, major, minor string) { _, _ = s.ApplicationEmoji(major, minor) }},
+	{"ChannelMessageCrosspost", func(s *Session, major, minor string) { _, _ = s.ChannelMessageCrosspost(major, minor) }},
+	{"PollExpire", func(s *Session, major, minor string) { _, _ = s.PollExpire(major, minor) }},
+	{"ApplicationCommand", func(s *Session, major, minor string) { _, _ = s.ApplicationCommand(major, "", minor) }},
+	{"ApplicationCommandGuild", func(s *Session, major, minor string) { _, _ = s.ApplicationCommand("application", major, minor) }},
 	{"ApplicationCommandEdit", func(s *Session, major, minor string) {
-		s.ApplicationCommandEdit(major, "", minor, &ApplicationCommand{})
+		_, _ = s.ApplicationCommandEdit(major, "", minor, &ApplicationCommand{})
 	}},
 	{"ApplicationCommandEditGuild", func(s *Session, major, minor string) {
-		s.ApplicationCommandEdit("application", major, minor, &ApplicationCommand{})
+		_, _ = s.ApplicationCommandEdit("application", major, minor, &ApplicationCommand{})
 	}},
-	{"ApplicationCommandDelete", func(s *Session, major, minor string) { s.ApplicationCommandDelete(major, "", minor) }},
+	{"ApplicationCommandDelete", func(s *Session, major, minor string) { _ = s.ApplicationCommandDelete(major, "", minor) }},
 	{"ApplicationCommandDeleteGuild", func(s *Session, major, minor string) {
-		s.ApplicationCommandDelete("application", major, minor)
+		_ = s.ApplicationCommandDelete("application", major, minor)
 	}},
-	{"GuildScheduledEvent", func(s *Session, major, minor string) { s.GuildScheduledEvent(major, minor, false) }},
+	{"GuildScheduledEvent", func(s *Session, major, minor string) { _, _ = s.GuildScheduledEvent(major, minor, false) }},
 	{"GuildScheduledEventEdit", func(s *Session, major, minor string) {
-		s.GuildScheduledEventEdit(major, minor, &GuildScheduledEventParams{})
+		_, _ = s.GuildScheduledEventEdit(major, minor, &GuildScheduledEventParams{})
 	}},
-	{"GuildScheduledEventDelete", func(s *Session, major, minor string) { s.GuildScheduledEventDelete(major, minor) }},
+	{"GuildScheduledEventDelete", func(s *Session, major, minor string) { _ = s.GuildScheduledEventDelete(major, minor) }},
 	{"GuildScheduledEventUsers", func(s *Session, major, minor string) {
-		s.GuildScheduledEventUsers(major, minor, 0, false, "", "")
+		_, _ = s.GuildScheduledEventUsers(major, minor, 0, false, "", "")
 	}},
 	{"GuildScheduledEventExceptionCreate", func(s *Session, major, minor string) {
-		s.GuildScheduledEventExceptionCreate(major, minor, &GuildScheduledEventExceptionCreateParams{})
+		_, _ = s.GuildScheduledEventExceptionCreate(major, minor, &GuildScheduledEventExceptionCreateParams{})
 	}},
 	{"GuildScheduledEventExceptionEdit", func(s *Session, major, minor string) {
-		s.GuildScheduledEventExceptionEdit(major, minor, minor+"-exception", &GuildScheduledEventExceptionEditParams{})
+		_, _ = s.GuildScheduledEventExceptionEdit(major, minor, minor+"-exception", &GuildScheduledEventExceptionEditParams{})
 	}},
 	{"GuildScheduledEventExceptionDelete", func(s *Session, major, minor string) {
-		s.GuildScheduledEventExceptionDelete(major, minor, minor+"-exception")
+		_ = s.GuildScheduledEventExceptionDelete(major, minor, minor+"-exception")
 	}},
-	{"AutoModerationRule", func(s *Session, major, minor string) { s.AutoModerationRule(major, minor) }},
+	{"AutoModerationRule", func(s *Session, major, minor string) { _, _ = s.AutoModerationRule(major, minor) }},
 	{"AutoModerationRuleEdit", func(s *Session, major, minor string) {
-		s.AutoModerationRuleEdit(major, minor, &AutoModerationRule{})
+		_, _ = s.AutoModerationRuleEdit(major, minor, &AutoModerationRule{})
 	}},
-	{"AutoModerationRuleDelete", func(s *Session, major, minor string) { s.AutoModerationRuleDelete(major, minor) }},
+	{"AutoModerationRuleDelete", func(s *Session, major, minor string) { _ = s.AutoModerationRuleDelete(major, minor) }},
 }
 
 // newBucketKeySession returns a session whose requests all succeed with no
@@ -944,14 +944,14 @@ func TestMinorIDBucketsKeptForConcurrentRoutes(t *testing.T) {
 		name string
 		call func(s *Session, minor string)
 	}{
-		{"GuildBan", func(s *Session, minor string) { s.GuildBan("guild", minor) }},
-		{"UserVoiceState", func(s *Session, minor string) { s.UserVoiceState("guild", minor) }},
+		{"GuildBan", func(s *Session, minor string) { _, _ = s.GuildBan("guild", minor) }},
+		{"UserVoiceState", func(s *Session, minor string) { _, _ = s.UserVoiceState("guild", minor) }},
 		{"UserVoiceStateEdit", func(s *Session, minor string) {
-			s.UserVoiceStateEdit("guild", minor, &UserVoiceStateEditParams{})
+			_ = s.UserVoiceStateEdit("guild", minor, &UserVoiceStateEditParams{})
 		}},
-		{"MessageReactionsRemoveAll", func(s *Session, minor string) { s.MessageReactionsRemoveAll("channel", minor) }},
+		{"MessageReactionsRemoveAll", func(s *Session, minor string) { _ = s.MessageReactionsRemoveAll("channel", minor) }},
 		{"MessageReactionsRemoveEmoji", func(s *Session, minor string) {
-			s.MessageReactionsRemoveEmoji("channel", minor, "emoji")
+			_ = s.MessageReactionsRemoveEmoji("channel", minor, "emoji")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
