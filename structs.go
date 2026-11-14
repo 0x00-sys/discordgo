@@ -163,6 +163,16 @@ type Session struct {
 
 	// limits non-critical gateway writes for the current connection
 	gatewaySendRateLimiter gatewaySendRateLimiter
+
+	// When the current gateway connection finished opening, and the delay
+	// applied before redialing after connections that dropped soon after
+	// opening.
+	gatewayOpenedAt  time.Time
+	gatewayFlapDelay time.Duration
+
+	// How long a connection must stay up before a drop redials at once.
+	// Zero uses defaultGatewayStableAfter; tests set it to avoid long sleeps.
+	gatewayStableAfter time.Duration
 }
 
 // ApplicationIntegrationType dictates where application can be installed and its available interaction contexts.

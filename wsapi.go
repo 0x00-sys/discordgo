@@ -516,6 +516,8 @@ func (s *Session) open(retryCancel <-chan struct{}) error {
 		s.VoiceConnections = make(map[string]*VoiceConnection)
 	}
 
+	s.gatewayOpenedAt = time.Now()
+
 	// Start reading messages from Discord.
 	go s.listen(wsConn, s.listening)
 
@@ -1818,6 +1820,18 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 
 	if s.ShouldReconnectOnError {
 
+		// A healthy connection that drops is redialed at once. A gateway
+		// that keeps dropping connections soon after they open gets a
+		// growing delay instead, so a session cannot burn through its
+		// daily Identify limit in a tight loop.
+		if delay := s.gatewayFlapBackoff(); delay > 0 {
+			s.log(LogWarning, "gateway connection dropped soon after opening, waiting %v before reconnecting", delay)
+			if !waitForGatewayReconnect(delay, cancel) {
+				s.log(LogInformational, "reconnect canceled during backoff")
+				return
+			}
+		}
+
 		wait := time.Duration(1)
 
 		for {
@@ -1867,16 +1881,7 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 
 			s.log(LogError, "error reconnecting to gateway, %s", err)
 
-			timer := time.NewTimer(jitteredGatewayBackoff(wait * time.Second))
-			select {
-			case <-timer.C:
-			case <-cancel:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
+			if !waitForGatewayReconnect(jitteredGatewayBackoff(wait*time.Second), cancel) {
 				s.log(LogInformational, "reconnect canceled during backoff")
 				return
 			}
@@ -1885,6 +1890,64 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 				wait = 600
 			}
 		}
+	}
+}
+
+const (
+	// defaultGatewayStableAfter is how long a gateway connection must stay
+	// open before a drop counts as isolated and is redialed at once.
+	defaultGatewayStableAfter = 30 * time.Second
+
+	// Delays for redialing a gateway that keeps dropping connections soon
+	// after they open. Every such cycle can cost an Identify, and Discord
+	// allows 1000 a day (one per 86.4s), so the cap must stay well above
+	// that. With jitter the capped delay is never shorter than 300s.
+	minGatewayFlapDelay = time.Second
+	maxGatewayFlapDelay = 600 * time.Second
+)
+
+// nextGatewayFlapDelay returns the delay before redialing a connection that
+// stayed open for connected. Drops after a stable connection reset it to
+// zero; repeated early drops double it from minGatewayFlapDelay up to
+// maxGatewayFlapDelay.
+func nextGatewayFlapDelay(previous, connected, stableAfter time.Duration) time.Duration {
+	if connected >= stableAfter {
+		return 0
+	}
+	return min(max(2*previous, minGatewayFlapDelay), maxGatewayFlapDelay)
+}
+
+// gatewayFlapBackoff updates the flap delay for the connection that just
+// dropped and returns the jittered time to wait before redialing it.
+func (s *Session) gatewayFlapBackoff() time.Duration {
+	s.Lock()
+	defer s.Unlock()
+
+	if s.gatewayOpenedAt.IsZero() {
+		// No connection opened since the last reconnect started.
+		return 0
+	}
+	connected := time.Since(s.gatewayOpenedAt)
+	s.gatewayOpenedAt = time.Time{}
+
+	stableAfter := s.gatewayStableAfter
+	if stableAfter <= 0 {
+		stableAfter = defaultGatewayStableAfter
+	}
+	s.gatewayFlapDelay = nextGatewayFlapDelay(s.gatewayFlapDelay, connected, stableAfter)
+	return jitteredGatewayBackoff(s.gatewayFlapDelay)
+}
+
+// waitForGatewayReconnect waits for d and reports false if cancel closed
+// first.
+func waitForGatewayReconnect(d time.Duration, cancel <-chan struct{}) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-cancel:
+		return false
 	}
 }
 
