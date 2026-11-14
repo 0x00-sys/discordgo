@@ -1199,11 +1199,273 @@ func TestReconnectBacksOffWhenGatewayDropsAfterReady(t *testing.T) {
 			// Any backoff starting near one second allows only a handful of
 			// sessions in two seconds; the bound leaves room for jitter.
 			got := atomic.LoadInt32(&identifies) + atomic.LoadInt32(&resumes)
+			t.Logf("gateway sessions started in 2s = %d (identify=%d resume=%d)",
+				got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
 			if got > 10 {
 				t.Fatalf("gateway sessions started in 2s = %d (identify=%d resume=%d), want <= 10",
 					got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
 			}
 		})
+	}
+}
+
+func TestNextGatewayFlapDelay(t *testing.T) {
+	const stableAfter = 30 * time.Second
+
+	// Each early drop doubles the delay from 1s up to the cap.
+	want := []time.Duration{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 600, 600}
+	var delay time.Duration
+	for i, w := range want {
+		delay = nextGatewayFlapDelay(delay, time.Second, stableAfter)
+		if delay != w*time.Second {
+			t.Fatalf("delay after early drop %d = %v, want %v", i+1, delay, w*time.Second)
+		}
+	}
+	// Discord allows 1000 Identify calls a day, one per 86.4s. Even the
+	// shortest jittered wait at the cap must stay above that.
+	if maxGatewayFlapDelay/2 < 90*time.Second {
+		t.Fatalf("shortest wait at the cap = %v, want >= 90s", maxGatewayFlapDelay/2)
+	}
+
+	// A connection that stayed up long enough resets the delay, and the
+	// next early drop starts over from 1s.
+	if delay = nextGatewayFlapDelay(delay, stableAfter, stableAfter); delay != 0 {
+		t.Fatalf("delay after stable connection = %v, want 0", delay)
+	}
+	if delay = nextGatewayFlapDelay(delay, 0, stableAfter); delay != time.Second {
+		t.Fatalf("delay after early drop following reset = %v, want 1s", delay)
+	}
+}
+
+// Only connections that drop soon after opening are delayed. A connection
+// that stayed up past the threshold and then drops or receives Op 7 is
+// redialed at once, even after earlier flaps.
+func TestReconnectDelaysOnlyEarlyDrops(t *testing.T) {
+	cases := []struct {
+		name          string
+		stableAfter   time.Duration
+		op7           bool
+		wantImmediate bool
+		wantDelay     time.Duration
+	}{
+		{name: "close after stable connection", stableAfter: 50 * time.Millisecond, wantImmediate: true},
+		{name: "op 7 after stable connection", stableAfter: 50 * time.Millisecond, op7: true, wantImmediate: true},
+		{name: "close soon after open", stableAfter: time.Hour, wantDelay: maxGatewayFlapDelay},
+		{name: "op 7 soon after open", stableAfter: time.Hour, op7: true, wantDelay: maxGatewayFlapDelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var conns int32
+			drop := make(chan struct{})
+			redialed := make(chan struct{}, 1)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				n := atomic.AddInt32(&conns, 1)
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+					return
+				}
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+				ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"stable","user":{"id":"1"},"guilds":[]}}`
+				if n > 1 {
+					ready = `{"op":0,"s":2,"t":"RESUMED","d":{}}`
+					select {
+					case redialed <- struct{}{}:
+					default:
+					}
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+					return
+				}
+				if n == 1 {
+					<-drop
+					if tc.op7 {
+						_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":7,"d":null}`))
+					} else {
+						_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, ""), time.Now().Add(time.Second))
+					}
+				}
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}))
+			defer server.Close()
+
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel = -1
+			session.gatewayStableAfter = tc.stableAfter
+			// Earlier flaps already pushed the delay up.
+			session.gatewayFlapDelay = 300 * time.Second
+			if err := session.Open(); err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			time.Sleep(100 * time.Millisecond)
+			close(drop)
+
+			wait := 5 * time.Second
+			if !tc.wantImmediate {
+				wait = 300 * time.Millisecond
+			}
+			select {
+			case <-redialed:
+				if !tc.wantImmediate {
+					t.Fatal("redialed at once after a connection dropped soon after opening")
+				}
+			case <-time.After(wait):
+				if tc.wantImmediate {
+					t.Fatalf("not redialed within %v after a stable connection dropped", wait)
+				}
+			}
+			session.RLock()
+			delay := session.gatewayFlapDelay
+			session.RUnlock()
+			if delay != tc.wantDelay {
+				t.Fatalf("flap delay = %v, want %v", delay, tc.wantDelay)
+			}
+		})
+	}
+}
+
+func TestReconnectFlapBackoffStopsOnClose(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	var dials int32
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			atomic.AddInt32(&dials, 1)
+			return nil, errors.New("dial failed")
+		},
+	}
+	// The connection dropped right after opening, after earlier flaps.
+	session.Lock()
+	session.gatewayOpenedAt = time.Now()
+	session.gatewayFlapDelay = maxGatewayFlapDelay
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect(session.reconnectCancelSignal())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reconnect returned without waiting")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := atomic.LoadInt32(&dials); got != 0 {
+		t.Fatalf("dial attempts during backoff = %d, want 0", got)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not stop after Close")
+	}
+	if got := atomic.LoadInt32(&dials); got != 0 {
+		t.Fatalf("dial attempts after Close = %d, want 0", got)
+	}
+}
+
+// A user Open during the flap backoff wins. The waiting reconnect must not
+// dial a second connection or replace the one Open made.
+func TestReconnectFlapBackoffDoesNotCompeteWithOpen(t *testing.T) {
+	var conns int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		atomic.AddInt32(&conns, 1)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"READY","d":{"session_id":"open","user":{"id":"1"},"guilds":[]}}`)); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.Lock()
+	session.gatewayOpenedAt = time.Now()
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect(session.reconnectCancelSignal())
+		close(done)
+	}()
+	// Wait until reconnect has started its backoff.
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.RLock()
+		waiting := session.gatewayOpenedAt.IsZero()
+		session.RUnlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reconnect did not start its backoff")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := session.Open(); err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	session.RLock()
+	opened := session.wsConn
+	session.RUnlock()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not return after its backoff")
+	}
+	session.RLock()
+	current := session.wsConn
+	session.RUnlock()
+	if current != opened {
+		t.Fatal("reconnect replaced the connection opened during its backoff")
+	}
+	if got := atomic.LoadInt32(&conns); got != 1 {
+		t.Fatalf("gateway connections = %d, want 1", got)
 	}
 }
 
