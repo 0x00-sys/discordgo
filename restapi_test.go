@@ -4769,6 +4769,34 @@ func TestRequestWithLockedBucketRateLimitRetryRespectsContext(t *testing.T) {
 	}
 }
 
+// BenchmarkRequestWithBucketID measures the library's own per-request cost
+// with an in-memory transport and typical Discord response headers.
+func BenchmarkRequestWithBucketID(b *testing.B) {
+	session, err := New("Bot token")
+	if err != nil {
+		b.Fatal(err)
+	}
+	headers := http.Header{
+		"Content-Type":            {"application/json"},
+		"X-Ratelimit-Bucket":      {"abcd1234"},
+		"X-Ratelimit-Limit":       {"5"},
+		"X-Ratelimit-Remaining":   {"4"},
+		"X-Ratelimit-Reset":       {"1470173023.123"},
+		"X-Ratelimit-Reset-After": {"1.0"},
+	}
+	body := `{"id":"1","channel_id":"2","content":"hello"}`
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	endpoint := EndpointChannelMessages("2")
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := session.RequestWithBucketID(http.MethodGet, endpoint, nil, endpoint); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestRequestWithLockedBucketRetriesGetServerError(t *testing.T) {
 	session, err := New("")
 	if err != nil {
