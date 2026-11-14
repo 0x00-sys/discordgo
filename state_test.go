@@ -7892,6 +7892,47 @@ func BenchmarkStateMessageAddGuildSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkStateMessageCreateGuildCount measures MESSAGE_CREATE with the
+// default MaxMessageCount of zero as the number of cached guilds grows. The
+// target channel is in the last guild, which is the worst case for a scan.
+func BenchmarkStateMessageCreateGuildCount(b *testing.B) {
+	for _, guilds := range []int{1, 100, 1000, 2500} {
+		b.Run("guilds="+strconv.Itoa(guilds), func(b *testing.B) {
+			state := NewState()
+			for g := 0; g < guilds; g++ {
+				guildID := "guild-" + strconv.Itoa(g)
+				channels := make([]*Channel, 50)
+				for c := range channels {
+					channels[c] = &Channel{
+						ID:      guildID + "-channel-" + strconv.Itoa(c),
+						GuildID: guildID,
+						Type:    ChannelTypeGuildText,
+					}
+				}
+				if err := state.GuildAdd(&Guild{ID: guildID, Channels: channels}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			session := &Session{StateEnabled: true, State: state}
+			guildID := "guild-" + strconv.Itoa(guilds-1)
+			channelID := guildID + "-channel-49"
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				create := &MessageCreate{Message: &Message{
+					ID:        strconv.Itoa(i),
+					ChannelID: channelID,
+					GuildID:   guildID,
+				}}
+				if err := state.OnInterface(session, create); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 	state := NewState()
 	state.MaxMessageCount = 2
