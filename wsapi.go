@@ -1766,16 +1766,16 @@ const identifyConcurrencyMargin = 250 * time.Millisecond
 // token in this process. Tests shorten its window.
 var gatewayIdentifyLimiter = &identifyLimiter{window: 5 * time.Second}
 
-// identifyAcquireTestHook runs after acquire has picked a bucket and before
-// it reserves it. Tests use it to force interleavings.
-var identifyAcquireTestHook func(mapping int)
-
 var errIdentifySlotExpired = errors.New("gateway connection took too long to reach IDENTIFY")
 
 type identifyLimiter struct {
 	mu     sync.Mutex
 	window time.Duration
 	apps   map[string]*identifyApp
+
+	// acquireHook runs after acquire has picked a bucket and before it
+	// reserves it. Tests use it to force interleavings.
+	acquireHook func(mapping int)
 }
 
 // identifyApp holds the identify state of one token. It is dropped once no
@@ -1909,8 +1909,8 @@ func (l *identifyLimiter) acquire(ctx context.Context, app *identifyApp, shard, 
 		// down first.
 		others := otherMappingBucketsLocked(app, mapping)
 		l.mu.Unlock()
-		if identifyAcquireTestHook != nil {
-			identifyAcquireTestHook(mapping)
+		if l.acquireHook != nil {
+			l.acquireHook(mapping)
 		}
 
 		for _, other := range others {

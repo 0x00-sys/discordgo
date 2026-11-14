@@ -3175,7 +3175,7 @@ func TestIdentifyLimiterMappingChangeDuringAcquire(t *testing.T) {
 		paused := make(chan struct{})
 		resume := make(chan struct{})
 		var once sync.Once
-		identifyAcquireTestHook = func(mapping int) {
+		l.acquireHook = func(mapping int) {
 			if mapping == 1 {
 				once.Do(func() {
 					close(paused)
@@ -3183,7 +3183,6 @@ func TestIdentifyLimiterMappingChangeDuringAcquire(t *testing.T) {
 				})
 			}
 		}
-		t.Cleanup(func() { identifyAcquireTestHook = nil })
 
 		start := time.Now()
 		fallbackSent := make(chan time.Duration, 1)
