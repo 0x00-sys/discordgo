@@ -92,15 +92,15 @@ func TestNewIncludesPollIntents(t *testing.T) {
 func resetDefaultRESTTransport(t *testing.T) {
 	t.Helper()
 	savedDefault := http.DefaultTransport
-	savedTransport := restTransport
+	savedTransport, savedBase := restTransport, restTransportBase
 	savedSendPing, savedPing := restHTTP2SendPingTimeout, restHTTP2PingTimeout
 	restTransportOnce = sync.Once{}
-	restTransport = nil
+	restTransport, restTransportBase = nil, nil
 	t.Cleanup(func() {
 		http.DefaultTransport = savedDefault
 		restHTTP2SendPingTimeout, restHTTP2PingTimeout = savedSendPing, savedPing
 		restTransportOnce = sync.Once{}
-		restTransport = savedTransport
+		restTransport, restTransportBase = savedTransport, savedBase
 		if savedTransport != nil {
 			restTransportOnce.Do(func() {})
 		}
@@ -215,8 +215,7 @@ func TestNewClientReplacesUnresponsiveHTTP2Connection(t *testing.T) {
 }
 
 type countingTransport struct {
-	requests  atomic.Int32
-	idleClose atomic.Int32
+	requests atomic.Int32
 }
 
 func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -224,12 +223,9 @@ func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
 }
 
-func (c *countingTransport) CloseIdleConnections() { c.idleClose.Add(1) }
-
-// HTTP mocks and tracing wrappers replace http.DefaultTransport, often after
-// sessions exist. The default client must follow the replacement like it did
-// when it had no transport of its own, and share one transport across
-// sessions so connections stay pooled.
+// Sessions share one ping-enabled transport so connections stay pooled. HTTP
+// mocks and tracing wrappers installed in http.DefaultTransport before New
+// must still see the requests of sessions created after the swap.
 func TestNewClientFollowsReplacedDefaultTransport(t *testing.T) {
 	resetDefaultRESTTransport(t)
 	original := http.DefaultTransport
@@ -242,12 +238,12 @@ func TestNewClientFollowsReplacedDefaultTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared, ok := first.Client.Transport.(*restRoundTripper)
-	if !ok || second.Client.Transport != first.Client.Transport {
-		t.Fatalf("transports = %T %p and %T %p, want one shared *restRoundTripper", first.Client.Transport, first.Client.Transport, second.Client.Transport, second.Client.Transport)
+	shared, ok := first.Client.Transport.(*http.Transport)
+	if !ok || shared == original || second.Client.Transport != first.Client.Transport {
+		t.Fatalf("transports = %T %p and %T %p, want one shared clone of http.DefaultTransport", first.Client.Transport, first.Client.Transport, second.Client.Transport, second.Client.Transport)
 	}
-	if shared.current() != shared.pinging {
-		t.Fatal("default client does not use the pinging transport")
+	if shared.HTTP2 == nil || shared.HTTP2.SendPingTimeout == 0 || shared.HTTP2.PingTimeout == 0 {
+		t.Fatalf("shared transport HTTP2 = %+v, want ping timeouts set", shared.HTTP2)
 	}
 
 	mock := &countingTransport{}
@@ -256,22 +252,23 @@ func TestNewClientFollowsReplacedDefaultTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []*Session{first, second, third} {
-		if _, err := s.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway); err != nil {
-			t.Fatal(err)
-		}
+	if third.Client.Transport != nil {
+		t.Fatalf("Client.Transport after DefaultTransport was replaced = %T, want nil", third.Client.Transport)
 	}
-	if got := mock.requests.Load(); got != 3 {
-		t.Fatalf("replaced DefaultTransport got %d requests, want 3", got)
+	if _, err := third.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway); err != nil {
+		t.Fatal(err)
 	}
-	first.Client.CloseIdleConnections()
-	if got := mock.idleClose.Load(); got != 1 {
-		t.Fatalf("replaced DefaultTransport CloseIdleConnections calls = %d, want 1", got)
+	if got := mock.requests.Load(); got != 1 {
+		t.Fatalf("replaced DefaultTransport got %d requests, want 1", got)
 	}
 
 	http.DefaultTransport = original
-	if shared.current() != shared.pinging {
-		t.Fatal("default client did not return to the pinging transport after DefaultTransport was restored")
+	fourth, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourth.Client.Transport != first.Client.Transport {
+		t.Fatal("New did not return to the shared pinging transport after DefaultTransport was restored")
 	}
 }
 
@@ -309,7 +306,7 @@ func TestNewClientKeepsDefaultTransportHTTP2Settings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := session.Client.Transport.(*restRoundTripper).pinging.HTTP2
+	got := session.Client.Transport.(*http.Transport).HTTP2
 	if got.SendPingTimeout != 3*time.Second || got.PingTimeout != restHTTP2PingTimeout || got.MaxReadFrameSize != 1<<20 {
 		t.Fatalf("HTTP2 = %+v, want SendPingTimeout 3s, PingTimeout %v, MaxReadFrameSize 1MiB", *got, restHTTP2PingTimeout)
 	}

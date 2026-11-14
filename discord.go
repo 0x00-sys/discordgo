@@ -84,13 +84,18 @@ var (
 
 var (
 	restTransportOnce sync.Once
-	restTransport     http.RoundTripper
+	restTransportBase *http.Transport
+	restTransport     *http.Transport
 )
 
-// defaultRESTRoundTripper returns the transport shared by every Session that
-// New creates, so connections stay pooled process-wide. It returns nil, which
-// makes the client use http.DefaultTransport as before, when
-// http.DefaultTransport is not an *http.Transport.
+// defaultRESTRoundTripper returns the transport for a Session that New
+// creates. While http.DefaultTransport is still the transport seen by the
+// first New, every Session shares one clone of it with HTTP/2 pings enabled,
+// so connections stay pooled process-wide. Otherwise it returns nil, which
+// makes the client use http.DefaultTransport as before. That keeps HTTP mocks
+// and tracing wrappers installed before New working. The transport is used
+// directly instead of through a wrapper because net/http adds a timer and a
+// goroutine to every request on transports it does not recognize.
 func defaultRESTRoundTripper() http.RoundTripper {
 	restTransportOnce.Do(func() {
 		original, ok := http.DefaultTransport.(*http.Transport)
@@ -109,40 +114,14 @@ func defaultRESTRoundTripper() http.RoundTripper {
 			config.PingTimeout = restHTTP2PingTimeout
 		}
 		pinging.HTTP2 = &config
-		restTransport = &restRoundTripper{original: original, pinging: pinging}
+		restTransportBase = original
+		restTransport = pinging
 	})
+	if restTransport == nil {
+		return nil
+	}
+	if current, ok := http.DefaultTransport.(*http.Transport); !ok || current != restTransportBase {
+		return nil
+	}
 	return restTransport
-}
-
-// restRoundTripper sends requests over a clone of http.DefaultTransport with
-// HTTP/2 pings enabled. If the application later replaces
-// http.DefaultTransport (HTTP mocks, tracing wrappers), requests go to the
-// replacement instead, as they did when the client had no transport set.
-type restRoundTripper struct {
-	original *http.Transport
-	pinging  *http.Transport
-}
-
-func (t *restRoundTripper) current() http.RoundTripper {
-	if current, ok := http.DefaultTransport.(*http.Transport); ok && current == t.original {
-		return t.pinging
-	}
-	return http.DefaultTransport
-}
-
-// RoundTrip implements http.RoundTripper.
-func (t *restRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return t.current().RoundTrip(req)
-}
-
-// CloseIdleConnections closes idle connections of the transport in use, so
-// Session.Client.CloseIdleConnections keeps working.
-func (t *restRoundTripper) CloseIdleConnections() {
-	t.pinging.CloseIdleConnections()
-	if current, ok := http.DefaultTransport.(*http.Transport); ok && current == t.original {
-		return
-	}
-	if closer, ok := http.DefaultTransport.(interface{ CloseIdleConnections() }); ok {
-		closer.CloseIdleConnections()
-	}
 }
