@@ -832,6 +832,64 @@ func BenchmarkEncryptVoicePacket(b *testing.B) {
 
 var voicePacketSink []byte
 
+// BenchmarkOpusSenderPacket measures the whole per-frame send path: DAVE
+// passthrough, pacing, nonce bookkeeping, AEAD sealing and the UDP write.
+// One op is one RTP packet. The frame interval is shortened to about 21us.
+func BenchmarkOpusSenderPacket(b *testing.B) {
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		b.Run(mode, func(b *testing.B) {
+			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer server.Close()
+			client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer client.Close()
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			closeChan := make(chan struct{})
+			voice := &VoiceConnection{
+				LogLevel: -1,
+				speaking: true,
+				aead:     aead,
+				udpConn:  client,
+				close:    closeChan,
+				op2:      voiceOP2{SSRC: 42},
+			}
+			// Queue every frame up front so the sender never pads with silence.
+			frame := bytes.Repeat([]byte{0xfc}, 160)
+			opus := make(chan []byte, b.N)
+			for range b.N {
+				opus <- frame
+			}
+			done := make(chan struct{})
+			buf := make([]byte, 2048)
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(frame)))
+			b.ResetTimer()
+			go func() {
+				voice.opusSender(client, closeChan, opus, 48000, 1)
+				close(done)
+			}()
+			for range b.N {
+				if _, err := server.Read(buf); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			close(closeChan)
+			<-done
+		})
+	}
+}
+
 func newVoiceUDPDiscoveryTestServer(t *testing.T, release <-chan struct{}) (*net.UDPAddr, <-chan struct{}, <-chan error) {
 	t.Helper()
 
