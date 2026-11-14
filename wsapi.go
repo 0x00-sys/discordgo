@@ -632,26 +632,47 @@ func (s *Session) openGatewayControlEvent(messageType int, message []byte, expec
 }
 
 func peekGatewayEvent(messageType int, message []byte) (*Event, error) {
-	var reader io.Reader
-	reader = bytes.NewBuffer(message)
+	return decodeGatewayEvent(messageType, message)
+}
 
+// maxPooledGatewayInflateBuffer keeps one large payload, such as READY or
+// GUILD_CREATE, from pinning its inflate buffer in the pool.
+const maxPooledGatewayInflateBuffer = 64 << 10
+
+var gatewayInflateBufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+// decodeGatewayEvent decodes one gateway payload, inflating it first when it
+// is a zlib compressed binary message. A compressed payload is read to the
+// end of its zlib stream, so a bad checksum or a truncated stream is an
+// error. Event.RawData is a json.RawMessage and gets its own copy of the
+// bytes, so the inflate buffer is reused once decoding returns.
+func decodeGatewayEvent(messageType int, message []byte) (*Event, error) {
 	if messageType == websocket.BinaryMessage {
-		z, err := acquireGatewayZlibReader(reader)
+		z, err := acquireGatewayZlibReader(bytes.NewReader(message))
 		if err != nil {
 			return nil, err
 		}
-		defer releaseGatewayZlibReader(z)
-
-		reader = z
+		buf := gatewayInflateBufferPool.Get().(*bytes.Buffer)
+		defer func() {
+			if buf.Cap() <= maxPooledGatewayInflateBuffer {
+				buf.Reset()
+				gatewayInflateBufferPool.Put(buf)
+			}
+		}()
+		buf.Reset()
+		_, err = buf.ReadFrom(z)
+		if closeErr := releaseGatewayZlibReader(z); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return nil, err
+		}
+		message = buf.Bytes()
 	}
 
 	var e *Event
-	decoder := json.NewDecoder(reader)
-	if err := decoder.Decode(&e); err != nil {
-		return e, err
-	}
-
-	return e, nil
+	err := json.Unmarshal(message, &e)
+	return e, err
 }
 
 // listen polls the websocket connection for events, it will stop when the
@@ -1209,33 +1230,9 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 
 func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, message []byte) (*Event, error) {
 
-	var err error
-	var reader io.Reader
-	reader = bytes.NewBuffer(message)
-
-	// If this is a compressed message, uncompress it.
-	if messageType == websocket.BinaryMessage {
-
-		z, err2 := acquireGatewayZlibReader(reader)
-		if err2 != nil {
-			s.log(LogError, "error uncompressing websocket message, %s", err)
-			return nil, err2
-		}
-
-		defer func() {
-			err3 := releaseGatewayZlibReader(z)
-			if err3 != nil {
-				s.log(LogWarning, "error closing zlib, %s", err)
-			}
-		}()
-
-		reader = z
-	}
-
-	// Decode the event into an Event struct.
-	var e *Event
-	decoder := json.NewDecoder(reader)
-	if err = decoder.Decode(&e); err != nil {
+	// Decode the event into an Event struct, inflating it first if needed.
+	e, err := decodeGatewayEvent(messageType, message)
+	if err != nil {
 		s.log(LogError, "error decoding websocket message, %s", err)
 		return e, err
 	}

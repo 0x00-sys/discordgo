@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3230,6 +3231,119 @@ func TestPeekGatewayCompressedEvent(t *testing.T) {
 	}
 }
 
+func TestDecodeGatewayEvent(t *testing.T) {
+	payload := []byte(`{"op":0,"s":7,"t":"TYPING_START","d":{"user_id":"1","channel_id":"2"}}`)
+	compressed := compressedGatewayPayload(t, payload)
+	badChecksum := bytes.Clone(compressed)
+	badChecksum[len(badChecksum)-1] ^= 0xff
+	badDeflate := bytes.Clone(compressed)
+	badDeflate[2] = 0xff
+
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+		wantErr     bool
+	}{
+		{"text", websocket.TextMessage, payload, false},
+		{"text with trailing whitespace", websocket.TextMessage, append(bytes.Clone(payload), " \n"...), false},
+		{"text with trailing value", websocket.TextMessage, append(bytes.Clone(payload), `{"op":11}`...), true},
+		{"text truncated", websocket.TextMessage, payload[:len(payload)-1], true},
+		{"compressed", websocket.BinaryMessage, compressed, false},
+		{"compressed truncated", websocket.BinaryMessage, compressed[:len(compressed)/2], true},
+		{"compressed without checksum", websocket.BinaryMessage, compressed[:len(compressed)-4], true},
+		{"compressed bad checksum", websocket.BinaryMessage, badChecksum, true},
+		{"compressed bad deflate data", websocket.BinaryMessage, badDeflate, true},
+		{"compressed trailing value", websocket.BinaryMessage, compressedGatewayPayload(t, append(bytes.Clone(payload), `{"op":11}`...)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := decodeGatewayEvent(tc.messageType, tc.message)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("decodeGatewayEvent() = %#v, want error", e)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeGatewayEvent() error = %v", err)
+			}
+			if e.Operation != 0 || e.Sequence != 7 || e.Type != "TYPING_START" || string(e.RawData) != `{"user_id":"1","channel_id":"2"}` {
+				t.Fatalf("decodeGatewayEvent() = %#v", e)
+			}
+		})
+	}
+}
+
+// RawData must not share memory with the pooled inflate buffer, which the
+// next compressed payload overwrites.
+func TestDecodeGatewayEventRawDataSurvivesBufferReuse(t *testing.T) {
+	first, err := decodeGatewayEvent(websocket.BinaryMessage, compressedGatewayPayload(t, []byte(`{"op":0,"t":"A","d":{"value":"first"}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		if _, err := decodeGatewayEvent(websocket.BinaryMessage, compressedGatewayPayload(t, []byte(`{"op":0,"t":"B","d":{"value":"other"}}`))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(first.RawData) != `{"value":"first"}` {
+		t.Fatalf("RawData changed after later payloads: %s", first.RawData)
+	}
+}
+
+// A corrupt compressed frame is dropped and the listen loop keeps going.
+func TestListenDropsCorruptCompressedFrame(t *testing.T) {
+	good := compressedGatewayPayload(t, []byte(`{"op":0,"s":1,"t":"TYPING_START","d":{"user_id":"good","channel_id":"2"}}`))
+	corrupt := compressedGatewayPayload(t, []byte(`{"op":0,"s":2,"t":"TYPING_START","d":{"user_id":"corrupt","channel_id":"2"}}`))
+	corrupt[len(corrupt)-1] ^= 0xff
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for _, message := range [][]byte{corrupt, good} {
+			if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+				return
+			}
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.StateEnabled = false
+	session.SyncEvents = true
+	session.ShouldReconnectOnError = false
+	var users []string
+	session.AddHandler(func(_ *Session, e *TypingStart) {
+		users = append(users, e.UserID)
+	})
+	session.Lock()
+	session.wsConn = conn
+	listening := make(chan interface{})
+	session.listening = listening
+	session.Unlock()
+
+	session.listen(conn, listening)
+
+	if len(users) != 1 || users[0] != "good" {
+		t.Fatalf("dispatched TYPING_START users = %q, want [good]", users)
+	}
+}
+
 func TestGatewayCompressedDispatchConcurrentReuse(t *testing.T) {
 	message := compressedGatewayPayload(t, []byte(`{"op":11,"s":42,"d":null}`))
 	const goroutines = 32
@@ -3296,6 +3410,58 @@ func BenchmarkGatewayTextDispatch(b *testing.B) {
 		if _, err = session.onEvent(websocket.TextMessage, message); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// gatewayMembersChunkPayload builds a GUILD_MEMBERS_CHUNK dispatch with n
+// members and presences, a realistic large gateway payload.
+func gatewayMembersChunkPayload(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"op":0,"s":42,"t":"GUILD_MEMBERS_CHUNK","d":{"guild_id":"613425648685547541","chunk_index":0,"chunk_count":1,"members":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		id := strconv.Itoa(80351110224678912 + i)
+		b.WriteString(`{"user":{"id":"` + id + `","username":"member` + strconv.Itoa(i) + `","global_name":"Member ` + strconv.Itoa(i) + `","avatar":"a_1b2c3d4e5f60718293a4b5c6d7e8f901","discriminator":"0","public_flags":64},"nick":null,"avatar":null,"roles":["613425648685547542","613425648685547543"],"joined_at":"2024-03-01T12:34:56.789000+00:00","premium_since":null,"deaf":false,"mute":false,"flags":0,"pending":false}`)
+	}
+	b.WriteString(`],"presences":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"user":{"id":"` + strconv.Itoa(80351110224678912+i) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
+	}
+	b.WriteString(`]}}`)
+	return []byte(b.String())
+}
+
+func BenchmarkGatewayMembersChunkDispatch(b *testing.B) {
+	payload := gatewayMembersChunkPayload(100)
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+	}{
+		{"text", websocket.TextMessage, payload},
+		{"zlib", websocket.BinaryMessage, compressedGatewayPayload(b, payload)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.StateEnabled = false
+			session.SyncEvents = true
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			for b.Loop() {
+				if _, err = session.onEvent(tc.messageType, tc.message); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
