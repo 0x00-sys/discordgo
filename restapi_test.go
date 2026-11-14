@@ -4831,6 +4831,10 @@ func TestRequestServerErrorAfterRetriesReturnsRESTError(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
 	}
+	const wantMsg = `Exceeded Max retries HTTP 503 Service Unavailable, {"message":"upstream unavailable","code":0}`
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("error = %v, want %q", err, wantMsg)
+	}
 	var restErr *RESTError
 	if !errors.As(err, &restErr) {
 		t.Fatalf("error = %T %v, want *RESTError in chain", err, err)

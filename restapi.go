@@ -519,7 +519,7 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 			}
 			retry = requestRetry{bucket: bucket, sequence: sequence + 1}
 		} else {
-			err = fmt.Errorf("Exceeded Max retries HTTP %s, %s", resp.Status, response)
+			err = fmt.Errorf("Exceeded Max retries %w", newRestError(req, resp, response))
 		}
 	case http.StatusTooManyRequests:
 		rl := TooManyRequests{}
