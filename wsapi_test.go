@@ -3299,6 +3299,71 @@ func BenchmarkGatewayTextDispatch(b *testing.B) {
 	}
 }
 
+// unconsumedDispatchPayloads are realistic dispatch bodies for event types
+// that an interactions-only bot commonly receives but never handles. handler
+// registers a typed handler for the type, for the "handled" variant.
+var unconsumedDispatchPayloads = []struct {
+	name    string
+	typ     string
+	payload string
+	handler func(*Session)
+}{
+	{"PRESENCE_UPDATE", "PRESENCE_UPDATE", `{"user":{"id":"80351110224678912","username":"someone","avatar":"a_1234567890abcdef1234567890abcdef","global_name":"Someone"},"guild_id":"41771983423143937","status":"online","activities":[{"name":"Some Game","type":0,"created_at":1700000000000,"application_id":"379286085710381999","details":"In a match","state":"Ranked","timestamps":{"start":1700000000000},"assets":{"large_image":"1234","large_text":"Map"}},{"name":"Custom Status","type":4,"state":"busy","created_at":1700000000000}],"client_status":{"desktop":"online","mobile":"idle"}}`,
+		func(s *Session) { s.AddHandler(func(*Session, *PresenceUpdate) {}) }},
+	{"TYPING_START", "TYPING_START", `{"channel_id":"41771983423143937","guild_id":"41771983423143937","user_id":"80351110224678912","timestamp":1700000000,"member":{"user":{"id":"80351110224678912","username":"someone","avatar":"1234567890abcdef1234567890abcdef","global_name":"Someone"},"roles":["41771983423143936","41771983423143938"],"joined_at":"2020-01-01T00:00:00.000000+00:00","deaf":false,"mute":false,"flags":0}}`,
+		func(s *Session) { s.AddHandler(func(*Session, *TypingStart) {}) }},
+	{"MESSAGE_CREATE", "MESSAGE_CREATE", `{"id":"1100000000000000000","channel_id":"41771983423143937","guild_id":"41771983423143937","author":{"id":"80351110224678912","username":"someone","avatar":"1234567890abcdef1234567890abcdef","global_name":"Someone"},"member":{"roles":["41771983423143936"],"joined_at":"2020-01-01T00:00:00.000000+00:00","deaf":false,"mute":false,"flags":0},"content":"hello there, this is an ordinary chat message","timestamp":"2026-07-21T00:00:00.000000+00:00","edited_timestamp":null,"tts":false,"mention_everyone":false,"mentions":[],"mention_roles":[],"attachments":[],"embeds":[],"pinned":false,"type":0,"flags":0,"nonce":"1100000000000000001"}`,
+		func(s *Session) { s.AddHandler(func(*Session, *MessageCreate) {}) }},
+}
+
+// BenchmarkGatewayUnconsumedDispatch measures dispatching events with and
+// without a consumer. Every session has an InteractionCreate handler, like an
+// interactions-only bot.
+//   - unhandled: no typed, interface{}, or *Event handler for the type.
+//   - unregistered: the same payload under an unregistered event type, which
+//     never gets a typed decode; the floor for unhandled.
+//   - handled: a typed handler for the type is also registered, so the event
+//     must be decoded. This is the common path the skip check must not slow.
+func BenchmarkGatewayUnconsumedDispatch(b *testing.B) {
+	for _, state := range []bool{false, true} {
+		for _, tc := range unconsumedDispatchPayloads {
+			for _, variant := range []string{"unhandled", "unregistered", "handled"} {
+				typ := tc.typ
+				if variant == "unregistered" {
+					typ = "UNREGISTERED_" + tc.typ
+				}
+				message := []byte(`{"op":0,"s":42,"t":"` + typ + `","d":` + tc.payload + `}`)
+				name := fmt.Sprintf("state=%t/%s/%s", state, tc.name, variant)
+				b.Run(name, func(b *testing.B) {
+					session, err := New("Bot token")
+					if err != nil {
+						b.Fatal(err)
+					}
+					session.StateEnabled = state
+					session.SyncEvents = true
+					session.AddHandler(func(*Session, *InteractionCreate) {})
+					if variant == "handled" {
+						tc.handler(session)
+					}
+					if state {
+						if err = session.State.GuildAdd(&Guild{ID: "41771983423143937", Channels: []*Channel{{ID: "41771983423143937", GuildID: "41771983423143937"}}}); err != nil {
+							b.Fatal(err)
+						}
+					}
+
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						if _, err = session.onEvent(websocket.TextMessage, message); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestGatewayErrorLoggingConcurrentEndpointUpdate(t *testing.T) {
 	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
 	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
