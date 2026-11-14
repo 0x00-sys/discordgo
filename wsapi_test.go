@@ -3376,43 +3376,6 @@ func TestGatewayCompressedDispatchConcurrentReuse(t *testing.T) {
 	}
 }
 
-func BenchmarkGatewayCompressedDispatch(b *testing.B) {
-	payload := []byte(`{"op":0,"s":42,"t":"MESSAGE_CREATE","d":{"id":"100","channel_id":"200","guild_id":"300","author":{"id":"400","username":"bot"},"content":"hello","timestamp":"2026-07-21T00:00:00Z"}}`)
-	session, err := New("Bot token")
-	if err != nil {
-		b.Fatal(err)
-	}
-	session.StateEnabled = false
-	session.SyncEvents = true
-	message := compressedGatewayPayload(b, payload)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		if _, err = session.onEvent(websocket.BinaryMessage, message); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkGatewayTextDispatch(b *testing.B) {
-	message := []byte(`{"op":0,"s":42,"t":"MESSAGE_CREATE","d":{"id":"100","channel_id":"200","guild_id":"300","author":{"id":"400","username":"bot"},"content":"hello","timestamp":"2026-07-21T00:00:00Z"}}`)
-	session, err := New("Bot token")
-	if err != nil {
-		b.Fatal(err)
-	}
-	session.StateEnabled = false
-	session.SyncEvents = true
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		if _, err = session.onEvent(websocket.TextMessage, message); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 // gatewayMembersChunkPayload builds a GUILD_MEMBERS_CHUNK dispatch with n
 // members and presences, a realistic large gateway payload.
 func gatewayMembersChunkPayload(n int) []byte {
@@ -3462,6 +3425,43 @@ func BenchmarkGatewayMembersChunkDispatch(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkGatewayCompressedDispatch(b *testing.B) {
+	payload := []byte(`{"op":0,"s":42,"t":"MESSAGE_CREATE","d":{"id":"100","channel_id":"200","guild_id":"300","author":{"id":"400","username":"bot"},"content":"hello","timestamp":"2026-07-21T00:00:00Z"}}`)
+	session, err := New("Bot token")
+	if err != nil {
+		b.Fatal(err)
+	}
+	session.StateEnabled = false
+	session.SyncEvents = true
+	message := compressedGatewayPayload(b, payload)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err = session.onEvent(websocket.BinaryMessage, message); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkGatewayTextDispatch(b *testing.B) {
+	message := []byte(`{"op":0,"s":42,"t":"MESSAGE_CREATE","d":{"id":"100","channel_id":"200","guild_id":"300","author":{"id":"400","username":"bot"},"content":"hello","timestamp":"2026-07-21T00:00:00Z"}}`)
+	session, err := New("Bot token")
+	if err != nil {
+		b.Fatal(err)
+	}
+	session.StateEnabled = false
+	session.SyncEvents = true
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err = session.onEvent(websocket.TextMessage, message); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
