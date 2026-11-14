@@ -38,6 +38,40 @@ func TestVoiceChannelEffectSendSoundIDUnmarshal(t *testing.T) {
 	}
 }
 
+func TestPresenceUpdateRecordsSuppliedUserFields(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		payload               string
+		avatar, globalName    bool
+		wantAvatar, wantError bool
+	}{
+		{name: "id_only", payload: `{"user":{"id":"1"},"status":"online"}`},
+		{name: "null_avatar", payload: `{"user":{"id":"1","avatar":null},"status":"online"}`, avatar: true},
+		{name: "avatar_and_name", payload: `{"user":{"id":"1","avatar":"a","global_name":"g"},"status":"online"}`, avatar: true, globalName: true, wantAvatar: true},
+		{name: "escaped_key", payload: `{"user":{"id":"1","\u0061vatar":null},"status":"online"}`, avatar: true},
+		{name: "key_text_elsewhere", payload: `{"user":{"id":"1"},"status":"online","activities":[{"name":"\"avatar\" global_name","type":0}]}`},
+		{name: "activity_key", payload: `{"user":{"id":"1"},"status":"online","activities":[{"name":"x","type":0,"avatar":"y"}]}`},
+		{name: "malformed_avatar", payload: `{"user":{"id":"1","avatar":123},"status":"online"}`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var update PresenceUpdate
+			err := json.Unmarshal([]byte(tc.payload), &update)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("Unmarshal error = %v, want error %t", err, tc.wantError)
+			}
+			if update.User == nil || update.User.ID != "1" || update.Status != StatusOnline {
+				t.Fatalf("decoded update = %+v", update)
+			}
+			if update.avatarPresent != tc.avatar || update.globalNamePresent != tc.globalName {
+				t.Fatalf("avatar/global_name present = %t/%t, want %t/%t", update.avatarPresent, update.globalNamePresent, tc.avatar, tc.globalName)
+			}
+			if (update.User.Avatar == "a") != tc.wantAvatar {
+				t.Fatalf("avatar = %q", update.User.Avatar)
+			}
+		})
+	}
+}
+
 func BenchmarkPresenceUpdateUnmarshal(b *testing.B) {
 	payload := []byte(`{"user":{"id":"80351110224678912"},"status":"online","guild_id":"613425648685547541","client_status":{"desktop":"online"},"activities":[{"type":0,"timestamps":{"start":1700000000000},"state":"In a match","session_id":"aa2f8a9d6f1c4b0e","name":"Some Game","id":"5cb2b8ab0bcd0b0","details":"Ranked","created_at":1700000000123,"assets":{"large_text":"Map","large_image":"mp:external/abc/def.png"},"application_id":"356875570916753438"}]}`)
 
