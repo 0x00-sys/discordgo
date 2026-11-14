@@ -5021,6 +5021,34 @@ func TestRequestWithLockedBucketRateLimitRetryRespectsContext(t *testing.T) {
 	}
 }
 
+// BenchmarkRequestWithBucketID measures the library's own per-request cost
+// with an in-memory transport and typical Discord response headers.
+func BenchmarkRequestWithBucketID(b *testing.B) {
+	session, err := New("Bot token")
+	if err != nil {
+		b.Fatal(err)
+	}
+	headers := http.Header{
+		"Content-Type":            {"application/json"},
+		"X-Ratelimit-Bucket":      {"abcd1234"},
+		"X-Ratelimit-Limit":       {"5"},
+		"X-Ratelimit-Remaining":   {"4"},
+		"X-Ratelimit-Reset":       {"1470173023.123"},
+		"X-Ratelimit-Reset-After": {"1.0"},
+	}
+	body := `{"id":"1","channel_id":"2","content":"hello"}`
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: headers, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	endpoint := EndpointChannelMessages("2")
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := session.RequestWithBucketID(http.MethodGet, endpoint, nil, endpoint); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestRequestWithLockedBucketRetriesGetServerError(t *testing.T) {
 	session, err := New("")
 	if err != nil {
@@ -5055,6 +5083,50 @@ func TestRequestWithLockedBucketRetriesGetServerError(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+// Once retries run out, callers still need the status code and body that a
+// non-retried request would return as a *RESTError.
+func TestRequestServerErrorAfterRetriesReturnsRESTError(t *testing.T) {
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.MaxRestRetries = 1
+
+	attempts := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"upstream unavailable","code":0}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway)
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	const wantMsg = `Exceeded Max retries HTTP 503 Service Unavailable, {"message":"upstream unavailable","code":0}`
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("error = %v, want %q", err, wantMsg)
+	}
+	var restErr *RESTError
+	if !errors.As(err, &restErr) {
+		t.Fatalf("error = %T %v, want *RESTError in chain", err, err)
+	}
+	if restErr.Response == nil || restErr.Response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("RESTError response = %+v, want 503", restErr.Response)
+	}
+	if restErr.Message == nil || restErr.Message.Message != "upstream unavailable" {
+		t.Fatalf("RESTError message = %+v, want decoded body", restErr.Message)
+	}
+	if got := session.Ratelimiter.buckets[EndpointGateway].activeRequests; got != 0 {
+		t.Fatalf("active requests = %d, want 0", got)
 	}
 }
 

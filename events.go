@@ -510,6 +510,11 @@ func (p *PresenceUpdate) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	// Most presence updates carry only the user ID. Skip the second pass
+	// when the payload cannot contain either key.
+	if !presenceMayHaveUserFields(data) {
+		return nil
+	}
 	var fields struct {
 		User struct {
 			Avatar     json.RawMessage `json:"avatar"`
@@ -522,6 +527,44 @@ func (p *PresenceUpdate) UnmarshalJSON(data []byte) error {
 	p.avatarPresent = len(fields.User.Avatar) != 0
 	p.globalNamePresent = len(fields.User.GlobalName) != 0
 	return nil
+}
+
+// presenceMayHaveUserFields reports whether data might hold an "avatar" or
+// "global_name" key anywhere. encoding/json matches keys case-insensitively,
+// so the check ignores ASCII case; no non-ASCII rune folds to a letter of
+// either name. Any backslash may be an escaped key, so it also counts. False
+// positives only cost the slower full check.
+func presenceMayHaveUserFields(data []byte) bool {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\\':
+			return true
+		case '"':
+			rest := data[i+1:]
+			if quotedJSONNameFold(rest, "avatar") || quotedJSONNameFold(rest, "global_name") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// quotedJSONNameFold reports whether data starts with name, in any ASCII
+// case, followed by a closing quote. name must be lower case.
+func quotedJSONNameFold(data []byte, name string) bool {
+	if len(data) <= len(name) || data[len(name)] != '"' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := data[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != name[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Resumed is the data for a Resumed event.
