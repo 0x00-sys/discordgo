@@ -777,34 +777,129 @@ func TestVoiceAEADVectors(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			aead, err := newVoiceAEAD(test.mode, key)
+		for _, reuse := range []bool{false, true} {
+			name := test.name
+			var dst []byte
+			if reuse {
+				// A reused sender buffer holds bytes from a larger earlier packet.
+				name += " reused buffer"
+				dst = bytes.Repeat([]byte{0xa5}, 256)
+			}
+			t.Run(name, func(t *testing.T) {
+				aead, err := newVoiceAEAD(test.mode, key)
+				if err != nil {
+					t.Fatalf("newVoiceAEAD() error = %v", err)
+				}
+				nonce := make([]byte, aead.NonceSize())
+				setVoiceNonce(nonce, counter)
+				packet := encryptVoicePacket(dst, aead, nonce, opus, header)
+				if !bytes.Equal(packet[:len(header)], header) {
+					t.Fatalf("RTP header = %x, want %x", packet[:len(header)], header)
+				}
+				payload := packet[len(header):]
+				if !bytes.Equal(payload[len(payload)-4:], []byte{0x01, 0x02, 0x03, 0x04}) {
+					t.Fatalf("nonce suffix = %x, want 01020304", payload[len(payload)-4:])
+				}
+				if got := hex.EncodeToString(payload); got != test.expectedHex {
+					t.Fatalf("encrypted payload = %s, want %s", got, test.expectedHex)
+				}
+
+				counterBytes := payload[len(payload)-4:]
+				decryptNonce := make([]byte, aead.NonceSize())
+				copy(decryptNonce[:4], counterBytes)
+				plain, err := aead.Open(nil, decryptNonce, payload[:len(payload)-4], header)
+				if err != nil {
+					t.Fatalf("Open() error = %v", err)
+				}
+				if !bytes.Equal(plain, opus) {
+					t.Fatalf("decrypted payload = %x, want %x", plain, opus)
+				}
+			})
+		}
+	}
+}
+
+// The sender reuses one packet buffer while frame sizes change. Each packet
+// must match a freshly allocated one byte for byte.
+func TestEncryptVoicePacketReusesBufferAcrossFrameSizes(t *testing.T) {
+	header := []byte{0x80, 0x78, 0, 1, 0, 0, 3, 0, 0, 0, 0, 42}
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		t.Run(mode, func(t *testing.T) {
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
 			if err != nil {
-				t.Fatalf("newVoiceAEAD() error = %v", err)
+				t.Fatal(err)
 			}
 			nonce := make([]byte, aead.NonceSize())
-			setVoiceNonce(nonce, counter)
-			packet := encryptVoicePacket(aead, nonce, opus, header)
-			if !bytes.Equal(packet[:len(header)], header) {
-				t.Fatalf("RTP header = %x, want %x", packet[:len(header)], header)
+			var reused []byte
+			for i, size := range []int{1275, 3, 160, 1275, 0, 900} {
+				opus := bytes.Repeat([]byte{byte(i + 1)}, size)
+				setVoiceNonce(nonce, uint32(i))
+				reused = encryptVoicePacket(reused, aead, nonce, opus, header)
+				fresh := encryptVoicePacket(nil, aead, nonce, opus, header)
+				if !bytes.Equal(reused, fresh) {
+					t.Fatalf("packet %d (%d byte frame) from the reused buffer = %x, want %x", i, size, reused, fresh)
+				}
 			}
-			payload := packet[len(header):]
-			if !bytes.Equal(payload[len(payload)-4:], []byte{0x01, 0x02, 0x03, 0x04}) {
-				t.Fatalf("nonce suffix = %x, want 01020304", payload[len(payload)-4:])
-			}
-			if got := hex.EncodeToString(payload); got != test.expectedHex {
-				t.Fatalf("encrypted payload = %s, want %s", got, test.expectedHex)
-			}
+		})
+	}
+}
 
-			counterBytes := payload[len(payload)-4:]
-			decryptNonce := make([]byte, aead.NonceSize())
-			copy(decryptNonce[:4], counterBytes)
-			plain, err := aead.Open(nil, decryptNonce, payload[:len(payload)-4], header)
+// The opus sender reuses its packet buffer across frames of different sizes;
+// every packet it writes must still decrypt to the frame that was queued.
+func TestVoiceOpusSenderPacketsAcrossFrameSizes(t *testing.T) {
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		t.Run(mode, func(t *testing.T) {
+			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			if err != nil {
-				t.Fatalf("Open() error = %v", err)
+				t.Fatal(err)
 			}
-			if !bytes.Equal(plain, opus) {
-				t.Fatalf("decrypted payload = %x, want %x", plain, opus)
+			defer func() { _ = server.Close() }()
+			client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			closeChan := make(chan struct{})
+			voice := &VoiceConnection{LogLevel: -1, speaking: true, aead: aead, udpConn: client, close: closeChan, op2: voiceOP2{SSRC: 42}}
+
+			sizes := []int{1275, 3, 160, 1275, 1, 900}
+			opus := make(chan []byte, len(sizes))
+			for i, size := range sizes {
+				opus <- bytes.Repeat([]byte{byte(i + 1)}, size)
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				voice.opusSender(client, closeChan, opus, 48000, 960)
+			}()
+			defer func() {
+				close(closeChan)
+				<-done
+			}()
+
+			if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 2048)
+			for i, size := range sizes {
+				n, err := server.Read(buf)
+				if err != nil {
+					t.Fatalf("reading packet %d: %v", i, err)
+				}
+				packet := buf[:n]
+				nonce := make([]byte, aead.NonceSize())
+				copy(nonce[:4], packet[n-4:])
+				plain, err := aead.Open(nil, nonce, packet[12:n-4], packet[:12])
+				if err != nil {
+					t.Fatalf("packet %d (%d byte frame) does not decrypt: %v", i, size, err)
+				}
+				if want := bytes.Repeat([]byte{byte(i + 1)}, size); !bytes.Equal(plain, want) {
+					t.Fatalf("packet %d decrypted to %d bytes %x..., want %d bytes of %02x", i, len(plain), plain[:min(len(plain), 8)], size, i+1)
+				}
 			}
 		})
 	}
@@ -824,13 +919,78 @@ func BenchmarkEncryptVoicePacket(b *testing.B) {
 
 			b.ReportAllocs()
 			for b.Loop() {
-				voicePacketSink = encryptVoicePacket(aead, nonce, opus, header)
+				voicePacketSink = encryptVoicePacket(voicePacketSink, aead, nonce, opus, header)
 			}
 		})
 	}
 }
 
 var voicePacketSink []byte
+
+// BenchmarkOpusSenderPacket measures the whole per-frame send path: DAVE
+// passthrough, pacing, nonce bookkeeping, AEAD sealing and the UDP write.
+// One op is one RTP packet. The frame interval is shortened to about 21us.
+func BenchmarkOpusSenderPacket(b *testing.B) {
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		b.Run(mode, func(b *testing.B) {
+			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer func() { _ = server.Close() }()
+			client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			closeChan := make(chan struct{})
+			voice := &VoiceConnection{
+				LogLevel: -1,
+				speaking: true,
+				aead:     aead,
+				udpConn:  client,
+				close:    closeChan,
+				op2:      voiceOP2{SSRC: 42},
+			}
+			// Queue every frame up front so the sender never pads with silence.
+			frame := bytes.Repeat([]byte{0xfc}, 160)
+			opus := make(chan []byte, b.N)
+			for range b.N {
+				opus <- frame
+			}
+			done := make(chan struct{})
+			buf := make([]byte, 2048)
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(frame)))
+			b.ResetTimer()
+			go func() {
+				voice.opusSender(client, closeChan, opus, 48000, 1)
+				close(done)
+			}()
+			defer func() {
+				close(closeChan)
+				<-done
+			}()
+			// UDP can drop packets even on loopback. Fail instead of hanging
+			// if a packet never arrives.
+			if err := server.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+				b.Fatal(err)
+			}
+			for range b.N {
+				if _, err := server.Read(buf); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+		})
+	}
+}
 
 func newVoiceUDPDiscoveryTestServer(t *testing.T, release <-chan struct{}) (*net.UDPAddr, <-chan struct{}, <-chan error) {
 	t.Helper()
@@ -2563,56 +2723,35 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 }
 
 func TestVoiceHeartbeatStopsAfterConnectionReplacement(t *testing.T) {
-	heartbeats := make(chan struct{}, 1)
-	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
+	synctest.Test(t, func(t *testing.T) {
+		conn, peer := newVoicePipeWebsocket(t)
+		closeChan := make(chan struct{})
+		defer close(closeChan)
+		voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			voice.wsHeartbeat(conn, closeChan, 1000)
+		}()
+
+		if _, err := readVoiceHeartbeat(peer); err != nil {
+			t.Fatal(err)
 		}
-		defer conn.Close()
-		for {
-			if _, _, err = conn.ReadMessage(); err != nil {
-				return
-			}
-			select {
-			case heartbeats <- struct{}{}:
-			default:
-			}
+		// Acknowledge it so only the replacement, not a missed ACK, can stop the loop.
+		voice.onEventForConnection(conn, closeChan, []byte(`{"op":6,"d":{"t":1}}`))
+		voice.Lock()
+		voice.wsConn = &websocket.Conn{}
+		voice.Unlock()
+
+		// The peer stops reading, so another heartbeat would block on the pipe.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("heartbeat did not stop after websocket replacement")
 		}
-	}))
-	defer server.Close()
-
-	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("Dial() error = %v", err)
-	}
-	defer conn.Close()
-
-	closeChan := make(chan struct{})
-	defer close(closeChan)
-	voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
-	done := make(chan struct{})
-	go func() {
-		voice.wsHeartbeat(conn, closeChan, 10)
-		close(done)
-	}()
-
-	select {
-	case <-heartbeats:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial heartbeat")
-	}
-	voice.Lock()
-	voice.wsConn = &websocket.Conn{}
-	voice.Unlock()
-
-	select {
-	case <-done:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("heartbeat did not stop after websocket replacement")
-	}
+	})
 }
 
 func TestVoiceHeartbeatWriteFailureClosesConnection(t *testing.T) {
@@ -2631,6 +2770,198 @@ func TestVoiceHeartbeatWriteFailureClosesConnection(t *testing.T) {
 	case <-transport.closed:
 	default:
 		t.Error("heartbeat write failure left the websocket transport open")
+	}
+}
+
+// voicePipeResponseWriter lets websocket.Upgrader take over a net.Pipe end.
+type voicePipeResponseWriter struct {
+	conn   net.Conn
+	rw     *bufio.ReadWriter
+	header http.Header
+}
+
+func (w *voicePipeResponseWriter) Header() http.Header         { return w.header }
+func (w *voicePipeResponseWriter) Write(p []byte) (int, error) { return w.rw.Write(p) }
+func (w *voicePipeResponseWriter) WriteHeader(int)             {}
+func (w *voicePipeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.rw, nil
+}
+
+// newVoicePipeWebsocket connects a client websocket to a server peer over
+// net.Pipe. Created inside a synctest bubble, both ends block durably, so
+// heartbeat timing runs on the bubble's fake clock.
+func newVoicePipeWebsocket(t *testing.T) (*websocket.Conn, *websocket.Conn) {
+	t.Helper()
+	client, server := net.Pipe()
+	type upgraded struct {
+		conn *websocket.Conn
+		err  error
+	}
+	peerReady := make(chan upgraded, 1)
+	go func() {
+		reader := bufio.NewReader(server)
+		request, err := http.ReadRequest(reader)
+		if err != nil {
+			peerReady <- upgraded{err: err}
+			return
+		}
+		w := &voicePipeResponseWriter{conn: server, rw: bufio.NewReadWriter(reader, bufio.NewWriter(server)), header: http.Header{}}
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, request, nil)
+		peerReady <- upgraded{conn: conn, err: err}
+	}()
+	dialer := &websocket.Dialer{NetDialContext: func(context.Context, string, string) (net.Conn, error) {
+		return client, nil
+	}}
+	conn, _, err := dialer.Dial("ws://voice.invalid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := <-peerReady
+	if peer.err != nil {
+		t.Fatal(peer.err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = peer.conn.Close()
+	})
+	return conn, peer.conn
+}
+
+// readVoiceHeartbeat reads peer messages until a heartbeat (op 3) arrives
+// and returns its nonce.
+func readVoiceHeartbeat(peer *websocket.Conn) (int64, error) {
+	for {
+		_, message, err := peer.ReadMessage()
+		if err != nil {
+			return 0, err
+		}
+		var heartbeat struct {
+			Op   int `json:"op"`
+			Data struct {
+				Nonce int64 `json:"t"`
+			} `json:"d"`
+		}
+		if json.Unmarshal(message, &heartbeat) == nil && heartbeat.Op == 3 {
+			return heartbeat.Data.Nonce, nil
+		}
+	}
+}
+
+func writeVoiceHeartbeatAck(peer *websocket.Conn, nonce int64) error {
+	return peer.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":6,"d":{"t":%d}}`, nonce)))
+}
+
+// A voice websocket whose peer stops acknowledging heartbeats is zombied,
+// for example after a NAT timeout or a silent server failure. Heartbeat
+// writes still succeed into the kernel buffer, so the connection must be
+// dropped on a missed ACK rather than after TCP retransmissions give up.
+func TestVoiceHeartbeatMissedAckClosesConnection(t *testing.T) {
+	const interval = time.Second
+	const heartbeatLimit = 20
+	for _, test := range []struct {
+		name string
+		// The peer acknowledges each heartbeat this long after reading it.
+		ackDelay time.Duration
+		noAck    bool
+		// ACKs arrive on a replaced websocket that shares the close signal,
+		// as after a resume, instead of on the current one.
+		staleAck bool
+		// The peer stalls before reading the first heartbeat, so its write
+		// completes late in the interval.
+		firstReadDelay time.Duration
+		wantClose      bool
+	}{
+		{name: "unacknowledged", noAck: true, wantClose: true},
+		{name: "acknowledged on a replaced websocket", staleAck: true, wantClose: true},
+		{name: "acknowledged"},
+		{name: "acknowledged late in the interval", ackDelay: 900 * time.Millisecond},
+		{name: "acknowledged after a delayed write", firstReadDelay: 900 * time.Millisecond, ackDelay: 600 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn, peer := newVoicePipeWebsocket(t)
+				closeChan := make(chan struct{})
+				voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
+				var staleDone chan struct{}
+				var stalePeer *websocket.Conn
+				if test.staleAck {
+					var staleConn *websocket.Conn
+					staleConn, stalePeer = newVoicePipeWebsocket(t)
+					staleDone = make(chan struct{})
+					go func() {
+						defer close(staleDone)
+						voice.wsListen(staleConn, closeChan)
+					}()
+				}
+				listenDone := make(chan struct{})
+				go func() {
+					defer close(listenDone)
+					voice.wsListen(conn, closeChan)
+				}()
+				heartbeatDone := make(chan struct{})
+				go func() {
+					defer close(heartbeatDone)
+					voice.wsHeartbeat(conn, closeChan, interval/time.Millisecond)
+				}()
+
+				started := time.Now()
+				time.Sleep(test.firstReadDelay)
+				heartbeats := 0
+				var readErr error
+				for heartbeats < heartbeatLimit {
+					nonce, err := readVoiceHeartbeat(peer)
+					if err != nil {
+						readErr = err
+						break
+					}
+					heartbeats++
+					if test.noAck {
+						continue
+					}
+					time.Sleep(test.ackDelay)
+					ackPeer := peer
+					if test.staleAck {
+						ackPeer = stalePeer
+					}
+					if err := writeVoiceHeartbeatAck(ackPeer, nonce); err != nil {
+						readErr = err
+						break
+					}
+				}
+				elapsed := time.Since(started)
+
+				switch {
+				case test.wantClose && readErr == nil:
+					t.Errorf("voice websocket stayed open after %d unacknowledged heartbeats over %v", heartbeats, elapsed)
+				case test.wantClose && elapsed != interval:
+					// The first heartbeat is written at once; its ACK window is one interval.
+					t.Errorf("missed ACK closed the voice websocket after %v, want %v", elapsed, interval)
+				case !test.wantClose && readErr != nil:
+					t.Errorf("acknowledged heartbeats closed the voice websocket after %d heartbeats over %v: %v", heartbeats, elapsed, readErr)
+				}
+				if test.wantClose && readErr != nil {
+					// The listener must take the existing reconnect path.
+					<-listenDone
+					voice.RLock()
+					detached := voice.wsConn == nil
+					voice.RUnlock()
+					if !detached {
+						t.Error("listener kept the closed voice websocket installed")
+					}
+				}
+
+				_ = peer.Close()
+				if stalePeer != nil {
+					_ = stalePeer.Close()
+				}
+				voice.Close()
+				<-listenDone
+				<-heartbeatDone
+				if staleDone != nil {
+					<-staleDone
+				}
+			})
+		})
 	}
 }
 
@@ -3950,6 +4281,277 @@ func TestVoiceJoinWaitCancellation(t *testing.T) {
 				}
 				if delay := time.Since(closedAt); delay != 0 {
 					t.Errorf("wait returned %v after disconnect, want no delay", delay)
+				}
+			})
+		})
+	}
+}
+
+// newVoiceJoinWaitTestConnection returns a connection whose UDP transport is
+// open and whose encryption mode is selected, waiting only for OP4.
+func newVoiceJoinWaitTestConnection(t *testing.T, udpConn *net.UDPConn) *VoiceConnection {
+	t.Helper()
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	voice := &VoiceConnection{
+		LogLevel:       -1,
+		GuildID:        "guild",
+		ChannelID:      "channel",
+		session:        session,
+		close:          make(chan struct{}),
+		udpConn:        udpConn,
+		deaf:           true,
+		encryptionMode: voiceModeAES256GCMRTPSize,
+	}
+	session.VoiceConnections = map[string]*VoiceConnection{"guild": voice}
+	return voice
+}
+
+func newVoiceJoinWaitTestUDP(t *testing.T) *net.UDPConn {
+	t.Helper()
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = udpConn.Close() })
+	return udpConn
+}
+
+// A join must return when its transport becomes ready, not at the next
+// one-second poll. The handshake usually completes in well under a second.
+func TestVoiceJoinWaitReturnsWhenReady(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	synctest.Test(t, func(t *testing.T) {
+		voice := newVoiceJoinWaitTestConnection(t, udpConn)
+		defer voice.Close()
+
+		result := make(chan error, 1)
+		go func() { result <- voice.waitUntilConnected("channel", nil) }()
+
+		// Complete the handshake partway through the first poll interval.
+		time.Sleep(300 * time.Millisecond)
+		voice.onEvent(voiceSessionDescriptionMessage(t, voiceModeAES256GCMRTPSize, make([]int, 32)))
+		readyAt := time.Now()
+		synctest.Wait()
+
+		if len(result) == 0 {
+			t.Error("join is still waiting after the voice connection became ready")
+		}
+		if err := <-result; err != nil {
+			t.Fatalf("waitUntilConnected() error = %v", err)
+		}
+		if delay := time.Since(readyAt); delay != 0 {
+			t.Errorf("join returned %v after the voice connection became ready, want no delay", delay)
+		}
+	})
+}
+
+// A ready notification wakes every waiting join, so each must recheck that
+// the ready transport serves its channel and is not the one it excludes.
+func TestVoiceJoinWaitRechecksOwnershipWhenNotified(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		channelID      string
+		excludeCurrent bool
+	}{
+		{name: "another channel", channelID: "other"},
+		{name: "excluded previous transport", channelID: "channel", excludeCurrent: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			udpConn := newVoiceJoinWaitTestUDP(t)
+			synctest.Test(t, func(t *testing.T) {
+				voice := newVoiceJoinWaitTestConnection(t, udpConn)
+				voice.ChannelID = test.channelID
+				defer voice.Close()
+				var previousClose <-chan struct{}
+				if test.excludeCurrent {
+					previousClose = voice.close
+				}
+				result := make(chan error, 1)
+				go func() { result <- voice.waitUntilConnected("channel", previousClose) }()
+				synctest.Wait()
+
+				voice.onEvent(voiceSessionDescriptionMessage(t, voiceModeAES256GCMRTPSize, make([]int, 32)))
+				synctest.Wait()
+				if len(result) != 0 {
+					t.Errorf("join for channel returned %v after a transport it does not own became ready", <-result)
+					return
+				}
+				if err := <-result; err == nil {
+					t.Error("join reported success for a transport it does not own")
+				}
+			})
+		})
+	}
+}
+
+// blockingSessionDescriptionDAVE pauses OP4 inside the DAVE backend call.
+type blockingSessionDescriptionDAVE struct {
+	*fakeVoiceDAVESession
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingSessionDescriptionDAVE) OnSessionDescription(protocolVersion uint16) {
+	close(b.entered)
+	<-b.release
+	b.fakeVoiceDAVESession.OnSessionDescription(protocolVersion)
+}
+
+// OP4 runs DAVE setup without the connection lock. If the transport is torn
+// down meanwhile, the finished setup must not publish Ready for it.
+func TestVoiceSessionDescriptionSkipsReadyAfterTeardown(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	voice := newVoiceJoinWaitTestConnection(t, udpConn)
+	backend := &blockingSessionDescriptionDAVE{
+		fakeVoiceDAVESession: &fakeVoiceDAVESession{maxVersion: 1},
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	voice.dave = backend
+	voice.daveMaxProtocolVersion = 1
+	transportClose := voice.close
+
+	handled := make(chan struct{})
+	go func() {
+		defer close(handled)
+		voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+			strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `],"dave_protocol_version":1}}`))
+	}()
+	<-backend.entered
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		voice.Close()
+	}()
+	// Close signals the transport before it waits for the DAVE lock.
+	<-transportClose
+	close(backend.release)
+	<-handled
+	<-closed
+
+	voice.RLock()
+	ready := voice.Ready
+	voice.RUnlock()
+	if ready {
+		t.Error("OP4 published Ready for a transport torn down during DAVE setup")
+	}
+}
+
+// Readiness reached without a new transport, such as a channel update on a
+// transport that is already ready, is still found by the fallback poll, and
+// the wait keeps its 11 second limit.
+func TestVoiceJoinWaitFallbackPollAndTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		ready   bool
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "channel updated on a ready transport", ready: true, want: time.Second},
+		{name: "never ready", wantErr: true, want: 11 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				voice := &VoiceConnection{LogLevel: -1, ChannelID: "previous", Ready: true, close: make(chan struct{})}
+				defer voice.Close()
+				started := time.Now()
+				result := make(chan error, 1)
+				go func() { result <- voice.waitUntilConnected("channel", nil) }()
+
+				time.Sleep(300 * time.Millisecond)
+				if test.ready {
+					voice.Lock()
+					voice.ChannelID = "channel"
+					voice.Unlock()
+				}
+				err := <-result
+				if gotErr := err != nil; gotErr != test.wantErr {
+					t.Errorf("waitUntilConnected() error = %v, want error %t", err, test.wantErr)
+				}
+				if elapsed := time.Since(started); elapsed != test.want {
+					t.Errorf("waitUntilConnected() returned after %v, want %v", elapsed, test.want)
+				}
+			})
+		})
+	}
+}
+
+// A join must not report success for a transport whose OP4 setup fails,
+// even while the failure is still being handled.
+func TestVoiceJoinWaitIgnoresFailedSetup(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		disconnect bool
+	}{
+		{name: "timeout"},
+		{name: "disconnect", disconnect: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			udpConn := newVoiceJoinWaitTestUDP(t)
+			synctest.Test(t, func(t *testing.T) {
+				voice := newVoiceJoinWaitTestConnection(t, udpConn)
+				voice.LogLevel = LogError
+				// Pause the OP4 handler after DAVE setup failed but before its cleanup.
+				paused, release := make(chan struct{}), make(chan struct{})
+				oldLogger := Logger
+				Logger = func(_, _ int, format string, _ ...interface{}) {
+					if format == "OP4 DAVE setup error, %s" {
+						close(paused)
+						<-release
+					}
+				}
+				defer func() { Logger = oldLogger }()
+				defer voice.Close()
+
+				started := time.Now()
+				result := make(chan error, 1)
+				go func() { result <- voice.waitUntilConnected("channel", nil) }()
+
+				// No DAVE backend is installed, so a nonzero protocol version fails setup.
+				handled := make(chan struct{})
+				go func() {
+					defer close(handled)
+					voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+						strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `],"dave_protocol_version":1}}`))
+				}()
+				<-paused
+				// Let the join poll while the failure is still in flight.
+				time.Sleep(2 * time.Second)
+				synctest.Wait()
+				if len(result) != 0 {
+					t.Error("join returned while OP4 setup was failing, want it still waiting")
+				}
+				voice.RLock()
+				ready := voice.Ready
+				voice.RUnlock()
+				if ready {
+					t.Error("failing OP4 setup published Ready")
+				}
+
+				var closedAt time.Time
+				if test.disconnect {
+					if err := voice.Disconnect(); err != nil {
+						t.Fatal(err)
+					}
+					closedAt = time.Now()
+				}
+				close(release)
+				<-handled
+
+				err := <-result
+				switch {
+				case err == nil:
+					t.Error("join reported success for a voice connection whose setup failed")
+				case test.disconnect && !errors.Is(err, ErrWSNotFound):
+					t.Errorf("wait error = %v, want %v", err, ErrWSNotFound)
+				case test.disconnect && time.Since(closedAt) != 0:
+					t.Errorf("wait returned %v after disconnect, want no delay", time.Since(closedAt))
+				case !test.disconnect && time.Since(started) != 11*time.Second:
+					t.Errorf("failed setup wait returned after %v, want the 11s timeout", time.Since(started))
 				}
 			})
 		})

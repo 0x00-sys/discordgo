@@ -1,7 +1,6 @@
 site_name: DiscordGo
 site_author: Bruce Marriner
-site_url: http://bwmarrin.github.io/discordgo/
-repo_url: https://github.com/bwmarrin/discordgo
+repo_url: https://github.com/0x00-sys/discordgo
 
 dev_addr: 0.0.0.0:8000
 theme: yeti

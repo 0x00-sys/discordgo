@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,6 +154,305 @@ func TestOnEventRejectsNullEvent(t *testing.T) {
 	_, err := s.onEvent(websocket.TextMessage, []byte(`null`))
 	if err == nil {
 		t.Fatal("onEvent() error = nil, want non-nil")
+	}
+}
+
+// TestStateIgnoredEventTypesAreIgnoredByState fails when State.OnInterface
+// gains a case for a type the dispatcher leaves undecoded when unhandled.
+//
+// Known weakness: it passes a typed nil, which today hits every State case as
+// either ErrStateInvalidData or a panic. A future case that accepts a typed
+// nil without error and without changing state would not be caught.
+func TestStateIgnoredEventTypesAreIgnoredByState(t *testing.T) {
+	for _, always := range []string{readyEventType, voiceStateUpdateEventType, voiceServerUpdateEventType} {
+		if stateIgnoredEventTypes[always] {
+			t.Errorf("%s is always consumed and must not be listed", always)
+		}
+	}
+	for typ := range stateIgnoredEventTypes {
+		provider, ok := registeredInterfaceProviders[typ]
+		if !ok {
+			t.Fatalf("%s is not a registered event type", typ)
+		}
+		session, err := New("Bot token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, _ := json.Marshal(session.State)
+		v := reflect.Zero(reflect.TypeOf(provider.New())).Interface()
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("State.OnInterface handles %s (panic on nil: %v)", typ, r)
+				}
+			}()
+			if err := session.State.OnInterface(session, v); err != nil {
+				t.Errorf("State.OnInterface handles %s: %v", typ, err)
+			}
+		}()
+		if after, _ := json.Marshal(session.State); !bytes.Equal(after, before) {
+			t.Errorf("State.OnInterface changed state for %s", typ)
+		}
+	}
+}
+
+func TestGatewaySkipsDecodeOnlyWhenNothingConsumesEvent(t *testing.T) {
+	message := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"channel_id":"1","user_id":"2","timestamp":1}}`)
+	cases := []struct {
+		name   string
+		setup  func(*Session)
+		decode bool
+	}{
+		{"nothing", func(*Session) {}, false},
+		{"typed", func(s *Session) { s.AddHandler(func(*Session, *TypingStart) {}) }, true},
+		{"typed once", func(s *Session) { s.AddHandlerOnce(func(*Session, *TypingStart) {}) }, true},
+		{"interface", func(s *Session) { s.AddHandler(func(*Session, interface{}) {}) }, true},
+		{"interface once", func(s *Session) { s.AddHandlerOnce(func(*Session, interface{}) {}) }, true},
+		{"event", func(s *Session) { s.AddHandler(func(*Session, *Event) {}) }, true},
+		{"event once", func(s *Session) { s.AddHandlerOnce(func(*Session, *Event) {}) }, true},
+		{"other type only", func(s *Session) { s.AddHandler(func(*Session, *InteractionCreate) {}) }, false},
+		{"removed", func(s *Session) { s.AddHandler(func(*Session, *TypingStart) {})() }, false},
+	}
+	for _, state := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("state=%t/%s", state, tc.name), func(t *testing.T) {
+				s, err := New("Bot token")
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.StateEnabled = state
+				s.SyncEvents = true
+				tc.setup(s)
+				e, err := s.onEvent(websocket.TextMessage, message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := e.Struct != nil; got != tc.decode {
+					t.Fatalf("decoded = %t, want %t", got, tc.decode)
+				}
+				if atomic.LoadInt64(s.sequence) != 42 {
+					t.Fatalf("sequence = %d, want 42", atomic.LoadInt64(s.sequence))
+				}
+				if e.Type != "TYPING_START" || !bytes.Contains(e.RawData, []byte(`"channel_id":"1"`)) {
+					t.Fatalf("event = %s %s, want type and raw data kept", e.Type, e.RawData)
+				}
+			})
+		}
+	}
+
+	// *Event handlers keep getting a decoded Struct and the raw data.
+	s, _ := New("Bot token")
+	s.SyncEvents = true
+	var got *Event
+	s.AddHandler(func(_ *Session, e *Event) { got = e })
+	if _, err := s.onEvent(websocket.TextMessage, message); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Struct == nil || got.Sequence != 42 || len(got.RawData) == 0 {
+		t.Fatalf("*Event handler got %+v, want decoded struct, sequence and raw data", got)
+	}
+	if ts, ok := got.Struct.(*TypingStart); !ok || ts.ChannelID != "1" {
+		t.Fatalf("*Event Struct = %#v, want decoded *TypingStart", got.Struct)
+	}
+
+	// State-consumed types still decode with no handlers.
+	s, _ = New("Bot token")
+	e, err := s.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"MESSAGE_CREATE","d":{"id":"1","channel_id":"2"}}`))
+	if err != nil || e.Struct == nil {
+		t.Fatalf("MESSAGE_CREATE with state enabled: struct=%v err=%v", e.Struct, err)
+	}
+	// READY always decodes.
+	s, _ = New("Bot token")
+	s.StateEnabled = false
+	if _, err = s.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"READY","d":{"session_id":"abc","resume_gateway_url":"wss://x"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if s.sessionID != "abc" {
+		t.Fatalf("sessionID = %q after READY with no handlers", s.sessionID)
+	}
+}
+
+// waitForDispatchBlockedOnSessionLock waits until a goroutine is parked on
+// the session lock inside onEventForConnection, which is after the decision
+// whether to decode.
+func waitForDispatchBlockedOnSessionLock(t *testing.T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "(*Session).onEventForConnection") && strings.Contains(g, "sync.(*RWMutex).Lock") {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("dispatch did not block on the session lock")
+}
+
+// interfaceSaw returns an interface{} handler that reports each TYPING_START
+// delivery, typed or as *Event, and whether it carried a decoded struct.
+func interfaceSaw(s *Session, saw func(seq int64, decoded bool)) func(*Session, interface{}) {
+	return func(_ *Session, i interface{}) {
+		switch v := i.(type) {
+		case *Event:
+			if v.Type == typingStartEventType {
+				saw(v.Sequence, v.Struct != nil)
+			}
+		case *TypingStart:
+			saw(atomic.LoadInt64(s.sequence), v != nil)
+		}
+	}
+}
+
+// A handler registered after the decode decision but before delivery must
+// never see a known event type with a nil Struct. It misses that event and
+// starts with the next one; once handlers stay registered for it.
+func TestGatewayHandlerAddedAfterSkipNeverSeesNilStruct(t *testing.T) {
+	message := func(seq int) []byte {
+		return []byte(fmt.Sprintf(`{"op":0,"s":%d,"t":"TYPING_START","d":{"channel_id":"1","user_id":"2","timestamp":1}}`, seq))
+	}
+	cases := []struct {
+		name string
+		add  func(s *Session, saw func(seq int64, decoded bool))
+	}{
+		{"event", func(s *Session, saw func(int64, bool)) {
+			s.AddHandler(func(_ *Session, e *Event) { saw(e.Sequence, e.Struct != nil) })
+		}},
+		{"event once", func(s *Session, saw func(int64, bool)) {
+			s.AddHandlerOnce(func(_ *Session, e *Event) { saw(e.Sequence, e.Struct != nil) })
+		}},
+		{"interface", func(s *Session, saw func(int64, bool)) {
+			s.AddHandler(interfaceSaw(s, saw))
+		}},
+		{"interface once", func(s *Session, saw func(int64, bool)) {
+			s.AddHandlerOnce(interfaceSaw(s, saw))
+		}},
+		{"typed once", func(s *Session, saw func(int64, bool)) {
+			s.AddHandlerOnce(func(_ *Session, ts *TypingStart) { saw(atomic.LoadInt64(s.sequence), ts != nil) })
+		}},
+	}
+	for _, state := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("state=%t/%s", state, tc.name), func(t *testing.T) {
+				s, err := New("Bot token")
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.StateEnabled = state
+				s.SyncEvents = true
+
+				var mu sync.Mutex
+				var seen []int64
+				saw := func(seq int64, decoded bool) {
+					if !decoded {
+						t.Errorf("handler got TYPING_START seq %d with nil Struct", seq)
+					}
+					mu.Lock()
+					seen = append(seen, seq)
+					mu.Unlock()
+				}
+
+				s.Lock()
+				done := make(chan error, 1)
+				go func() {
+					_, err := s.onEventForConnection(nil, websocket.TextMessage, message(1))
+					done <- err
+				}()
+				waitForDispatchBlockedOnSessionLock(t)
+				tc.add(s, saw)
+				s.Unlock()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+
+				if _, err := s.onEventForConnection(nil, websocket.TextMessage, message(2)); err != nil {
+					t.Fatal(err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(seen) == 0 {
+					t.Fatal("handler saw nothing, want event 2")
+				}
+				for _, seq := range seen {
+					if seq != 2 {
+						t.Fatalf("handler saw sequences %v, want only 2", seen)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Handlers of every kind are added and removed while TYPING_START events are
+// dispatched. No handler may ever see a nil Struct. Run with -race.
+func TestGatewayConcurrentHandlerChangesDuringSkippedDispatch(t *testing.T) {
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.StateEnabled = false
+	s.SyncEvents = true
+	message := []byte(`{"op":0,"s":7,"t":"TYPING_START","d":{"channel_id":"1","user_id":"2","timestamp":1}}`)
+
+	var nilStructs, deliveries atomic.Int64
+	check := func(decoded bool) {
+		deliveries.Add(1)
+		if !decoded {
+			nilStructs.Add(1)
+		}
+	}
+	adders := []func() func(){
+		func() func() { return s.AddHandler(func(_ *Session, e *Event) { check(e.Struct != nil) }) },
+		func() func() { return s.AddHandlerOnce(func(_ *Session, e *Event) { check(e.Struct != nil) }) },
+		func() func() {
+			return s.AddHandler(func(_ *Session, i interface{}) {
+				if e, ok := i.(*Event); ok {
+					check(e.Struct != nil)
+				}
+			})
+		},
+		func() func() { return s.AddHandler(func(_ *Session, ts *TypingStart) { check(ts != nil) }) },
+		func() func() { return s.AddHandlerOnce(func(_ *Session, ts *TypingStart) { check(ts != nil) }) },
+	}
+
+	stop := make(chan struct{})
+	var adding, dispatching sync.WaitGroup
+	for i := range adders {
+		add := adders[i]
+		adding.Add(1)
+		go func() {
+			defer adding.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				remove := add()
+				runtime.Gosched()
+				remove()
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		dispatching.Add(1)
+		go func() {
+			defer dispatching.Done()
+			for j := 0; j < 2000; j++ {
+				if _, err := s.onEvent(websocket.TextMessage, message); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	dispatching.Wait()
+	close(stop)
+	adding.Wait()
+	if n := nilStructs.Load(); n != 0 {
+		t.Fatalf("%d of %d deliveries had a nil Struct", n, deliveries.Load())
 	}
 }
 
@@ -1023,6 +1323,452 @@ func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
 	}
 }
 
+// Sessions dropped together, as in a network blip or gateway restart, must not
+// retry in lockstep. Without jitter, every retry round of thousands of
+// sessions in one process lands in the same few milliseconds.
+func TestReconnectRetriesAreSpreadAcrossSessions(t *testing.T) {
+	const sessions = 20
+	var (
+		mu       sync.Mutex
+		accepted = map[string]*websocket.Conn{}
+		attempts = map[string][]time.Time{}
+		dropped  atomic.Bool
+	)
+	upgrader := websocket.Upgrader{}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if dropped.Load() {
+			mu.Lock()
+			attempts[r.URL.Path] = append(attempts[r.URL.Path], time.Now())
+			mu.Unlock()
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		resumeURL := "ws" + strings.TrimPrefix(server.URL, "http") + r.URL.Path
+		ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"spread","resume_gateway_url":"` + resumeURL + `","user":{"id":"1"},"guilds":[]}}`
+		// Register before READY: Open returns once READY is read.
+		mu.Lock()
+		accepted[r.URL.Path] = conn
+		mu.Unlock()
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+			return
+		}
+	}))
+	defer server.Close()
+
+	all := make([]*Session, sessions)
+	for i := range all {
+		session, err := New("Bot test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session.LogLevel = -1
+		session.gateway = "ws" + strings.TrimPrefix(server.URL, "http") + "/s" + strconv.Itoa(i)
+		if err := session.Open(); err != nil {
+			t.Fatal(err)
+		}
+		all[i] = session
+	}
+	defer func() {
+		for _, session := range all {
+			_ = session.Close()
+		}
+	}()
+
+	dropped.Store(true)
+	mu.Lock()
+	for _, conn := range accepted {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, ""), time.Now().Add(time.Second))
+		_ = conn.Close()
+	}
+	mu.Unlock()
+	time.Sleep(4 * time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var first, last time.Time
+	for path, times := range attempts {
+		if len(times) < 2 {
+			t.Fatalf("%s retried %d times, want at least 2", path, len(times))
+		}
+		// The first retry after the drop is immediate; compare the second.
+		retry := times[1]
+		if first.IsZero() || retry.Before(first) {
+			first = retry
+		}
+		if retry.After(last) {
+			last = retry
+		}
+	}
+	if len(attempts) != sessions {
+		t.Fatalf("sessions that retried = %d, want %d", len(attempts), sessions)
+	}
+	if spread := last.Sub(first); spread < 250*time.Millisecond {
+		t.Fatalf("second reconnect attempts of %d sessions spread over %v, want >= 250ms", sessions, spread)
+	}
+}
+
+func TestJitteredGatewayBackoffStaysWithinBounds(t *testing.T) {
+	for _, d := range []time.Duration{time.Second, 2 * time.Second, 64 * time.Second, 600 * time.Second} {
+		const samples = 10000
+		var total time.Duration
+		lowest, highest := d*2, time.Duration(0)
+		for range samples {
+			got := jitteredGatewayBackoff(d)
+			if got < d/2 || got >= d+d/2 {
+				t.Fatalf("jitteredGatewayBackoff(%v) = %v, want in [%v, %v)", d, got, d/2, d+d/2)
+			}
+			total += got
+			lowest = min(lowest, got)
+			highest = max(highest, got)
+		}
+		// The whole range is used and the mean delay is unchanged.
+		if lowest > d*6/10 || highest < d*14/10 {
+			t.Fatalf("jitteredGatewayBackoff(%v) ranged over [%v, %v], want close to [%v, %v)", d, lowest, highest, d/2, d+d/2)
+		}
+		if mean := total / samples; mean < d*95/100 || mean > d*105/100 {
+			t.Fatalf("jitteredGatewayBackoff(%v) mean = %v, want about %v", d, mean, d)
+		}
+	}
+	if got := jitteredGatewayBackoff(0); got != 0 {
+		t.Fatalf("jitteredGatewayBackoff(0) = %v, want 0", got)
+	}
+}
+
+// A gateway that accepts every session and drops it right after READY must
+// not be redialed in a tight loop. With close 4009 every cycle is a new
+// Identify, and Discord resets the token after 1000 Identify calls a day.
+func TestReconnectBacksOffWhenGatewayDropsAfterReady(t *testing.T) {
+	for _, closeCode := range []int{4000, 4009} {
+		t.Run(strconv.Itoa(closeCode), func(t *testing.T) {
+			var identifies, resumes int32
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+					return
+				}
+				_, message, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var op struct {
+					Op int `json:"op"`
+				}
+				_ = json.Unmarshal(message, &op)
+				ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"flap","user":{"id":"1"},"guilds":[]}}`
+				if op.Op == 6 {
+					atomic.AddInt32(&resumes, 1)
+					ready = `{"op":0,"s":2,"t":"RESUMED","d":{}}`
+				} else {
+					atomic.AddInt32(&identifies, 1)
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+					return
+				}
+				_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, ""), time.Now().Add(time.Second))
+				time.Sleep(10 * time.Millisecond)
+			}))
+			defer server.Close()
+
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel = -1
+			if err := session.Open(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2 * time.Second)
+			_ = session.Close()
+
+			// Any backoff starting near one second allows only a handful of
+			// sessions in two seconds; the bound leaves room for jitter.
+			got := atomic.LoadInt32(&identifies) + atomic.LoadInt32(&resumes)
+			t.Logf("gateway sessions started in 2s = %d (identify=%d resume=%d)",
+				got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
+			if got > 10 {
+				t.Fatalf("gateway sessions started in 2s = %d (identify=%d resume=%d), want <= 10",
+					got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
+			}
+		})
+	}
+}
+
+func TestNextGatewayFlapDelay(t *testing.T) {
+	const stableAfter = 30 * time.Second
+
+	// Each early drop doubles the delay from 1s up to the cap.
+	want := []time.Duration{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 600, 600}
+	var delay time.Duration
+	for i, w := range want {
+		delay = nextGatewayFlapDelay(delay, time.Second, stableAfter)
+		if delay != w*time.Second {
+			t.Fatalf("delay after early drop %d = %v, want %v", i+1, delay, w*time.Second)
+		}
+	}
+	// Discord allows 1000 Identify calls a day, one per 86.4s. Even the
+	// shortest jittered wait at the cap must stay above that.
+	if maxGatewayFlapDelay/2 < 90*time.Second {
+		t.Fatalf("shortest wait at the cap = %v, want >= 90s", maxGatewayFlapDelay/2)
+	}
+
+	// A connection that stayed up long enough resets the delay, and the
+	// next early drop starts over from 1s.
+	if delay = nextGatewayFlapDelay(delay, stableAfter, stableAfter); delay != 0 {
+		t.Fatalf("delay after stable connection = %v, want 0", delay)
+	}
+	if delay = nextGatewayFlapDelay(delay, 0, stableAfter); delay != time.Second {
+		t.Fatalf("delay after early drop following reset = %v, want 1s", delay)
+	}
+}
+
+// Only connections that drop soon after opening are delayed. A connection
+// that stayed up past the threshold and then drops or receives Op 7 is
+// redialed at once, even after earlier flaps.
+func TestReconnectDelaysOnlyEarlyDrops(t *testing.T) {
+	cases := []struct {
+		name          string
+		stableAfter   time.Duration
+		op7           bool
+		wantImmediate bool
+		wantDelay     time.Duration
+	}{
+		{name: "close after stable connection", stableAfter: 50 * time.Millisecond, wantImmediate: true},
+		{name: "op 7 after stable connection", stableAfter: 50 * time.Millisecond, op7: true, wantImmediate: true},
+		{name: "close soon after open", stableAfter: time.Hour, wantDelay: maxGatewayFlapDelay},
+		{name: "op 7 soon after open", stableAfter: time.Hour, op7: true, wantDelay: maxGatewayFlapDelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var conns int32
+			drop := make(chan struct{})
+			redialed := make(chan struct{}, 1)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				n := atomic.AddInt32(&conns, 1)
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+					return
+				}
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+				ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"stable","user":{"id":"1"},"guilds":[]}}`
+				if n > 1 {
+					ready = `{"op":0,"s":2,"t":"RESUMED","d":{}}`
+					select {
+					case redialed <- struct{}{}:
+					default:
+					}
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+					return
+				}
+				if n == 1 {
+					<-drop
+					if tc.op7 {
+						_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":7,"d":null}`))
+					} else {
+						_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, ""), time.Now().Add(time.Second))
+					}
+				}
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}))
+			defer server.Close()
+
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel = -1
+			session.gatewayStableAfter = tc.stableAfter
+			// Earlier flaps already pushed the delay up.
+			session.gatewayFlapDelay = 300 * time.Second
+			if err := session.Open(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = session.Close() }()
+
+			time.Sleep(100 * time.Millisecond)
+			close(drop)
+
+			wait := 5 * time.Second
+			if !tc.wantImmediate {
+				wait = 300 * time.Millisecond
+			}
+			select {
+			case <-redialed:
+				if !tc.wantImmediate {
+					t.Fatal("redialed at once after a connection dropped soon after opening")
+				}
+			case <-time.After(wait):
+				if tc.wantImmediate {
+					t.Fatalf("not redialed within %v after a stable connection dropped", wait)
+				}
+			}
+			session.RLock()
+			delay := session.gatewayFlapDelay
+			session.RUnlock()
+			if delay != tc.wantDelay {
+				t.Fatalf("flap delay = %v, want %v", delay, tc.wantDelay)
+			}
+		})
+	}
+}
+
+func TestReconnectFlapBackoffStopsOnClose(t *testing.T) {
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	var dials int32
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			atomic.AddInt32(&dials, 1)
+			return nil, errors.New("dial failed")
+		},
+	}
+	// The connection dropped right after opening, after earlier flaps.
+	session.Lock()
+	session.gatewayOpenedAt = time.Now()
+	session.gatewayFlapDelay = maxGatewayFlapDelay
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect(session.reconnectCancelSignal())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reconnect returned without waiting")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := atomic.LoadInt32(&dials); got != 0 {
+		t.Fatalf("dial attempts during backoff = %d, want 0", got)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not stop after Close")
+	}
+	if got := atomic.LoadInt32(&dials); got != 0 {
+		t.Fatalf("dial attempts after Close = %d, want 0", got)
+	}
+}
+
+// A user Open during the flap backoff wins. The waiting reconnect must not
+// dial a second connection or replace the one Open made.
+func TestReconnectFlapBackoffDoesNotCompeteWithOpen(t *testing.T) {
+	var conns int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		atomic.AddInt32(&conns, 1)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"READY","d":{"session_id":"open","user":{"id":"1"},"guilds":[]}}`)); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	session, err := newGatewayOpenTestSession(server, "Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.Lock()
+	session.gatewayOpenedAt = time.Now()
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		session.reconnect(session.reconnectCancelSignal())
+		close(done)
+	}()
+	// Wait until reconnect has started its backoff.
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.RLock()
+		waiting := session.gatewayOpenedAt.IsZero()
+		session.RUnlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reconnect did not start its backoff")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := session.Open(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	session.RLock()
+	opened := session.wsConn
+	session.RUnlock()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnect did not return after its backoff")
+	}
+	session.RLock()
+	current := session.wsConn
+	session.RUnlock()
+	if current != opened {
+		t.Fatal("reconnect replaced the connection opened during its backoff")
+	}
+	if got := atomic.LoadInt32(&conns); got != 1 {
+		t.Fatalf("gateway connections = %d, want 1", got)
+	}
+}
+
 func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 	serverDone := make(chan struct{})
 	upgrader := websocket.Upgrader{}
@@ -1031,7 +1777,7 @@ func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
 			return
@@ -1301,6 +2047,297 @@ func TestListenDoesNotCloseReplacementConnection(t *testing.T) {
 	close(newListening)
 }
 
+// listen reuses one pooled read buffer for every message. Async handlers that
+// run after the next message has been read must still see their own payload.
+func TestListenAsyncHandlersSeeTheirOwnPayload(t *testing.T) {
+	const messages = 300
+	payload := func(i int) (string, []byte) {
+		// Vary the size so later messages overwrite earlier ones partially.
+		d := `{"user_id":"` + strconv.Itoa(i) + `","channel_id":"` + strings.Repeat(strconv.Itoa(i%10), 1+(i*37)%2000) + `"}`
+		return d, []byte(`{"op":0,"s":` + strconv.Itoa(i+1) + `,"t":"TYPING_START","d":` + d + `}`)
+	}
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for i := range messages {
+			_, message := payload(i)
+			messageType := websocket.TextMessage
+			if i%3 == 0 {
+				messageType = websocket.BinaryMessage
+				message = compressedGatewayPayload(t, message)
+			}
+			if err := conn.WriteMessage(messageType, message); err != nil {
+				return
+			}
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.StateEnabled = false
+	session.ShouldReconnectOnError = false
+
+	var wg sync.WaitGroup
+	wg.Add(2 * messages)
+	var bad atomic.Int32
+	session.AddHandler(func(_ *Session, e *Event) {
+		defer wg.Done()
+		time.Sleep(time.Duration(e.Sequence%5) * time.Millisecond)
+		if want, _ := payload(int(e.Sequence - 1)); string(e.RawData) != want {
+			if bad.Add(1) == 1 {
+				t.Errorf("event %d RawData = %.80s, want %.80s", e.Sequence, e.RawData, want)
+			}
+		}
+	})
+	session.AddHandler(func(_ *Session, e *TypingStart) {
+		defer wg.Done()
+		time.Sleep(time.Millisecond)
+		i, err := strconv.Atoi(e.UserID)
+		if err != nil || e.ChannelID != strings.Repeat(strconv.Itoa(i%10), 1+(i*37)%2000) {
+			if bad.Add(1) == 1 {
+				t.Errorf("TYPING_START user %q has channel %.40q", e.UserID, e.ChannelID)
+			}
+		}
+	})
+	session.Lock()
+	session.wsConn = conn
+	listening := make(chan interface{})
+	session.listening = listening
+	session.Unlock()
+
+	session.listen(conn, listening)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handlers did not run for every message")
+	}
+	if n := bad.Load(); n != 0 {
+		t.Fatalf("%d handler calls saw another message's payload", n)
+	}
+}
+
+// An Op 7 reconnects synchronously from the listen goroutine and can wait
+// for minutes. The read buffer must already be back in the pool by then.
+func TestOnEventReleasesMessageBeforeReconnect(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	var releases atomic.Int32
+	releasedAtDial := make(chan int32, 1)
+	session.gateway = "ws://discord.invalid/gateway"
+	session.Dialer = &websocket.Dialer{
+		NetDial: func(_, _ string) (net.Conn, error) {
+			select {
+			case releasedAtDial <- releases.Load():
+				go func() { _ = session.Close() }()
+			default:
+			}
+			return nil, errors.New("dial failed")
+		},
+	}
+	session.Lock()
+	session.wsConn = conn
+	session.listening = make(chan interface{})
+	session.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = session.onEventForConnectionReleasing(conn, websocket.TextMessage, []byte(`{"op":7,"d":null}`), func() { releases.Add(1) })
+	}()
+	select {
+	case got := <-releasedAtDial:
+		if got != 1 {
+			t.Fatalf("releases before reconnect dialed = %d, want 1", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Op 7 did not reconnect")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect did not stop after Close")
+	}
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("releases = %d, want 1", got)
+	}
+}
+
+func TestGatewayReadBufferReleasesOnReadError(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		raw := conn.UnderlyingConn()
+		// A text frame that announces 100 bytes, then the connection
+		// drops after 10 of them.
+		_, _ = raw.Write(append([]byte{0x81, 100}, `{"op":0,"d`...))
+		_ = raw.Close()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var b gatewayReadBuffer
+	if _, _, err := b.readMessage(conn); err == nil {
+		t.Fatal("readMessage() of a truncated frame returned nil error")
+	}
+	if b.buf != nil {
+		t.Fatal("read buffer still held after a read error")
+	}
+}
+
+func TestGatewayReadBufferDoesNotPoolLargeBuffers(t *testing.T) {
+	large := bytes.NewBuffer(make([]byte, 0, 2*maxPooledGatewayReadBuffer))
+	b := gatewayReadBuffer{buf: large}
+	b.release()
+	if b.buf != nil {
+		t.Fatal("release kept the buffer")
+	}
+	for range 10 {
+		got := gatewayReadBufferPool.Get().(*bytes.Buffer)
+		if got == large {
+			t.Fatalf("pool returned a %d byte buffer, want at most %d", got.Cap(), maxPooledGatewayReadBuffer)
+		}
+	}
+	b.release() // a second release is a no-op
+}
+
+// BenchmarkGatewayListen measures one received dispatch end to end through
+// listen: websocket read, decode and dispatch.
+func BenchmarkGatewayListen(b *testing.B) {
+	small := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"user_id":"80351110224678912","channel_id":"613425648685547541","guild_id":"613425648685547541","timestamp":1700000000}}`)
+	large := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"user_id":"80351110224678912","channel_id":"613425648685547541","guild_id":"613425648685547541","timestamp":1700000000,"padding":"` + strings.Repeat("x", 32<<10) + `"}}`)
+	// A realistic large dispatch: a GUILD_MEMBERS_CHUNK with 100 members
+	// and their presences, about 46 KiB.
+	var chunk strings.Builder
+	chunk.WriteString(`{"op":0,"s":42,"t":"GUILD_MEMBERS_CHUNK","d":{"guild_id":"613425648685547541","chunk_index":0,"chunk_count":1,"members":[`)
+	for i := range 100 {
+		if i > 0 {
+			chunk.WriteByte(',')
+		}
+		id := strconv.FormatInt(80351110224678912+int64(i), 10)
+		chunk.WriteString(`{"user":{"id":"` + id + `","username":"member` + strconv.Itoa(i) + `","global_name":"Member ` + strconv.Itoa(i) + `","avatar":"a_1b2c3d4e5f60718293a4b5c6d7e8f901","discriminator":"0","public_flags":64},"nick":null,"avatar":null,"roles":["613425648685547542","613425648685547543"],"joined_at":"2024-03-01T12:34:56.789000+00:00","premium_since":null,"deaf":false,"mute":false,"flags":0,"pending":false}`)
+	}
+	chunk.WriteString(`],"presences":[`)
+	for i := range 100 {
+		if i > 0 {
+			chunk.WriteByte(',')
+		}
+		chunk.WriteString(`{"user":{"id":"` + strconv.FormatInt(80351110224678912+int64(i), 10) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
+	}
+	chunk.WriteString(`]}}`)
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{{"small", small}, {"32KiB", large}, {"members_chunk", []byte(chunk.String())}} {
+		b.Run(tc.name, func(b *testing.B) {
+			var header []byte
+			switch n := len(tc.payload); {
+			case n < 126:
+				header = []byte{0x81, byte(n)}
+			case n < 1<<16:
+				header = []byte{0x81, 126, byte(n >> 8), byte(n)}
+			default:
+				b.Fatal("payload too large")
+			}
+			frame := append(header, tc.payload...)
+
+			start := make(chan int)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				raw := conn.UnderlyingConn()
+				n, ok := <-start
+				if !ok {
+					return
+				}
+				for i := 0; i < n; i++ {
+					if _, err := raw.Write(frame); err != nil {
+						return
+					}
+				}
+				// A close frame ends this round of listen.
+				_, _ = raw.Write([]byte{0x88, 0x02, 0x03, 0xe8})
+			}))
+			defer server.Close()
+
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.LogLevel = -1
+			session.StateEnabled = false
+			session.SyncEvents = true
+			session.ShouldReconnectOnError = false
+			session.wsConn = conn
+			listening := make(chan interface{})
+			session.listening = listening
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.payload)))
+			b.ResetTimer()
+			start <- b.N
+			session.listen(conn, listening)
+		})
+	}
+}
+
 func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
 	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
 	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
@@ -1317,7 +2354,7 @@ func TestHeartbeatDoesNotCloseReplacementConnection(t *testing.T) {
 	releaseLog := make(chan struct{})
 	defer closeChannel(releaseLog)
 	var blockLog sync.Once
-	Logger = func(msgL, caller int, format string, a ...interface{}) {
+	Logger = func(_, _ int, format string, a ...interface{}) {
 		if strings.Contains(fmt.Sprintf(format, a...), "error sending heartbeat") {
 			blockLog.Do(func() {
 				close(logReached)
@@ -1589,7 +2626,7 @@ func TestGatewayRateLimitWaitStopsOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	waitStarted := make(chan struct{})
 	session := &Session{
@@ -1741,7 +2778,7 @@ func captureGatewayWrites(t *testing.T, count int, call func(*Session) error) []
 			readErr <- err
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for i := 0; i < count; i++ {
 			if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -1763,7 +2800,7 @@ func captureGatewayWrites(t *testing.T, count int, call func(*Session) error) []
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	session := &Session{wsConn: conn, sequence: new(int64)}
 	if err := call(session); err != nil {
@@ -1794,7 +2831,7 @@ func TestHeartbeatLatencyConcurrentHeartbeat(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for {
 			if _, _, err = conn.ReadMessage(); err != nil {
@@ -1867,7 +2904,7 @@ func TestHeartbeatWaitsForInitialJitter(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		for {
 			if _, _, err = conn.ReadMessage(); err != nil {
@@ -1922,7 +2959,7 @@ func TestHeartbeatReconnectsAfterOneMissedAck(t *testing.T) {
 	conn, peer := newGatewayTestConnection(t)
 	closeCode := make(chan int, 1)
 	heartbeats := make(chan int, 16)
-	peer.SetCloseHandler(func(code int, text string) error {
+	peer.SetCloseHandler(func(code int, _ string) error {
 		closeCode <- code
 		return nil
 	})
@@ -2317,7 +3354,7 @@ func TestReconnectCanceledAfterOpenKeepsNewerSession(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		if err := c.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
 			return
@@ -2391,7 +3428,7 @@ func TestReconnectStopsWhenCloseCalled(t *testing.T) {
 	var attempts int32
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			atomic.AddInt32(&attempts, 1)
 			select {
 			case attempted <- struct{}{}:
@@ -2436,7 +3473,7 @@ func TestReconnectDoesNotStartAfterClose(t *testing.T) {
 	attempted := make(chan struct{}, 1)
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			select {
 			case attempted <- struct{}{}:
 			default:
@@ -2480,7 +3517,7 @@ func TestOpenAfterCloseCanDial(t *testing.T) {
 	var attempts int32
 	session.gateway = "ws://discord.invalid/gateway"
 	session.Dialer = &websocket.Dialer{
-		NetDial: func(network, addr string) (net.Conn, error) {
+		NetDial: func(_, _ string) (net.Conn, error) {
 			atomic.AddInt32(&attempts, 1)
 			return nil, errors.New("dial failed")
 		},
@@ -2636,7 +3673,7 @@ func TestOpenHelloDoesNotBlockClose(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		close(connected)
 		<-unblockServer
 	}))
@@ -2696,7 +3733,7 @@ func newGatewayOpenTestServerWithHello(t *testing.T, hello []byte, startupPacket
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if err := conn.WriteMessage(websocket.TextMessage, hello); err != nil {
 			return
@@ -2725,7 +3762,7 @@ func newGatewayTricklingStartupTestServer(t *testing.T, gap time.Duration, trick
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":60000}}`)); err != nil {
 			return
@@ -2749,6 +3786,691 @@ func newGatewayTricklingStartupTestServer(t *testing.T, gap time.Duration, trick
 
 	t.Cleanup(server.Close)
 	return server
+}
+
+// identifyLimitedGateway is a fake gateway that enforces Discord's documented
+// identify concurrency: one IDENTIFY per window per rate_limit_key
+// (shard_id % max_concurrency) for the whole application. A violating
+// IDENTIFY gets Invalid Session (op 9, d=false). RESUME is always accepted.
+type identifyLimitedGateway struct {
+	*httptest.Server
+	window         time.Duration
+	maxConcurrency int
+
+	mu         sync.Mutex
+	lastByKey  map[int]time.Time
+	identifies int
+	rejected   int
+	resumes    int
+	restCalls  map[string]int
+	conns      []*websocket.Conn
+}
+
+func newIdentifyLimitedGateway(t *testing.T, window time.Duration, maxConcurrency int) *identifyLimitedGateway {
+	t.Helper()
+	g := &identifyLimitedGateway{window: window, maxConcurrency: maxConcurrency, lastByKey: map[int]time.Time{}, restCalls: map[string]int{}}
+	upgrader := websocket.Upgrader{}
+	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		var op struct {
+			Op   int `json:"op"`
+			Data struct {
+				Shard *[2]int `json:"shard"`
+			} `json:"d"`
+		}
+		for {
+			if err := conn.ReadJSON(&op); err != nil {
+				return
+			}
+			if op.Op == 2 || op.Op == 6 {
+				break
+			}
+		}
+		if op.Op == 6 {
+			g.mu.Lock()
+			g.resumes++
+			g.conns = append(g.conns, conn)
+			g.mu.Unlock()
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":0,"s":2,"t":"RESUMED","d":{}}`))
+			return
+		}
+		shard := 0
+		if op.Data.Shard != nil {
+			shard = op.Data.Shard[0]
+		}
+		g.mu.Lock()
+		key := shard % g.maxConcurrency
+		g.identifies++
+		now := time.Now()
+		if last, ok := g.lastByKey[key]; ok && now.Sub(last) < g.window {
+			g.rejected++
+			g.mu.Unlock()
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":9,"d":false}`))
+			_ = conn.Close()
+			return
+		}
+		g.lastByKey[key] = now
+		g.conns = append(g.conns, conn)
+		g.mu.Unlock()
+		ready := fmt.Sprintf(`{"op":0,"s":1,"t":"READY","d":{"session_id":"shard%d","user":{"id":"1"},"guilds":[]}}`, shard)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(ready))
+	}))
+	t.Cleanup(g.Close)
+	return g
+}
+
+func (g *identifyLimitedGateway) counts() (identifies, rejected, resumes int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.identifies, g.rejected, g.resumes
+}
+
+func (g *identifyLimitedGateway) dropAll(closeCode int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, conn := range g.conns {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, "test"), time.Now().Add(time.Second))
+		_ = conn.Close()
+	}
+	g.conns = nil
+}
+
+var identifyTestTokens atomic.Int64
+
+// newIdentifyTestToken returns a token no other test run uses, since the
+// identify limiter is package-level.
+func newIdentifyTestToken() string {
+	return fmt.Sprintf("Bot identify-test-%d", identifyTestTokens.Add(1))
+}
+
+// setIdentifyWindowForTest shortens the identify window for one test.
+func setIdentifyWindowForTest(t *testing.T, window time.Duration) {
+	t.Helper()
+	l := gatewayIdentifyLimiter
+	l.mu.Lock()
+	old := l.window
+	l.window = window
+	l.mu.Unlock()
+	t.Cleanup(func() {
+		l.mu.Lock()
+		l.window = old
+		l.mu.Unlock()
+	})
+}
+
+// newIdentifyLimitedShard returns a shard whose REST client answers
+// GET /gateway/bot (or GET /gateway) with g's URL and max_concurrency.
+func newIdentifyLimitedShard(t *testing.T, g *identifyLimitedGateway, token string, shard, shards int, gatewayBotStatus int) *Session {
+	t.Helper()
+	s, err := New(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LogLevel = -1
+	s.ShardID = shard
+	s.ShardCount = shards
+	wsURL := "ws" + strings.TrimPrefix(g.URL, "http")
+	s.Client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		path := strings.TrimPrefix(req.URL.Path, "/api/v"+APIVersion)
+		g.mu.Lock()
+		g.restCalls[path]++
+		maxConcurrency := g.maxConcurrency
+		g.mu.Unlock()
+		status, body := http.StatusOK, fmt.Sprintf(`{"url":%q}`, wsURL)
+		if path == "/gateway/bot" {
+			status = gatewayBotStatus
+			body = fmt.Sprintf(`{"url":%q,"shards":%d,"session_start_limit":{"total":1000,"remaining":1000,"reset_after":0,"max_concurrency":%d}}`, wsURL, shards, maxConcurrency)
+			if status != http.StatusOK {
+				body = `{"message":"401: Unauthorized","code":0}`
+			}
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// Opening the shards of one bot one after another, the usual way to start a
+// sharded bot, must not violate identify concurrency.
+func TestGatewayShardsOpenedInSequenceRespectIdentifyConcurrency(t *testing.T) {
+	const shards = 3
+	const window = 200 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 1)
+	token := newIdentifyTestToken()
+	var failed []string
+	for i := 0; i < shards; i++ {
+		if err := newIdentifyLimitedShard(t, g, token, i, shards, http.StatusOK).Open(); err != nil {
+			failed = append(failed, fmt.Sprintf("shard %d: %v", i, err))
+		}
+	}
+	identifies, rejected, _ := g.counts()
+	if len(failed) > 0 || rejected > 0 {
+		t.Fatalf("opening %d shards (max_concurrency=1): %d IDENTIFY sent, %d rejected with op 9; failed Opens: %q", shards, identifies, rejected, failed)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if got := g.restCalls["/gateway/bot"]; got != 1 {
+		t.Errorf("GET /gateway/bot calls = %d, want 1 shared by the shards of one token", got)
+	}
+	if got := g.restCalls["/gateway"]; got != 0 {
+		t.Errorf("GET /gateway calls = %d, want 0 for sharded sessions", got)
+	}
+}
+
+// With max_concurrency 2 from GET /gateway/bot, shards in different buckets
+// open back to back without waiting for each other.
+func TestGatewayShardsInDifferentBucketsOpenWithoutWaiting(t *testing.T) {
+	setIdentifyWindowForTest(t, 5*time.Second)
+	g := newIdentifyLimitedGateway(t, 5*time.Second, 2)
+	token := newIdentifyTestToken()
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		if err := newIdentifyLimitedShard(t, g, token, i, 2, http.StatusOK).Open(); err != nil {
+			t.Fatalf("shard %d: %v", i, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("opening shards 0 and 1 with max_concurrency=2 took %v, want no identify wait", elapsed)
+	}
+	if identifies, rejected, _ := g.counts(); identifies != 2 || rejected != 0 {
+		t.Fatalf("%d IDENTIFY sent, %d rejected; want 2 sent, 0 rejected", identifies, rejected)
+	}
+}
+
+// Shards of one bot that must all re-identify at once (gateway restart, close
+// 4009) are paced like a fresh start.
+func TestGatewayShardsReidentifyingTogetherRespectIdentifyConcurrency(t *testing.T) {
+	const shards = 3
+	const window = 200 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 1)
+	token := newIdentifyTestToken()
+	for i := 0; i < shards; i++ {
+		if i > 0 {
+			// Space the first start out so only the re-identify is tested.
+			time.Sleep(window + identifyConcurrencyMargin)
+		}
+		if err := newIdentifyLimitedShard(t, g, token, i, shards, http.StatusOK).Open(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.mu.Lock()
+	g.identifies = 0
+	g.mu.Unlock()
+	g.dropAll(4009)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		identifies, rejected, _ := g.counts()
+		if rejected > 0 {
+			t.Fatalf("%d shards re-identifying (max_concurrency=1): %d of %d IDENTIFY rejected with op 9, want 0", shards, rejected, identifies)
+		}
+		if identifies >= shards {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d shards re-identified within 10s", identifies, shards)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Leave time for any extra IDENTIFY to show up.
+	time.Sleep(2 * (window + identifyConcurrencyMargin))
+	if identifies, rejected, _ := g.counts(); identifies != shards || rejected != 0 {
+		t.Fatalf("after re-identifying: %d IDENTIFY sent, %d rejected; want %d sent, 0 rejected", identifies, rejected, shards)
+	}
+}
+
+// When GET /gateway/bot fails, a sharded session still opens through
+// GET /gateway and paces with max_concurrency 1.
+func TestGatewayShardFallsBackToGatewayWhenGatewayBotFails(t *testing.T) {
+	const window = 200 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 1)
+	token := newIdentifyTestToken()
+	for i := 0; i < 2; i++ {
+		if err := newIdentifyLimitedShard(t, g, token, i, 2, http.StatusUnauthorized).Open(); err != nil {
+			t.Fatalf("shard %d: %v", i, err)
+		}
+	}
+	if identifies, rejected, _ := g.counts(); identifies != 2 || rejected != 0 {
+		t.Fatalf("%d IDENTIFY sent, %d rejected; want 2 sent, 0 rejected", identifies, rejected)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if got := g.restCalls["/gateway"]; got != 2 {
+		t.Errorf("GET /gateway calls = %d, want 2 fallback lookups", got)
+	}
+}
+
+// A shard that identified while max_concurrency was unknown used the fallback
+// mapping. Once a later lookup learns the real value, a shard in the same
+// Discord bucket must still wait out that cooldown.
+func TestGatewayShardWaitsForFallbackCooldownAfterLearningConcurrency(t *testing.T) {
+	const window = 300 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 2)
+	token := newIdentifyTestToken()
+	// Shard 1 can't reach GET /gateway/bot and paces with mapping 1.
+	if err := newIdentifyLimitedShard(t, g, token, 1, 4, http.StatusUnauthorized).Open(); err != nil {
+		t.Fatalf("shard 1: %v", err)
+	}
+	// Shard 3 learns max_concurrency 2. It shares rate_limit_key 1 with shard 1.
+	if err := newIdentifyLimitedShard(t, g, token, 3, 4, http.StatusOK).Open(); err != nil {
+		t.Fatalf("shard 3: %v", err)
+	}
+	if identifies, rejected, _ := g.counts(); identifies != 2 || rejected != 0 {
+		t.Fatalf("%d IDENTIFY sent, %d rejected with op 9; want 2 sent, 0 rejected", identifies, rejected)
+	}
+}
+
+// A shard waiting for its identify bucket must not block Close, and must not
+// send IDENTIFY after it.
+func TestGatewayCloseDuringIdentifyWaitReturnsPromptly(t *testing.T) {
+	setIdentifyWindowForTest(t, 5*time.Second)
+	g := newIdentifyLimitedGateway(t, 5*time.Second, 1)
+	token := newIdentifyTestToken()
+	if err := newIdentifyLimitedShard(t, g, token, 0, 2, http.StatusOK).Open(); err != nil {
+		t.Fatal(err)
+	}
+	waiting := newIdentifyLimitedShard(t, g, token, 1, 2, http.StatusOK)
+	openDone := make(chan error, 1)
+	go func() { openDone <- waiting.Open() }()
+
+	// Wait until shard 1 owns bucket 0 and is waiting out shard 0's cooldown.
+	l := gatewayIdentifyLimiter
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l.mu.Lock()
+		held := false
+		bucket := identifyBucketKey{maxConcurrency: 1, key: 0}
+		if app := l.apps[token]; app != nil && app.buckets[bucket] != nil {
+			held = len(app.buckets[bucket].slot) == 1
+		}
+		l.mu.Unlock()
+		if held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("shard 1 never started waiting for its identify bucket")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	start := time.Now()
+	if err := waiting.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-openDone:
+		if !errors.Is(err, ErrWSNotFound) {
+			t.Fatalf("Open returned %v after Close, want %v", err, ErrWSNotFound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Open still waiting for the identify bucket 1s after Close")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Open returned %v after Close, want promptly", elapsed)
+	}
+	if identifies, _, _ := g.counts(); identifies != 1 {
+		t.Fatalf("%d IDENTIFY sent, want 1 (none from the closed shard)", identifies)
+	}
+}
+
+// RESUME is not an IDENTIFY and must not wait for the identify bucket.
+func TestGatewayShardResumeIsNotPacedByIdentifyConcurrency(t *testing.T) {
+	setIdentifyWindowForTest(t, 5*time.Second)
+	g := newIdentifyLimitedGateway(t, 5*time.Second, 1)
+	s := newIdentifyLimitedShard(t, g, newIdentifyTestToken(), 0, 2, http.StatusOK)
+	resumed := make(chan struct{}, 1)
+	s.AddHandler(func(*Session, *Resumed) {
+		select {
+		case resumed <- struct{}{}:
+		default:
+		}
+	})
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	// The identify bucket is now cooling down for 5s; a resumable close
+	// must resume right away.
+	start := time.Now()
+	g.dropAll(4000)
+	select {
+	case <-resumed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no RESUMED within 3s of a resumable close; resume waited for the identify bucket")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("resume took %v", elapsed)
+	}
+	if identifies, _, resumes := g.counts(); identifies != 1 || resumes != 1 {
+		t.Fatalf("%d IDENTIFY and %d RESUME sent, want 1 and 1", identifies, resumes)
+	}
+}
+
+func TestIdentifyLimiterIndependentTokensDoNotBlock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		ctx := context.Background()
+		start := time.Now()
+
+		a := l.join("token a")
+		slot, err := l.acquire(ctx, a, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.sent()
+		slot.release()
+
+		b := l.join("token b")
+		slot, err = l.acquire(ctx, b, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited := time.Since(start); waited != 0 {
+			t.Fatalf("token b waited %v behind token a, want 0", waited)
+		}
+		slot.sent()
+		slot.release()
+
+		slot, err = l.acquire(ctx, a, 1, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited, want := time.Since(start), 5*time.Second+identifyConcurrencyMargin; waited != want {
+			t.Fatalf("second identify of token a waited %v, want %v", waited, want)
+		}
+		slot.release()
+		l.leave("token a", a)
+		l.leave("token b", b)
+	})
+}
+
+// A session can pick a bucket under the fallback mapping and pause before
+// reserving it while another session learns max_concurrency and takes the
+// bucket for the same rate_limit_key. The paused session must not then send
+// alongside it.
+func TestIdentifyLimiterMappingChangeDuringAcquire(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+
+		paused := make(chan struct{})
+		resume := make(chan struct{})
+		var once sync.Once
+		l.acquireHook = func(mapping int) {
+			if mapping == 1 {
+				once.Do(func() {
+					close(paused)
+					<-resume
+				})
+			}
+		}
+
+		start := time.Now()
+		fallbackSent := make(chan time.Duration, 1)
+		go func() {
+			// max_concurrency unknown: mapping 1.
+			slot, err := l.acquire(context.Background(), app, 1, 0, time.Hour)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			fallbackSent <- time.Since(start)
+			slot.beginSend()
+			slot.sent()
+			slot.release()
+		}()
+		<-paused
+
+		// Shard 3 knows max_concurrency 2 and shares rate_limit_key 1.
+		slot, err := l.acquire(context.Background(), app, 3, 2, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		close(resume)
+		synctest.Wait()
+		select {
+		case at := <-fallbackSent:
+			t.Fatalf("fallback session got a slot at %v while shard 3 held bucket 1", at)
+		default:
+		}
+		slot.beginSend()
+		slot.sent()
+		slot.release()
+
+		want := 5*time.Second + identifyConcurrencyMargin
+		if at := <-fallbackSent; at != want {
+			t.Fatalf("fallback session identified at %v, want %v after shard 3", at, want)
+		}
+	})
+}
+
+func TestIdentifyLimiterBucketsProceedInParallel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		start := time.Now()
+		var mu sync.Mutex
+		sentAt := map[int]time.Duration{}
+		var wg sync.WaitGroup
+		for shard := 0; shard < 4; shard++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if shard >= 2 {
+					time.Sleep(time.Millisecond) // shards 0 and 1 start first
+				}
+				slot, err := l.acquire(context.Background(), app, shard, 2, time.Hour)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				sentAt[shard] = time.Since(start)
+				mu.Unlock()
+				slot.beginSend()
+				slot.sent()
+				slot.release()
+			}()
+		}
+		wg.Wait()
+		next := 5*time.Second + identifyConcurrencyMargin
+		want := map[int]time.Duration{0: 0, 1: 0, 2: next, 3: next}
+		if !reflect.DeepEqual(sentAt, want) {
+			t.Fatalf("identify times with max_concurrency=2 = %v, want %v", sentAt, want)
+		}
+	})
+}
+
+func TestIdentifyLimiterCancelDuringWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		start := time.Now()
+		next := 5*time.Second + identifyConcurrencyMargin
+
+		slot, err := l.acquire(context.Background(), app, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.sent()
+		slot.release()
+
+		// Canceled while waiting out the cooldown.
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(time.Second, cancel)
+		if _, err := l.acquire(ctx, app, 1, 1, time.Hour); !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquire after cancel = %v, want context.Canceled", err)
+		}
+		if waited := time.Since(start); waited != time.Second {
+			t.Fatalf("canceled acquire returned after %v, want 1s", waited)
+		}
+
+		// The canceled waiter neither reset the cooldown nor kept the slot.
+		holder, err := l.acquire(context.Background(), app, 2, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited := time.Since(start); waited != next {
+			t.Fatalf("next acquire returned after %v, want %v", waited, next)
+		}
+
+		// Canceled while another session holds the slot: the holder keeps it.
+		ctx, cancel = context.WithCancel(context.Background())
+		time.AfterFunc(time.Second, cancel)
+		if _, err := l.acquire(ctx, app, 3, 1, time.Hour); !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquire after cancel = %v, want context.Canceled", err)
+		}
+		if !holder.beginSend() {
+			t.Fatal("holder lost its slot when a waiter was canceled")
+		}
+		holder.sent()
+		holder.release()
+		sentAt := time.Now()
+
+		slot, err = l.acquire(context.Background(), app, 4, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited := time.Since(sentAt); waited != next {
+			t.Fatalf("acquire after holder sent waited %v, want %v", waited, next)
+		}
+		slot.release()
+	})
+}
+
+func TestIdentifyLimiterSlotHoldIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		start := time.Now()
+
+		hung, err := l.acquire(context.Background(), app, 0, 1, 10*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot, err := l.acquire(context.Background(), app, 1, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The hung holder lost the slot at 10s, and that counts as a send.
+		if waited, want := time.Since(start), 10*time.Second+5*time.Second+identifyConcurrencyMargin; waited != want {
+			t.Fatalf("acquire behind a hung holder returned after %v, want %v", waited, want)
+		}
+		if hung.beginSend() {
+			t.Fatal("hung holder may still send IDENTIFY after its slot expired")
+		}
+		hung.release()
+		slot.release()
+	})
+}
+
+func TestIdentifyLimiterKeepsCooldownAfterLastSessionLeaves(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		start := time.Now()
+
+		// Released without sending: no cooldown, entry dropped at once.
+		app := l.join("token")
+		slot, err := l.acquire(context.Background(), app, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.release()
+		l.leave("token", app)
+		if n := len(l.apps); n != 0 {
+			t.Fatalf("%d entries after an unsent release, want 0", n)
+		}
+
+		// Sent, then the only session leaves (failed open or Close).
+		app = l.join("token")
+		slot, err = l.acquire(context.Background(), app, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.sent()
+		slot.release()
+		l.leave("token", app)
+
+		time.Sleep(time.Second)
+		app = l.join("token")
+		slot, err = l.acquire(context.Background(), app, 1, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited, want := time.Since(start), 5*time.Second+identifyConcurrencyMargin; waited != want {
+			t.Fatalf("identify after the last session left waited until %v, want %v", waited, want)
+		}
+		slot.release()
+		l.leave("token", app)
+
+		// Once the cooldown is over, nothing is kept for the token.
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		l.mu.Lock()
+		n := len(l.apps)
+		l.mu.Unlock()
+		if n != 0 {
+			t.Fatalf("%d entries left after every cooldown ended, want 0", n)
+		}
+	})
+}
+
+func TestIdentifyLimiterLooksUpGatewayBotOncePerToken(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		var calls atomic.Int32
+		fetch := func() (string, int, error) {
+			calls.Add(1)
+			time.Sleep(100 * time.Millisecond)
+			return "wss://gateway/", 16, nil
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				url, maxConcurrency := l.gatewayBot(context.Background(), app, fetch)
+				if url != "wss://gateway/" || maxConcurrency != 16 {
+					t.Errorf("gatewayBot = %q, %d", url, maxConcurrency)
+				}
+			}()
+		}
+		wg.Wait()
+		if n := calls.Load(); n != 1 {
+			t.Fatalf("GET /gateway/bot lookups = %d for 16 concurrent shards, want 1", n)
+		}
+
+		// A failed lookup is not cached as max_concurrency 1.
+		other := l.join("other")
+		defer l.leave("other", other)
+		if _, mc := l.gatewayBot(context.Background(), other, func() (string, int, error) { return "", 0, errors.New("boom") }); mc != 0 {
+			t.Fatalf("failed lookup returned max_concurrency %d, want 0", mc)
+		}
+		if _, mc := l.gatewayBot(context.Background(), other, func() (string, int, error) { return "wss://gateway/", 4, nil }); mc != 4 {
+			t.Fatalf("lookup after a failure returned max_concurrency %d, want 4", mc)
+		}
+	})
 }
 
 func TestOpenSurvivesSlowStartupReplayWithinPerReadDeadline(t *testing.T) {
@@ -3230,6 +4952,119 @@ func TestPeekGatewayCompressedEvent(t *testing.T) {
 	}
 }
 
+func TestDecodeGatewayEvent(t *testing.T) {
+	payload := []byte(`{"op":0,"s":7,"t":"TYPING_START","d":{"user_id":"1","channel_id":"2"}}`)
+	compressed := compressedGatewayPayload(t, payload)
+	badChecksum := bytes.Clone(compressed)
+	badChecksum[len(badChecksum)-1] ^= 0xff
+	badDeflate := bytes.Clone(compressed)
+	badDeflate[2] = 0xff
+
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+		wantErr     bool
+	}{
+		{"text", websocket.TextMessage, payload, false},
+		{"text with trailing whitespace", websocket.TextMessage, append(bytes.Clone(payload), " \n"...), false},
+		{"text with trailing value", websocket.TextMessage, append(bytes.Clone(payload), `{"op":11}`...), true},
+		{"text truncated", websocket.TextMessage, payload[:len(payload)-1], true},
+		{"compressed", websocket.BinaryMessage, compressed, false},
+		{"compressed truncated", websocket.BinaryMessage, compressed[:len(compressed)/2], true},
+		{"compressed without checksum", websocket.BinaryMessage, compressed[:len(compressed)-4], true},
+		{"compressed bad checksum", websocket.BinaryMessage, badChecksum, true},
+		{"compressed bad deflate data", websocket.BinaryMessage, badDeflate, true},
+		{"compressed trailing value", websocket.BinaryMessage, compressedGatewayPayload(t, append(bytes.Clone(payload), `{"op":11}`...)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := decodeGatewayEvent(tc.messageType, tc.message)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("decodeGatewayEvent() = %#v, want error", e)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeGatewayEvent() error = %v", err)
+			}
+			if e.Operation != 0 || e.Sequence != 7 || e.Type != "TYPING_START" || string(e.RawData) != `{"user_id":"1","channel_id":"2"}` {
+				t.Fatalf("decodeGatewayEvent() = %#v", e)
+			}
+		})
+	}
+}
+
+// RawData must not share memory with the pooled inflate buffer, which the
+// next compressed payload overwrites.
+func TestDecodeGatewayEventRawDataSurvivesBufferReuse(t *testing.T) {
+	first, err := decodeGatewayEvent(websocket.BinaryMessage, compressedGatewayPayload(t, []byte(`{"op":0,"t":"A","d":{"value":"first"}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		if _, err := decodeGatewayEvent(websocket.BinaryMessage, compressedGatewayPayload(t, []byte(`{"op":0,"t":"B","d":{"value":"other"}}`))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(first.RawData) != `{"value":"first"}` {
+		t.Fatalf("RawData changed after later payloads: %s", first.RawData)
+	}
+}
+
+// A corrupt compressed frame is dropped and the listen loop keeps going.
+func TestListenDropsCorruptCompressedFrame(t *testing.T) {
+	good := compressedGatewayPayload(t, []byte(`{"op":0,"s":1,"t":"TYPING_START","d":{"user_id":"good","channel_id":"2"}}`))
+	corrupt := compressedGatewayPayload(t, []byte(`{"op":0,"s":2,"t":"TYPING_START","d":{"user_id":"corrupt","channel_id":"2"}}`))
+	corrupt[len(corrupt)-1] ^= 0xff
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for _, message := range [][]byte{corrupt, good} {
+			if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+				return
+			}
+		}
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	session.StateEnabled = false
+	session.SyncEvents = true
+	session.ShouldReconnectOnError = false
+	var users []string
+	session.AddHandler(func(_ *Session, e *TypingStart) {
+		users = append(users, e.UserID)
+	})
+	session.Lock()
+	session.wsConn = conn
+	listening := make(chan interface{})
+	session.listening = listening
+	session.Unlock()
+
+	session.listen(conn, listening)
+
+	if len(users) != 1 || users[0] != "good" {
+		t.Fatalf("dispatched TYPING_START users = %q, want [good]", users)
+	}
+}
+
 func TestGatewayCompressedDispatchConcurrentReuse(t *testing.T) {
 	message := compressedGatewayPayload(t, []byte(`{"op":11,"s":42,"d":null}`))
 	const goroutines = 32
@@ -3259,6 +5094,58 @@ func TestGatewayCompressedDispatchConcurrentReuse(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+// gatewayMembersChunkPayload builds a GUILD_MEMBERS_CHUNK dispatch with n
+// members and presences, a realistic large gateway payload.
+func gatewayMembersChunkPayload(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"op":0,"s":42,"t":"GUILD_MEMBERS_CHUNK","d":{"guild_id":"613425648685547541","chunk_index":0,"chunk_count":1,"members":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		id := strconv.FormatInt(80351110224678912+int64(i), 10)
+		b.WriteString(`{"user":{"id":"` + id + `","username":"member` + strconv.Itoa(i) + `","global_name":"Member ` + strconv.Itoa(i) + `","avatar":"a_1b2c3d4e5f60718293a4b5c6d7e8f901","discriminator":"0","public_flags":64},"nick":null,"avatar":null,"roles":["613425648685547542","613425648685547543"],"joined_at":"2024-03-01T12:34:56.789000+00:00","premium_since":null,"deaf":false,"mute":false,"flags":0,"pending":false}`)
+	}
+	b.WriteString(`],"presences":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"user":{"id":"` + strconv.FormatInt(80351110224678912+int64(i), 10) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
+	}
+	b.WriteString(`]}}`)
+	return []byte(b.String())
+}
+
+func BenchmarkGatewayMembersChunkDispatch(b *testing.B) {
+	payload := gatewayMembersChunkPayload(100)
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+	}{
+		{"text", websocket.TextMessage, payload},
+		{"zlib", websocket.BinaryMessage, compressedGatewayPayload(b, payload)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.StateEnabled = false
+			session.SyncEvents = true
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			for b.Loop() {
+				if _, err = session.onEvent(tc.messageType, tc.message); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -3296,6 +5183,102 @@ func BenchmarkGatewayTextDispatch(b *testing.B) {
 		if _, err = session.onEvent(websocket.TextMessage, message); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// unconsumedDispatchPayloads are realistic dispatch bodies for event types
+// that an interactions-only bot commonly receives but never handles. handler
+// registers a typed handler for the type, for the "handled" variant.
+var unconsumedDispatchPayloads = []struct {
+	name    string
+	typ     string
+	payload string
+	handler func(*Session)
+}{
+	{"PRESENCE_UPDATE", "PRESENCE_UPDATE", `{"user":{"id":"80351110224678912","username":"someone","avatar":"a_1234567890abcdef1234567890abcdef","global_name":"Someone"},"guild_id":"41771983423143937","status":"online","activities":[{"name":"Some Game","type":0,"created_at":1700000000000,"application_id":"379286085710381999","details":"In a match","state":"Ranked","timestamps":{"start":1700000000000},"assets":{"large_image":"1234","large_text":"Map"}},{"name":"Custom Status","type":4,"state":"busy","created_at":1700000000000}],"client_status":{"desktop":"online","mobile":"idle"}}`,
+		func(s *Session) { s.AddHandler(func(*Session, *PresenceUpdate) {}) }},
+	{"TYPING_START", "TYPING_START", `{"channel_id":"41771983423143937","guild_id":"41771983423143937","user_id":"80351110224678912","timestamp":1700000000,"member":{"user":{"id":"80351110224678912","username":"someone","avatar":"1234567890abcdef1234567890abcdef","global_name":"Someone"},"roles":["41771983423143936","41771983423143938"],"joined_at":"2020-01-01T00:00:00.000000+00:00","deaf":false,"mute":false,"flags":0}}`,
+		func(s *Session) { s.AddHandler(func(*Session, *TypingStart) {}) }},
+	{"MESSAGE_CREATE", "MESSAGE_CREATE", `{"id":"1100000000000000000","channel_id":"41771983423143937","guild_id":"41771983423143937","author":{"id":"80351110224678912","username":"someone","avatar":"1234567890abcdef1234567890abcdef","global_name":"Someone"},"member":{"roles":["41771983423143936"],"joined_at":"2020-01-01T00:00:00.000000+00:00","deaf":false,"mute":false,"flags":0},"content":"hello there, this is an ordinary chat message","timestamp":"2026-07-21T00:00:00.000000+00:00","edited_timestamp":null,"tts":false,"mention_everyone":false,"mentions":[],"mention_roles":[],"attachments":[],"embeds":[],"pinned":false,"type":0,"flags":0,"nonce":"1100000000000000001"}`,
+		func(s *Session) { s.AddHandler(func(*Session, *MessageCreate) {}) }},
+}
+
+// BenchmarkGatewayUnconsumedDispatch measures dispatching events with and
+// without a consumer. Every session has an InteractionCreate handler, like an
+// interactions-only bot.
+//   - unhandled: no typed, interface{}, or *Event handler for the type.
+//   - unregistered: the same payload under an unregistered event type, which
+//     never gets a typed decode; the floor for unhandled.
+//   - handled: a typed handler for the type is also registered, so the event
+//     must be decoded. This is the common path the skip check must not slow.
+func BenchmarkGatewayUnconsumedDispatch(b *testing.B) {
+	for _, state := range []bool{false, true} {
+		for _, tc := range unconsumedDispatchPayloads {
+			for _, variant := range []string{"unhandled", "unregistered", "handled"} {
+				typ := tc.typ
+				if variant == "unregistered" {
+					typ = "UNREGISTERED_" + tc.typ
+				}
+				message := []byte(`{"op":0,"s":42,"t":"` + typ + `","d":` + tc.payload + `}`)
+				name := fmt.Sprintf("state=%t/%s/%s", state, tc.name, variant)
+				b.Run(name, func(b *testing.B) {
+					session, err := New("Bot token")
+					if err != nil {
+						b.Fatal(err)
+					}
+					session.StateEnabled = state
+					session.SyncEvents = true
+					session.AddHandler(func(*Session, *InteractionCreate) {})
+					if variant == "handled" {
+						tc.handler(session)
+					}
+					if state {
+						if err = session.State.GuildAdd(&Guild{ID: "41771983423143937", Channels: []*Channel{{ID: "41771983423143937", GuildID: "41771983423143937"}}}); err != nil {
+							b.Fatal(err)
+						}
+					}
+
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						if _, err = session.onEvent(websocket.TextMessage, message); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// gatewayPresenceUpdatePayload is a typical PRESENCE_UPDATE, the most frequent
+// dispatch for bots with the presence intent.
+var gatewayPresenceUpdatePayload = []byte(`{"op":0,"s":42,"t":"PRESENCE_UPDATE","d":{"user":{"id":"80351110224678912"},"status":"online","guild_id":"613425648685547541","client_status":{"desktop":"online"},"activities":[{"type":0,"timestamps":{"start":1700000000000},"state":"In a match","session_id":"aa2f8a9d6f1c4b0e","name":"Some Game","id":"5cb2b8ab0bcd0b0","details":"Ranked","created_at":1700000000123,"assets":{"large_text":"Map","large_image":"mp:external/abc/def.png"},"application_id":"356875570916753438"}]}}`)
+
+func BenchmarkGatewayPresenceDispatch(b *testing.B) {
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+	}{
+		{"text", websocket.TextMessage, gatewayPresenceUpdatePayload},
+		{"zlib", websocket.BinaryMessage, compressedGatewayPayload(b, gatewayPresenceUpdatePayload)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.StateEnabled = false
+			session.SyncEvents = true
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err = session.onEvent(tc.messageType, tc.message); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

@@ -1234,6 +1234,26 @@ func sendBenchReq(endpoint string, rl *RateLimiter) {
 	bucket.Release(headers)
 }
 
+// Release runs once per REST response; net/http stores these headers under
+// canonical keys such as X-Ratelimit-Remaining.
+func BenchmarkBucketRelease(b *testing.B) {
+	rl := NewRatelimiter()
+	headers := http.Header{
+		"X-Ratelimit-Bucket":      {"abcd1234"},
+		"X-Ratelimit-Limit":       {"5"},
+		"X-Ratelimit-Remaining":   {"4"},
+		"X-Ratelimit-Reset":       {"1470173023.123"},
+		"X-Ratelimit-Reset-After": {"1.0"},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		bucket := rl.LockBucket("/channels/1/messages")
+		if err := bucket.Release(headers); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestRateLimitFractionalSecondsPreserveDeadline(t *testing.T) {
 	for _, source := range []string{"route-header", "resource-body", "global-body"} {
 		for _, delay := range []struct {

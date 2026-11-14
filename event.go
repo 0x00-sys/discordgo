@@ -71,7 +71,10 @@ func (s *Session) addEventHandler(eventHandler EventHandler) func() {
 	}
 
 	ehi := &eventHandlerInstance{eventHandler}
-	s.handlers[eventHandler.Type()] = append(s.handlers[eventHandler.Type()], ehi)
+	// Published slices are never modified, so dispatch can use them without
+	// copying. Force append to copy instead of writing into spare capacity.
+	current := s.handlers[eventHandler.Type()]
+	s.handlers[eventHandler.Type()] = append(current[:len(current):len(current)], ehi)
 
 	return func() {
 		s.removeEventHandlerInstance(eventHandler.Type(), ehi)
@@ -152,13 +155,12 @@ func (s *Session) removeEventHandlerInstance(t string, ehi *eventHandlerInstance
 	handlers := s.handlers[t]
 	for i := range handlers {
 		if handlers[i] == ehi {
-			copy(handlers[i:], handlers[i+1:])
-			handlers[len(handlers)-1] = nil
-			handlers = handlers[:len(handlers)-1]
-			if len(handlers) == 0 {
+			if len(handlers) == 1 {
 				delete(s.handlers, t)
 			} else {
-				s.handlers[t] = handlers
+				replacement := make([]*eventHandlerInstance, 0, len(handlers)-1)
+				replacement = append(replacement, handlers[:i]...)
+				s.handlers[t] = append(replacement, handlers[i+1:]...)
 			}
 			break
 		}
@@ -211,20 +213,26 @@ func (s *Session) callEventHandler(eh *eventHandlerInstance, i interface{}) {
 	eh.eventHandler.Handle(s, i)
 }
 
+// eventHandlers returns the handlers for t and takes its once handlers. The
+// handlers slice is shared with s.handlers and must not be modified; add and
+// remove replace published slices instead of changing them. The once
+// handlers are removed from the map, so each one is returned to exactly one
+// caller.
 func (s *Session) eventHandlers(t string) (handlers, onceHandlers []*eventHandlerInstance) {
+	s.handlersMu.RLock()
+	handlers = s.handlers[t]
+	hasOnce := len(s.onceHandlers[t]) > 0
+	s.handlersMu.RUnlock()
+	if !hasOnce {
+		return handlers, nil
+	}
+
 	s.handlersMu.Lock()
 	defer s.handlersMu.Unlock()
-
-	if len(s.handlers[t]) > 0 {
-		handlers = append(handlers, s.handlers[t]...)
-	}
-
-	if len(s.onceHandlers[t]) > 0 {
-		onceHandlers = append(onceHandlers, s.onceHandlers[t]...)
-		s.onceHandlers[t] = nil
-	}
-
-	return
+	handlers = s.handlers[t]
+	onceHandlers = s.onceHandlers[t]
+	delete(s.onceHandlers, t)
+	return handlers, onceHandlers
 }
 
 // Handles an event type by calling internal methods, firing handlers and firing the

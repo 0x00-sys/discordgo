@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -5476,6 +5478,411 @@ func TestGuildMembersChunkBatchUpdatesState(t *testing.T) {
 	}
 }
 
+func TestGuildMembersChunkLargeBatchKeepsSnapshots(t *testing.T) {
+	state := NewState()
+	state.TrackPresences = true
+	var members []*Member
+	var presences []*Presence
+	for i := 0; i < 30; i++ {
+		id := "user-" + strconv.Itoa(i)
+		members = append(members, &Member{GuildID: "guild", Nick: "old", User: &User{ID: id, Username: "old"}})
+		presences = append(presences, &Presence{User: &User{ID: id, Username: "old"}, Status: StatusIdle})
+	}
+	if err := state.GuildAdd(&Guild{ID: "guild", Members: members, Presences: presences}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := state.Guild("guild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldMembers := append([]*Member(nil), before.Members...)
+	oldPresences := append([]*Presence(nil), before.Presences...)
+
+	// Updates for every cached user plus 30 new ones, well past
+	// chunkIndexThreshold.
+	chunk := &GuildMembersChunk{GuildID: "guild"}
+	for i := 0; i < 60; i++ {
+		id := "user-" + strconv.Itoa(i)
+		chunk.Members = append(chunk.Members, &Member{Nick: "new", User: &User{ID: id, Username: "new"}})
+		chunk.Presences = append(chunk.Presences, &Presence{User: &User{ID: id, Username: "new"}, Status: StatusOnline})
+	}
+	if err := state.OnInterface(&Session{StateEnabled: true}, chunk); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, m := range before.Members {
+		if m != oldMembers[i] || m.Nick != "old" || m.User.Username != "old" {
+			t.Fatalf("earlier snapshot member %d changed: %+v", i, m)
+		}
+	}
+	for i, p := range before.Presences {
+		if p != oldPresences[i] || p.Status != StatusIdle || p.User.Username != "old" {
+			t.Fatalf("earlier snapshot presence %d changed: %+v", i, p)
+		}
+	}
+	after, err := state.Guild("guild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Members) != 60 || len(after.Presences) != 60 {
+		t.Fatalf("after chunk: %d members, %d presences; want 60 each", len(after.Members), len(after.Presences))
+	}
+	for i := 0; i < 60; i++ {
+		id := "user-" + strconv.Itoa(i)
+		m, p := after.Members[i], after.Presences[i]
+		if m.User.ID != id || m.Nick != "new" || m.User.Username != "new" || p.User.ID != id || p.Status != StatusOnline || p.User.Username != "new" {
+			t.Fatalf("entry %d after chunk: member %+v, presence %+v", i, m, p)
+		}
+		if cached, err := state.Member("guild", id); err != nil || cached != m {
+			t.Fatalf("member map entry %s disagrees with the guild slice: %v", id, err)
+		}
+	}
+}
+
+// memberChunkCase is a guild member cache plus a chunk to apply to it.
+// The cache may be inconsistent in the ways the per-entry code tolerates.
+type memberChunkCase struct {
+	guild   []*Member
+	members map[string]*Member
+	chunk   []*Member
+}
+
+// applyMemberChunk applies c.chunk to copies of the cache, either one entry
+// at a time with memberAddToGuild or with membersAddToGuild. It returns the
+// resulting guild slice, member map and the chunk copies that were applied.
+func applyMemberChunk(c memberChunkCase, batch bool) ([]*Member, map[string]*Member, []*Member) {
+	guild := &Guild{Members: append([]*Member(nil), c.guild...)}
+	members := make(map[string]*Member, len(c.members))
+	for id, m := range c.members {
+		members[id] = m
+	}
+	copies := make([]*Member, len(c.chunk))
+	for i, m := range c.chunk {
+		copies[i] = copyMember(m)
+	}
+	if batch {
+		membersAddToGuild(members, guild, copies)
+	} else {
+		for _, m := range copies {
+			memberAddToGuild(members, guild, m)
+		}
+	}
+	return guild.Members, members, copies
+}
+
+// checkMemberChunkBatch fails if membersAddToGuild and per-entry
+// memberAddToGuild produce different caches for c. Members are compared by
+// identity: an original cached pointer must be the same pointer, and a
+// chunk member must be the copy of the same chunk entry.
+func checkMemberChunkBatch(t *testing.T, c memberChunkCase) {
+	t.Helper()
+	type memberState struct {
+		user     *User
+		joinedAt time.Time
+	}
+	originals := map[*Member]memberState{}
+	for _, m := range c.guild {
+		if m != nil {
+			originals[m] = memberState{m.User, m.JoinedAt}
+		}
+	}
+	for _, m := range c.members {
+		originals[m] = memberState{m.User, m.JoinedAt}
+	}
+	guildBefore := append([]*Member(nil), c.guild...)
+
+	wantGuild, wantMembers, wantCopies := applyMemberChunk(c, false)
+	gotGuild, gotMembers, gotCopies := applyMemberChunk(c, true)
+
+	name := func(m *Member, copies []*Member) string {
+		if m == nil {
+			return "nil"
+		}
+		for i, cp := range copies {
+			if m == cp {
+				return fmt.Sprintf("chunk[%d] joined=%v", i, m.JoinedAt.UnixNano())
+			}
+		}
+		if _, ok := originals[m]; ok {
+			return fmt.Sprintf("cached %p", m)
+		}
+		return fmt.Sprintf("unknown %p", m)
+	}
+	if len(gotGuild) != len(wantGuild) {
+		t.Fatalf("guild members len = %d, want %d", len(gotGuild), len(wantGuild))
+	}
+	for i := range wantGuild {
+		if got, want := name(gotGuild[i], gotCopies), name(wantGuild[i], wantCopies); got != want {
+			t.Errorf("guild member %d = %s, want %s", i, got, want)
+		}
+	}
+	if len(gotMembers) != len(wantMembers) {
+		t.Fatalf("member map len = %d, want %d", len(gotMembers), len(wantMembers))
+	}
+	for id, want := range wantMembers {
+		if got := name(gotMembers[id], gotCopies); got != name(want, wantCopies) {
+			t.Errorf("member map[%s] = %s, want %s", id, got, name(want, wantCopies))
+		}
+	}
+	for m, before := range originals {
+		if m.User != before.user || !m.JoinedAt.Equal(before.joinedAt) {
+			t.Errorf("chunk modified cached member %p", m)
+		}
+	}
+	for i := range guildBefore {
+		if c.guild[i] != guildBefore[i] {
+			t.Errorf("chunk modified the earlier guild slice at %d", i)
+		}
+	}
+}
+
+func TestMembersAddToGuildMatchesPerEntry(t *testing.T) {
+	joined := time.Unix(1000, 0)
+	member := func(id string, joinedAt time.Time) *Member {
+		return &Member{User: &User{ID: id}, JoinedAt: joinedAt}
+	}
+	// filler pads a chunk past chunkIndexThreshold with new users so the
+	// batch path runs.
+	filler := func(chunk ...*Member) []*Member {
+		for i := 0; len(chunk) <= chunkIndexThreshold; i++ {
+			chunk = append(chunk, member("filler-"+strconv.Itoa(i), time.Time{}))
+		}
+		return chunk
+	}
+
+	cachedA, cachedB := member("a", joined), member("b", joined)
+	noUser := &Member{JoinedAt: joined}
+	stale := member("stale", joined)
+	offSlice := member("off", joined)
+	shared := member("other", joined)
+	offB := member("b", joined)
+
+	for _, tc := range []struct {
+		name string
+		c    memberChunkCase
+	}{
+		{name: "fresh", c: memberChunkCase{
+			members: map[string]*Member{},
+			chunk:   filler(member("x", joined)),
+		}},
+		{name: "cached_members_and_joined_at", c: memberChunkCase{
+			guild:   []*Member{cachedA, cachedB},
+			members: map[string]*Member{"a": cachedA, "b": cachedB},
+			chunk:   filler(member("a", time.Time{}), member("b", time.Unix(2000, 0))),
+		}},
+		{name: "duplicates_in_chunk", c: memberChunkCase{
+			guild:   []*Member{cachedA},
+			members: map[string]*Member{"a": cachedA},
+			chunk: filler(
+				member("a", time.Time{}), member("n", time.Unix(3000, 0)),
+				member("a", time.Unix(4000, 0)), member("n", time.Time{}), member("a", time.Time{}),
+			),
+		}},
+		{name: "duplicate_of_entry_missing_from_map", c: memberChunkCase{
+			guild:   []*Member{stale, cachedA},
+			members: map[string]*Member{"a": cachedA},
+			chunk:   filler(member("stale", time.Time{}), member("stale", time.Time{})),
+		}},
+		{name: "map_entry_missing_from_guild", c: memberChunkCase{
+			guild:   []*Member{cachedA},
+			members: map[string]*Member{"a": cachedA, "off": offSlice},
+			chunk:   filler(member("off", time.Time{})),
+		}},
+		{name: "pointer_match_without_user", c: memberChunkCase{
+			guild:   []*Member{cachedA, noUser},
+			members: map[string]*Member{"a": cachedA, "nouser": noUser},
+			chunk:   filler(member("nouser", time.Time{}), member("nouser", time.Time{})),
+		}},
+		{name: "pointer_and_id_share_slot", c: memberChunkCase{
+			// map["a"] points at the entry whose user is "b"
+			guild:   []*Member{cachedB, cachedA},
+			members: map[string]*Member{"a": cachedB, "b": offB},
+			chunk:   filler(member("b", time.Time{}), member("a", time.Time{})),
+		}},
+		{name: "pointer_and_id_share_slot_reversed", c: memberChunkCase{
+			guild:   []*Member{cachedB, cachedA},
+			members: map[string]*Member{"a": cachedB},
+			chunk:   filler(member("a", time.Time{}), member("b", time.Time{})),
+		}},
+		{name: "two_ids_share_cached_pointer", c: memberChunkCase{
+			// map["s1"] and map["s2"] both point at a member of another user
+			guild:   []*Member{cachedA, shared, member("s1", joined), member("s2", joined)},
+			members: map[string]*Member{"a": cachedA, "s1": shared, "s2": shared},
+			chunk:   filler(member("s1", time.Time{}), member("s2", time.Time{})),
+		}},
+		{name: "nil_guild_entries", c: memberChunkCase{
+			guild:   []*Member{nil, cachedA, nil},
+			members: map[string]*Member{"a": cachedA},
+			chunk:   filler(member("a", time.Time{}), member("z", time.Time{})),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Repeat so map iteration order can't hide a difference.
+			for i := 0; i < 20 && !t.Failed(); i++ {
+				checkMemberChunkBatch(t, tc.c)
+			}
+		})
+	}
+
+	// Random caches, including inconsistent ones, against random chunks.
+	rng := rand.New(rand.NewPCG(1, 2))
+	ids := make([]string, 30)
+	for i := range ids {
+		ids[i] = "u" + strconv.Itoa(i)
+	}
+	randomTime := func() time.Time {
+		if rng.IntN(2) == 0 {
+			return time.Time{}
+		}
+		return time.Unix(int64(rng.IntN(100)+1), 0)
+	}
+	for iter := 0; iter < 2000; iter++ {
+		c := memberChunkCase{members: map[string]*Member{}}
+		for n := rng.IntN(40); len(c.guild) < n; {
+			switch rng.IntN(20) {
+			case 0:
+				c.guild = append(c.guild, nil)
+			case 1:
+				c.guild = append(c.guild, &Member{JoinedAt: randomTime()})
+			default:
+				c.guild = append(c.guild, member(ids[rng.IntN(len(ids))], randomTime()))
+			}
+		}
+		for _, id := range ids {
+			switch r := rng.IntN(20); {
+			case r < 8:
+				// not cached
+			case r < 16:
+				// cached at its first slot, the consistent case
+				for _, m := range c.guild {
+					if m != nil && m.User != nil && m.User.ID == id {
+						c.members[id] = m
+						break
+					}
+				}
+				if c.members[id] == nil {
+					c.members[id] = member(id, randomTime())
+				}
+			case r < 18 && len(c.guild) > 0:
+				// any slot, possibly another user's or a nil-User member
+				if m := c.guild[rng.IntN(len(c.guild))]; m != nil {
+					c.members[id] = m
+				}
+			default:
+				c.members[id] = member(id, randomTime())
+			}
+		}
+		for n := chunkIndexThreshold + 1 + rng.IntN(40); len(c.chunk) < n; {
+			c.chunk = append(c.chunk, member(ids[rng.IntN(len(ids))], randomTime()))
+		}
+		checkMemberChunkBatch(t, c)
+		if t.Failed() {
+			t.Fatalf("random case %d failed", iter)
+		}
+	}
+}
+
+// checkPresenceChunkBatch fails if presencesAddToGuild and per-entry
+// presenceAddToGuild produce different results for the presences.
+func checkPresenceChunkBatch(t *testing.T, cached, chunk []*Presence) {
+	t.Helper()
+	snapshot := func(list []*Presence) []Presence {
+		out := make([]Presence, len(list))
+		for i, p := range list {
+			if p != nil {
+				out[i] = *copyPresence(p)
+			}
+		}
+		return out
+	}
+	cachedBefore, chunkBefore := snapshot(cached), snapshot(chunk)
+	cachedSlice := append([]*Presence(nil), cached...)
+
+	want := &Guild{Presences: append([]*Presence(nil), cached...)}
+	var wantErr error
+	for _, p := range chunk {
+		if err := presenceAddToGuild(want, p); err != nil {
+			wantErr = err
+		}
+	}
+	got := &Guild{Presences: append([]*Presence(nil), cached...)}
+	gotErr := presencesAddToGuild(got, chunk)
+
+	if !errors.Is(gotErr, wantErr) || (gotErr == nil) != (wantErr == nil) {
+		t.Errorf("error = %v, want %v", gotErr, wantErr)
+	}
+	if len(got.Presences) != len(want.Presences) {
+		t.Fatalf("presences len = %d, want %d", len(got.Presences), len(want.Presences))
+	}
+	for i := range want.Presences {
+		w, g := want.Presences[i], got.Presences[i]
+		// An entry left alone keeps its original pointer on both paths.
+		if i < len(cachedSlice) && (g == cachedSlice[i]) != (w == cachedSlice[i]) {
+			t.Errorf("presence %d: original pointer kept = %t, want %t", i, g == cachedSlice[i], w == cachedSlice[i])
+		}
+		if !reflect.DeepEqual(g, w) {
+			t.Errorf("presence %d = %+v, want %+v", i, g, w)
+		}
+	}
+	if !reflect.DeepEqual(snapshot(cached), cachedBefore) || !reflect.DeepEqual(snapshot(chunk), chunkBefore) {
+		t.Error("chunk modified a cached or incoming presence")
+	}
+	for i := range cachedSlice {
+		if cached[i] != cachedSlice[i] {
+			t.Errorf("chunk modified the earlier presence slice at %d", i)
+		}
+	}
+}
+
+func TestPresencesAddToGuildMatchesPerEntry(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	ids := make([]string, 30)
+	for i := range ids {
+		ids[i] = "u" + strconv.Itoa(i)
+	}
+	statuses := []Status{"", StatusOnline, StatusIdle, StatusOffline}
+	randomPresence := func(allowInvalid bool) *Presence {
+		if allowInvalid {
+			switch rng.IntN(20) {
+			case 0:
+				return nil
+			case 1:
+				return &Presence{Status: StatusOnline}
+			case 2:
+				return &Presence{User: &User{}, Status: StatusOnline}
+			}
+		}
+		p := &Presence{
+			User:   &User{ID: ids[rng.IntN(len(ids))]},
+			Status: statuses[rng.IntN(len(statuses))],
+		}
+		if rng.IntN(3) == 0 {
+			p.User.Username = "name" + strconv.Itoa(rng.IntN(5))
+		}
+		if rng.IntN(3) == 0 {
+			p.avatarPresent = true
+			p.User.Avatar = []string{"", "a1", "a2"}[rng.IntN(3)]
+		}
+		if rng.IntN(4) == 0 {
+			p.Activities = []*Activity{{Name: "game"}}
+		}
+		return p
+	}
+	for iter := 0; iter < 2000; iter++ {
+		var cached, chunk []*Presence
+		for n := rng.IntN(40); len(cached) < n; {
+			cached = append(cached, randomPresence(true))
+		}
+		for n := chunkIndexThreshold + 1 + rng.IntN(40); len(chunk) < n; {
+			chunk = append(chunk, randomPresence(true))
+		}
+		checkPresenceChunkBatch(t, cached, chunk)
+		if t.Failed() {
+			t.Fatalf("random case %d failed", iter)
+		}
+	}
+}
+
 func TestVoiceStateUpdateDoesNotMutateGuildSnapshot(t *testing.T) {
 	state := NewState()
 	if err := state.GuildAdd(&Guild{
@@ -6054,6 +6461,169 @@ func TestMessageMutatorsDoNotRaceChannelSnapshot(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// TestGuildUpdateFollowsReorderedGuilds edits the exported Guilds slice
+// behind the state's back, then updates guilds. Each update must replace the
+// first entry with the guild's ID (or append the guild if it has none) and
+// leave every other entry alone.
+func TestGuildUpdateFollowsReorderedGuilds(t *testing.T) {
+	const count = 100
+	newState := func(t *testing.T) *State {
+		state := NewState()
+		for i := 0; i < count; i++ {
+			if err := state.GuildAdd(&Guild{ID: "guild-" + strconv.Itoa(i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Touch every guild so each one has been located once.
+		for i := 0; i < count; i++ {
+			if err := state.RoleAdd("guild-"+strconv.Itoa(i), &Role{ID: "seed"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state
+	}
+	update := 0
+	checkUpdate := func(t *testing.T, state *State, guildID string) {
+		t.Helper()
+		before := append([]*Guild(nil), state.Guilds...)
+		update++
+		roleID := "role-" + strconv.Itoa(update)
+		if err := state.RoleAdd(guildID, &Role{ID: roleID}); err != nil {
+			t.Fatalf("RoleAdd(%s): %v", guildID, err)
+		}
+		want := -1
+		for i, g := range before {
+			if g != nil && g.ID == guildID {
+				want = i
+				break
+			}
+		}
+		if want < 0 {
+			want = len(before)
+			if len(state.Guilds) != len(before)+1 {
+				t.Fatalf("Guilds len = %d, want %d", len(state.Guilds), len(before)+1)
+			}
+		} else if len(state.Guilds) != len(before) {
+			t.Fatalf("Guilds len = %d, want %d", len(state.Guilds), len(before))
+		}
+		for i, g := range state.Guilds {
+			if i != want {
+				if g != before[i] {
+					t.Fatalf("updating %s replaced Guilds[%d] (%v)", guildID, i, before[i])
+				}
+				continue
+			}
+			if g == nil || g.ID != guildID || len(g.Roles) == 0 || g.Roles[len(g.Roles)-1].ID != roleID {
+				t.Fatalf("Guilds[%d] = %+v, want %s with role %s", i, g, guildID, roleID)
+			}
+		}
+		if g, err := state.Guild(guildID); err != nil || g != state.Guilds[want] {
+			t.Fatalf("Guild(%s) = %p, %v; want Guilds[%d]", guildID, g, err, want)
+		}
+	}
+	id := func(i int) string { return "guild-" + strconv.Itoa(i) }
+
+	t.Run("swap", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds[0], state.Guilds[count-1] = state.Guilds[count-1], state.Guilds[0]
+		checkUpdate(t, state, id(0))
+		checkUpdate(t, state, id(count-1))
+		checkUpdate(t, state, id(50))
+	})
+	t.Run("reverse", func(t *testing.T) {
+		state := newState(t)
+		slices.Reverse(state.Guilds)
+		for i := 0; i < count; i += 7 {
+			checkUpdate(t, state, id(i))
+		}
+	})
+	t.Run("remove_from_slice", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds = slices.Delete(state.Guilds, 10, 11)
+		checkUpdate(t, state, id(11)) // now one slot earlier
+		checkUpdate(t, state, id(count-1))
+		checkUpdate(t, state, id(10)) // still cached, missing from Guilds
+	})
+	t.Run("truncate", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds = state.Guilds[:5]
+		checkUpdate(t, state, id(80))
+		checkUpdate(t, state, id(2))
+	})
+	t.Run("nil_entries", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds[20], state.Guilds[30] = nil, nil
+		checkUpdate(t, state, id(20))
+		checkUpdate(t, state, id(31))
+	})
+	t.Run("duplicate_entry", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds = append([]*Guild{state.Guilds[60]}, state.Guilds...)
+		checkUpdate(t, state, id(60))
+	})
+	t.Run("duplicate_before_known_slot", func(t *testing.T) {
+		// The update may land on either copy of guild-60, but never on
+		// another guild.
+		state := newState(t)
+		state.Guilds[0] = state.Guilds[60]
+		before := append([]*Guild(nil), state.Guilds...)
+		if err := state.RoleAdd(id(60), &Role{ID: "dup"}); err != nil {
+			t.Fatal(err)
+		}
+		changed := 0
+		for i, g := range state.Guilds {
+			if g == before[i] {
+				continue
+			}
+			changed++
+			if g.ID != id(60) || before[i].ID != id(60) {
+				t.Fatalf("Guilds[%d] changed from %s to %s", i, before[i].ID, g.ID)
+			}
+		}
+		if g, err := state.Guild(id(60)); changed != 1 || err != nil || g.Roles[len(g.Roles)-1].ID != "dup" {
+			t.Fatalf("changed %d entries, Guild = %v, %v", changed, g, err)
+		}
+	})
+	t.Run("guild_remove", func(t *testing.T) {
+		state := newState(t)
+		if err := state.GuildRemove(&Guild{ID: id(5)}); err != nil {
+			t.Fatal(err)
+		}
+		checkUpdate(t, state, id(6))
+		checkUpdate(t, state, id(count-1))
+	})
+	t.Run("ready", func(t *testing.T) {
+		state := newState(t)
+		guilds := make([]*Guild, 0, count)
+		for i := count - 1; i >= 0; i-- {
+			guilds = append(guilds, &Guild{ID: id(i)})
+		}
+		if err := state.OnInterface(&Session{StateEnabled: true}, &Ready{Guilds: guilds}); err != nil {
+			t.Fatal(err)
+		}
+		checkUpdate(t, state, id(0))
+		checkUpdate(t, state, id(count-1))
+	})
+	t.Run("random_shuffles", func(t *testing.T) {
+		state := newState(t)
+		rng := rand.New(rand.NewPCG(5, 6))
+		for i := 0; i < 500; i++ {
+			switch rng.IntN(4) {
+			case 0:
+				rng.Shuffle(len(state.Guilds), func(a, b int) {
+					state.Guilds[a], state.Guilds[b] = state.Guilds[b], state.Guilds[a]
+				})
+			case 1:
+				if len(state.Guilds) > 1 {
+					j := rng.IntN(len(state.Guilds))
+					state.Guilds = slices.Delete(state.Guilds, j, j+1)
+				}
+			}
+			checkUpdate(t, state, id(rng.IntN(count)))
+		}
+	})
 }
 
 func TestGuildRemoveCleansChannelsAddedConcurrently(t *testing.T) {
@@ -7347,6 +7917,41 @@ func BenchmarkStatePresenceUpdateGuildSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkStatePresenceUpdateMemberCount measures PRESENCE_UPDATE with
+// default tracking as guild size grows. The event user is partial (only id
+// is required); this one carries no member fields, so the member is unchanged.
+func BenchmarkStatePresenceUpdateMemberCount(b *testing.B) {
+	for _, size := range []int{1000, 10000, 100000} {
+		b.Run("members="+strconv.Itoa(size), func(b *testing.B) {
+			members := make([]*Member, size)
+			presences := make([]*Presence, size)
+			for i := range members {
+				id := "user-" + strconv.Itoa(i)
+				members[i] = &Member{GuildID: "guild", User: &User{ID: id, Username: id}, Roles: []string{"role"}}
+				presences[i] = &Presence{User: &User{ID: id}, Status: StatusOnline}
+			}
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild", Members: members, Presences: presences, MemberCount: size}); err != nil {
+				b.Fatal(err)
+			}
+			session := &Session{StateEnabled: true, State: state}
+			userID := "user-" + strconv.Itoa(size/2)
+			updates := [2]*PresenceUpdate{
+				{GuildID: "guild", Presence: Presence{User: &User{ID: userID}, Status: StatusIdle}},
+				{GuildID: "guild", Presence: Presence{User: &User{ID: userID}, Status: StatusOnline}},
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := state.OnInterface(session, updates[i%2]); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkStateMemberUpdateGuildSnapshot(b *testing.B) {
 	members := make([]*Member, 1000)
 	for i := range members {
@@ -7414,6 +8019,40 @@ func BenchmarkStateRoleUpdateGuildSnapshot(b *testing.B) {
 		if err := state.RoleAdd("guild", update); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// BenchmarkStateRoleUpdateGuildCount measures a small guild mutation as the
+// number of cached guilds grows. The target is the last guild in Guilds.
+func BenchmarkStateRoleUpdateGuildCount(b *testing.B) {
+	for _, guilds := range []int{1, 100, 1000, 2500} {
+		b.Run("guilds="+strconv.Itoa(guilds), func(b *testing.B) {
+			state := NewState()
+			for g := 0; g < guilds; g++ {
+				guildID := "guild-" + strconv.Itoa(g)
+				roles := make([]*Role, 20)
+				for r := range roles {
+					roles[r] = &Role{ID: guildID + "-role-" + strconv.Itoa(r)}
+				}
+				if err := state.GuildAdd(&Guild{ID: guildID, Roles: roles}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			session := &Session{StateEnabled: true, State: state}
+			guildID := "guild-" + strconv.Itoa(guilds-1)
+			update := &GuildRoleUpdate{GuildRole: &GuildRole{
+				GuildID: guildID,
+				Role:    &Role{ID: guildID + "-role-10", Name: "updated"},
+			}}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := state.OnInterface(session, update); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -7750,6 +8389,71 @@ func BenchmarkStateGuildMembersChunkGuildSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkStateGuildMembersChunkFullLoad measures loading a whole guild
+// through 1000-member chunks, as RequestGuildMembers does:
+//
+//   - fresh_presences: nothing cached yet, each chunk has a presence per member
+//   - fresh_members: nothing cached yet, chunks carry members only
+//   - rechunk: every member and presence is already cached and sent again
+func BenchmarkStateGuildMembersChunkFullLoad(b *testing.B) {
+	const chunkSize = 1000
+	for _, scenario := range []string{"fresh_presences", "fresh_members", "rechunk"} {
+		for _, size := range []int{10000, 25000, 50000} {
+			b.Run(scenario+"/members="+strconv.Itoa(size), func(b *testing.B) {
+				var cachedMembers []*Member
+				var cachedPresences []*Presence
+				chunks := make([]*GuildMembersChunk, size/chunkSize)
+				for c := range chunks {
+					chunk := &GuildMembersChunk{
+						GuildID:    "guild",
+						ChunkIndex: c,
+						ChunkCount: len(chunks),
+						Members:    make([]*Member, chunkSize),
+					}
+					if scenario != "fresh_members" {
+						chunk.Presences = make([]*Presence, chunkSize)
+					}
+					for i := range chunk.Members {
+						id := "user-" + strconv.Itoa(c*chunkSize+i)
+						chunk.Members[i] = &Member{User: &User{ID: id, Username: id}}
+						if chunk.Presences != nil {
+							chunk.Presences[i] = &Presence{User: &User{ID: id}, Status: StatusOnline}
+						}
+						if scenario == "rechunk" {
+							cachedMembers = append(cachedMembers, &Member{GuildID: "guild", User: &User{ID: id, Username: id}})
+							cachedPresences = append(cachedPresences, &Presence{User: &User{ID: id}, Status: StatusIdle})
+						}
+					}
+					chunks[c] = chunk
+				}
+
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					state := NewState()
+					guild := &Guild{
+						ID:          "guild",
+						MemberCount: size,
+						Members:     append([]*Member(nil), cachedMembers...),
+						Presences:   append([]*Presence(nil), cachedPresences...),
+					}
+					if err := state.GuildAdd(guild); err != nil {
+						b.Fatal(err)
+					}
+					session := &Session{StateEnabled: true, State: state}
+					b.StartTimer()
+					for _, chunk := range chunks {
+						if err := state.OnInterface(session, chunk); err != nil {
+							b.Fatal(err)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkStateMessageReactionUpdateSnapshot(b *testing.B) {
 	reactions := make([]*MessageReactions, 20)
 	for i := range reactions {
@@ -7889,6 +8593,125 @@ func BenchmarkStateMessageAddGuildSnapshot(b *testing.B) {
 		if err := state.MessageAdd(replacements[i%len(replacements)]); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// BenchmarkStateMessageCreateGuildCount measures MESSAGE_CREATE with the
+// default MaxMessageCount of zero as the number of cached guilds grows. The
+// target channel is in the last guild, which is the worst case for a scan.
+func BenchmarkStateMessageCreateGuildCount(b *testing.B) {
+	for _, guilds := range []int{1, 100, 1000, 2500} {
+		b.Run("guilds="+strconv.Itoa(guilds), func(b *testing.B) {
+			state := NewState()
+			for g := 0; g < guilds; g++ {
+				guildID := "guild-" + strconv.Itoa(g)
+				channels := make([]*Channel, 50)
+				for c := range channels {
+					channels[c] = &Channel{
+						ID:      guildID + "-channel-" + strconv.Itoa(c),
+						GuildID: guildID,
+						Type:    ChannelTypeGuildText,
+					}
+				}
+				if err := state.GuildAdd(&Guild{ID: guildID, Channels: channels}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			session := &Session{StateEnabled: true, State: state}
+			guildID := "guild-" + strconv.Itoa(guilds-1)
+			channelID := guildID + "-channel-49"
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				create := &MessageCreate{Message: &Message{
+					ID:        strconv.Itoa(i),
+					ChannelID: channelID,
+					GuildID:   guildID,
+				}}
+				if err := state.OnInterface(session, create); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestReplaceChannelUpdatesOwningSnapshot checks that a channel update lands
+// in the snapshot that actually holds the channel, including when the
+// channel's GuildID does not point at that guild.
+func TestReplaceChannelUpdatesOwningSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		channel *Channel
+		owner   string // guild ID holding the channel, "" for private channels
+	}{
+		{name: "guild_channel", channel: &Channel{ID: "c", GuildID: "b", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "thread", channel: &Channel{ID: "c", GuildID: "b", Type: ChannelTypeGuildPublicThread}, owner: "b"},
+		{name: "guild_id_names_other_guild", channel: &Channel{ID: "c", GuildID: "c-guild", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "guild_id_not_cached", channel: &Channel{ID: "c", GuildID: "missing", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "guild_id_empty", channel: &Channel{ID: "c", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "dm", channel: &Channel{ID: "c", Type: ChannelTypeDM}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewState()
+			for _, id := range []string{"a", "b", "c-guild"} {
+				guild := &Guild{ID: id, Channels: []*Channel{{ID: id + "-other", GuildID: id}}}
+				if id == tc.owner {
+					if tc.channel.IsThread() {
+						guild.Threads = []*Channel{tc.channel}
+					} else {
+						guild.Channels = append(guild.Channels, tc.channel)
+					}
+				}
+				if err := state.GuildAdd(guild); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.owner == "" {
+				if err := state.ChannelAdd(tc.channel); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := map[string]*Guild{}
+			for _, guild := range state.Guilds {
+				before[guild.ID] = guild
+			}
+
+			update := *tc.channel
+			update.Name = "updated"
+			if err := state.ChannelAdd(&update); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := state.Channel("c")
+			if err != nil || got.Name != "updated" {
+				t.Fatalf("Channel = %+v, %v; want updated channel", got, err)
+			}
+			if tc.owner == "" {
+				if len(state.PrivateChannels) != 1 || state.PrivateChannels[0] != got {
+					t.Fatalf("private channels = %v, want only the updated channel", state.PrivateChannels)
+				}
+			}
+			for _, guild := range state.Guilds {
+				if guild.ID != tc.owner {
+					if guild != before[guild.ID] {
+						t.Errorf("guild %s was replaced, but it does not hold the channel", guild.ID)
+					}
+					continue
+				}
+				list := guild.Channels
+				if tc.channel.IsThread() {
+					list = guild.Threads
+				}
+				if list[len(list)-1] != got {
+					t.Errorf("guild %s does not hold the updated channel", guild.ID)
+				}
+				if tc.channel.Name != "" {
+					t.Error("channel update modified an earlier guild snapshot")
+				}
+			}
+		})
 	}
 }
 
@@ -10179,6 +11002,8 @@ func TestPresenceUpdateClearsExplicitNullAvatar(t *testing.T) {
 	}{
 		{name: "clear_online", avatar: `,"avatar":null`},
 		{name: "clear_offline", avatar: `,"avatar":null`, offline: true},
+		{name: "clear_mixed_case_key", avatar: `,"AVATAR":null`},
+		{name: "clear_escaped_key", avatar: `,"\u0061vatar":null`},
 		{name: "replace", avatar: `,"avatar":"new-avatar"`, wantAvatar: "new-avatar"},
 		{name: "omit", wantAvatar: "old-avatar"},
 		{name: "malformed_avatar", avatar: `,"avatar":123`, wantAvatar: "old-avatar"},
@@ -10327,6 +11152,7 @@ func TestPresenceUpdateRefreshesCachedGlobalName(t *testing.T) {
 			{name: "omit", want: "old-name"},
 			{name: "replace_offline", field: `,"global_name":"new-name"`, want: "new-name", offline: true},
 			{name: "clear_offline", field: `,"global_name":null`, offline: true},
+			{name: "clear_mixed_case_key", field: `,"Global_Name":null`},
 			{name: "omit_offline", want: "old-name", offline: true},
 			{name: "malformed", field: `,"global_name":123`, want: "old-name"},
 			{name: "programmatic_zero", want: "old-name", programmatic: true},
@@ -10423,21 +11249,41 @@ func TestPresenceUpdateRefreshesCachedGlobalName(t *testing.T) {
 }
 
 func TestPresenceUpdateRefreshesCachedMemberAvatar(t *testing.T) {
+	cachedUser := User{ID: "200", Username: "cached-name", Discriminator: "0", Avatar: "old-avatar", GlobalName: "old-global"}
 	for _, trackPresences := range []bool{false, true} {
 		for _, tc := range []struct {
-			name         string
-			avatar       string
-			want         string
-			offline      bool
-			programmatic bool
+			name    string
+			user    string // extra JSON fields for the event user
+			offline bool
+			// programmatic sends this user through handleEvent instead
+			// of decoding a gateway payload.
+			programmatic *User
+			// uncached starts without a cached member for the user.
+			uncached bool
+			// change applies the expected update to the cached user. A
+			// case without one changes nothing, so the cached member
+			// snapshot must be kept as is.
+			change func(*User)
 		}{
-			{name: "replace", avatar: `,"avatar":"new-avatar"`, want: "new-avatar"},
-			{name: "clear", avatar: `,"avatar":null`},
-			{name: "omit", want: "old-avatar"},
-			{name: "clear_offline", avatar: `,"avatar":null`, offline: true},
-			{name: "replace_offline", avatar: `,"avatar":"new-avatar"`, want: "new-avatar", offline: true},
-			{name: "omit_offline", want: "old-avatar", offline: true},
-			{name: "programmatic_zero", want: "old-avatar", programmatic: true},
+			{name: "replace", user: `,"avatar":"new-avatar"`, change: func(u *User) { u.Avatar = "new-avatar" }},
+			{name: "clear", user: `,"avatar":null`, change: func(u *User) { u.Avatar = "" }},
+			{name: "same_avatar", user: `,"avatar":"old-avatar"`},
+			{name: "omit"},
+			{name: "username", user: `,"username":"new-name"`, change: func(u *User) { u.Username = "new-name" }},
+			{name: "same_username", user: `,"username":"cached-name"`},
+			{name: "discriminator", user: `,"discriminator":"1234"`, change: func(u *User) { u.Discriminator = "1234" }},
+			{name: "global_name", user: `,"global_name":"new-global"`, change: func(u *User) { u.GlobalName = "new-global" }},
+			{name: "clear_global_name", user: `,"global_name":null`, change: func(u *User) { u.GlobalName = "" }},
+			{name: "clear_offline", user: `,"avatar":null`, offline: true, change: func(u *User) { u.Avatar = "" }},
+			{name: "replace_offline", user: `,"avatar":"new-avatar"`, offline: true, change: func(u *User) { u.Avatar = "new-avatar" }},
+			{name: "discriminator_offline", user: `,"discriminator":"1234"`, offline: true, change: func(u *User) { u.Discriminator = "1234" }},
+			// Offline presences don't carry a reliable username.
+			{name: "username_offline", user: `,"username":"new-name"`, offline: true},
+			{name: "omit_offline", offline: true},
+			{name: "programmatic_zero", programmatic: &User{ID: "200"}},
+			{name: "programmatic_username", programmatic: &User{ID: "200", Username: "new-name"}, change: func(u *User) { u.Username = "new-name" }},
+			{name: "uncached", uncached: true, user: `,"username":"new-name","avatar":"new-avatar"`},
+			{name: "uncached_offline", uncached: true, offline: true, user: `,"avatar":"new-avatar"`},
 		} {
 			t.Run(fmt.Sprintf("presences=%t/%s", trackPresences, tc.name), func(t *testing.T) {
 				session, err := New("Bot test")
@@ -10448,43 +11294,68 @@ func TestPresenceUpdateRefreshesCachedMemberAvatar(t *testing.T) {
 				// Presence events can arrive without the GUILD_MEMBERS intent.
 				session.Identify.Intents = IntentsGuildPresences
 				session.State.TrackPresences = trackPresences
-				if err := session.State.GuildAdd(&Guild{ID: "100", Members: []*Member{{
-					GuildID: "100", Nick: "guild-name", Roles: []string{"role"},
-					User: &User{ID: "200", Username: "cached-name", Discriminator: "0", Avatar: "old-avatar"},
-				}}}); err != nil {
+				guild := &Guild{ID: "100"}
+				if !tc.uncached {
+					user := cachedUser
+					guild.Members = []*Member{{GuildID: "100", Nick: "guild-name", Roles: []string{"role"}, User: &user}}
+				}
+				if err := session.State.GuildAdd(guild); err != nil {
 					t.Fatal(err)
 				}
 				before, err := session.State.Guild("100")
 				if err != nil {
 					t.Fatal(err)
 				}
-				old := before.Members[0]
+				var old *Member
+				if !tc.uncached {
+					old = before.Members[0]
+				}
+
+				want := cachedUser
+				if tc.change != nil {
+					tc.change(&want)
+				}
+				if tc.uncached {
+					want = User{ID: "200", Username: "new-name", Avatar: "new-avatar"}
+				}
+
 				called := false
 				session.AddHandler(func(s *Session, update *PresenceUpdate) {
 					called = true
 					member, err := s.State.Member("100", "200")
+					if tc.uncached && tc.offline {
+						if !errors.Is(err, ErrStateNotFound) {
+							t.Errorf("offline presence cached a member: %v", err)
+						}
+						return
+					}
 					if err != nil {
 						t.Error(err)
 						return
 					}
-					if member.User.Avatar != tc.want {
-						t.Errorf("member avatar = %q, want %q", member.User.Avatar, tc.want)
+					if got := *member.User; got != want {
+						t.Errorf("member user = %+v, want %+v", got, want)
 					}
-					wantUser := &User{ID: "200", Discriminator: "0", Avatar: tc.want}
-					if got := member.AvatarURL(""); got != wantUser.AvatarURL("") {
-						t.Errorf("member avatar URL = %q, want %q", got, wantUser.AvatarURL(""))
-					}
-					if member.User.Username != "cached-name" || member.Nick != "guild-name" || len(member.Roles) != 1 || member.Roles[0] != "role" {
-						t.Error("partial presence lost unrelated member fields")
+					if got := member.AvatarURL(""); got != want.AvatarURL("") {
+						t.Errorf("member avatar URL = %q, want %q", got, want.AvatarURL(""))
 					}
 					guild, err := s.State.Guild("100")
 					if err != nil || len(guild.Members) != 1 || guild.Members[0] != member {
 						t.Errorf("guild and member cache disagree: %v", err)
 					}
-					if (!tc.offline || tc.avatar != "") && (member == old || member.User == old.User) {
+					if tc.uncached {
+						return
+					}
+					if member.Nick != "guild-name" || len(member.Roles) != 1 || member.Roles[0] != "role" {
+						t.Error("partial presence lost unrelated member fields")
+					}
+					if tc.change != nil && (member == old || member.User == old.User) {
 						t.Error("presence update reused the earlier member snapshot")
 					}
-					if update.User.Username != "" {
+					if tc.change == nil && member != old {
+						t.Error("presence update that changed nothing replaced the cached member")
+					}
+					if update.User.Username != "" && tc.programmatic == nil && !strings.Contains(tc.user, `"username"`) {
 						t.Error("cache merge modified the partial event user")
 					}
 				})
@@ -10492,10 +11363,14 @@ func TestPresenceUpdateRefreshesCachedMemberAvatar(t *testing.T) {
 				if tc.offline {
 					status = StatusOffline
 				}
-				if tc.programmatic {
-					session.handleEvent(presenceUpdateEventType, &PresenceUpdate{GuildID: "100", Presence: Presence{User: &User{ID: "200"}, Status: status}})
+				if tc.programmatic != nil {
+					user := *tc.programmatic
+					session.handleEvent(presenceUpdateEventType, &PresenceUpdate{GuildID: "100", Presence: Presence{User: &user, Status: status}})
+					if user != *tc.programmatic {
+						t.Error("cache merge modified the event user")
+					}
 				} else {
-					payload := fmt.Sprintf(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200"%s},"status":%q,"activities":[],"client_status":{}}}`, tc.avatar, status)
+					payload := fmt.Sprintf(`{"op":0,"s":1,"t":"PRESENCE_UPDATE","d":{"guild_id":"100","user":{"id":"200"%s},"status":%q,"activities":[],"client_status":{}}}`, tc.user, status)
 					if _, err := session.onEvent(websocket.TextMessage, []byte(payload)); err != nil {
 						t.Fatal(err)
 					}
@@ -10503,7 +11378,7 @@ func TestPresenceUpdateRefreshesCachedMemberAvatar(t *testing.T) {
 				if !called {
 					t.Fatal("presence callback did not run")
 				}
-				if old.User.Avatar != "old-avatar" || before.Members[0] != old {
+				if old != nil && (*old.User != cachedUser || old.Nick != "guild-name" || len(old.Roles) != 1 || old.Roles[0] != "role" || len(before.Members) != 1 || before.Members[0] != old) {
 					t.Error("presence update modified an earlier guild/member snapshot")
 				}
 			})
