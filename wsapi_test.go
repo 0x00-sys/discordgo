@@ -1118,6 +1118,33 @@ func TestReconnectRetriesAreSpreadAcrossSessions(t *testing.T) {
 	}
 }
 
+func TestJitteredGatewayBackoffStaysWithinBounds(t *testing.T) {
+	for _, d := range []time.Duration{time.Second, 2 * time.Second, 64 * time.Second, 600 * time.Second} {
+		const samples = 10000
+		var total time.Duration
+		lowest, highest := d*2, time.Duration(0)
+		for range samples {
+			got := jitteredGatewayBackoff(d)
+			if got < d/2 || got >= d+d/2 {
+				t.Fatalf("jitteredGatewayBackoff(%v) = %v, want in [%v, %v)", d, got, d/2, d+d/2)
+			}
+			total += got
+			lowest = min(lowest, got)
+			highest = max(highest, got)
+		}
+		// The whole range is used and the mean delay is unchanged.
+		if lowest > d*6/10 || highest < d*14/10 {
+			t.Fatalf("jitteredGatewayBackoff(%v) ranged over [%v, %v], want close to [%v, %v)", d, lowest, highest, d/2, d+d/2)
+		}
+		if mean := total / samples; mean < d*95/100 || mean > d*105/100 {
+			t.Fatalf("jitteredGatewayBackoff(%v) mean = %v, want about %v", d, mean, d)
+		}
+	}
+	if got := jitteredGatewayBackoff(0); got != 0 {
+		t.Fatalf("jitteredGatewayBackoff(0) = %v, want 0", got)
+	}
+}
+
 func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 	serverDone := make(chan struct{})
 	upgrader := websocket.Upgrader{}
