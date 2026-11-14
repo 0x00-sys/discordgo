@@ -385,7 +385,7 @@ func (s *Session) requestConfig(method, urlStr, contentType string, b []byte, op
 	// Not used on initial login..
 	// TODO: Verify if a login, otherwise complain about no-token
 	if s.Token != "" {
-		req.Header.Set("authorization", s.Token)
+		req.Header.Set("Authorization", s.Token)
 	}
 
 	// Discord's API returns a 400 Bad Request is Content-Type is set, but the
@@ -467,7 +467,7 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 	if resp.StatusCode == http.StatusTooManyRequests {
 		if retryAfter, parseErr := retryAfterHeader(resp.Header); parseErr == nil && retryAfter > 0 {
 			reset := time.Now().Add(retryAfter)
-			if strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
+			if strings.EqualFold(resp.Header.Get("X-Ratelimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-Ratelimit-Scope"), "global") {
 				bucket.setGlobalReset(reset)
 			} else {
 				bucket.setRetryReset(reset)
@@ -539,7 +539,7 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 				rl.RetryAfter = retryAfter
 			}
 		}
-		if rl.Global || strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
+		if rl.Global || strings.EqualFold(resp.Header.Get("X-Ratelimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-Ratelimit-Scope"), "global") {
 			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
 		} else if rl.RetryAfter > 0 {
 			bucket.setRetryReset(time.Now().Add(rl.RetryAfter))
