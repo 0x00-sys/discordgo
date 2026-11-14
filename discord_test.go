@@ -2,8 +2,12 @@ package discordgo
 
 import (
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,6 +82,109 @@ func TestNewIncludesPollIntents(t *testing.T) {
 	if got := d.Identify.Intents & want; got != want {
 		t.Fatalf("default intents include poll intents = %d, want %d", got, want)
 	}
+}
+
+// The default client sends all REST traffic for a host over one shared HTTP/2
+// connection. If that connection stops answering without closing, requests
+// must move to a new connection instead of each timing out on the old one.
+func TestNewClientReplacesUnresponsiveHTTP2Connection(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.Proto))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	// The proxy silently drops traffic on the first connection once stalled,
+	// like a stuck middlebox. Later connections pass through.
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { proxy.Close() })
+	var stalled atomic.Bool
+	var dials atomic.Int32
+	var mu sync.Mutex
+	var conns []net.Conn
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+	go func() {
+		for {
+			client, err := proxy.Accept()
+			if err != nil {
+				return
+			}
+			first := dials.Add(1) == 1
+			upstream, err := net.Dial("tcp", server.Listener.Addr().String())
+			if err != nil {
+				client.Close()
+				return
+			}
+			mu.Lock()
+			conns = append(conns, client, upstream)
+			mu.Unlock()
+			pipe := func(dst, src net.Conn) {
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := src.Read(buf)
+					if err != nil {
+						return
+					}
+					if first && stalled.Load() {
+						continue
+					}
+					if _, err := dst.Write(buf[:n]); err != nil {
+						return
+					}
+				}
+			}
+			go pipe(upstream, client)
+			go pipe(client, upstream)
+		}
+	}()
+
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := session.Client.Transport.(*http.Transport)
+	if base == nil {
+		base = http.DefaultTransport.(*http.Transport)
+	}
+	transport := base.Clone()
+	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport, Timeout: 500 * time.Millisecond}
+	get := func() error {
+		resp, err := client.Get("https://" + proxy.Addr().String() + "/")
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.ProtoMajor != 2 {
+			t.Fatalf("protocol = %s, want HTTP/2", resp.Proto)
+		}
+		return nil
+	}
+
+	if err := get(); err != nil {
+		t.Fatal(err)
+	}
+	stalled.Store(true)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if lastErr = get(); lastErr == nil {
+			return
+		}
+	}
+	t.Fatalf("REST requests still failing after the connection stalled for 5s (dials=%d): %v", dials.Load(), lastErr)
 }
 
 func TestCurrentAPIVersion(t *testing.T) {
