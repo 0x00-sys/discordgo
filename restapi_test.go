@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 //////////////////////////////////////////////////////////////////////////////
@@ -4344,6 +4345,175 @@ func TestCloudflareBanWithoutRetryAfterReturnsRateLimitError(t *testing.T) {
 	_, _ = s.Request("GET", server.URL+"/channels/1/messages", nil, WithContext(ctx))
 	if got := atomic.LoadInt32(requests); got != 1 {
 		t.Errorf("same-bucket requests after edge 429 without Retry-After = %d, want 1", got)
+	}
+}
+
+// With the default ShouldRetryOnRateLimit the unknown delay must not turn into
+// a sleep and retry: the caller gets the error after one request, and only the
+// affected bucket is cooled down for nonJSONRateLimitCooldown.
+func TestRequestNonJSONRateLimitWithoutRetryAfterDefaultRetry(t *testing.T) {
+	server, requests := edgeRateLimitServer(t, "/a", false, nil)
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Now()
+	_, err = s.RequestWithBucketID("GET", server.URL+"/a", nil, "bucket-a")
+	elapsed := time.Since(before)
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("error = %T %[1]v, want *RateLimitError", err)
+	}
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("requests = %d, want 1 (no automatic retry)", got)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("request took %v, want no sleep before returning", elapsed)
+	}
+	if rateLimitErr.RetryAfter != 0 {
+		t.Fatalf("RetryAfter = %v, want 0 (unknown)", rateLimitErr.RetryAfter)
+	}
+	if rateLimitErr.Message != "error code: 1015" {
+		t.Fatalf("Message = %q, want %q", rateLimitErr.Message, "error code: 1015")
+	}
+
+	retryUntil := time.Unix(0, s.Ratelimiter.GetBucket("bucket-a").retryUntil.Load())
+	if lo, hi := before.Add(nonJSONRateLimitCooldown), time.Now().Add(nonJSONRateLimitCooldown); retryUntil.Before(lo) || retryUntil.After(hi) {
+		t.Fatalf("bucket retry deadline = %v, want between %v and %v", retryUntil, lo, hi)
+	}
+	if global := atomic.LoadInt64(s.Ratelimiter.global); global != 0 {
+		t.Fatalf("global reset = %v, want unset", time.Unix(0, global))
+	}
+
+	// The same bucket waits out the cooldown instead of reaching the network.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = s.RequestWithBucketID("GET", server.URL+"/a", nil, "bucket-a", WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("same-bucket error = %v, want context.DeadlineExceeded", err)
+	}
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("requests after same-bucket retry = %d, want 1", got)
+	}
+
+	// A different bucket is not blocked.
+	if _, err = s.RequestWithBucketID("GET", server.URL+"/b", nil, "bucket-b"); err != nil {
+		t.Fatalf("other bucket error = %v, want nil", err)
+	}
+	if got := atomic.LoadInt32(requests); got != 2 {
+		t.Fatalf("requests after other bucket = %d, want 2", got)
+	}
+}
+
+// A request waiting out the default cooldown returns as soon as its context is
+// canceled, without reaching the network.
+func TestRequestNonJSONRateLimitCooldownRespectsContext(t *testing.T) {
+	server, requests := edgeRateLimitServer(t, "/a", false, nil)
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RequestWithBucketID("GET", server.URL+"/a", nil, "bucket-a", WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("error = %T %[1]v, want *RateLimitError", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	before := time.Now()
+	_, err = s.RequestWithBucketID("GET", server.URL+"/a", nil, "bucket-a", WithContext(ctx))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(before); elapsed > time.Second {
+		t.Fatalf("canceled request returned after %v, want promptly", elapsed)
+	}
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+// Each malformed 429 is reported as a rate limit and restarts the cooldown,
+// and the default never shortens a longer deadline already recorded.
+func TestRequestNonJSONRateLimitRepeatedKeepsLongestDeadline(t *testing.T) {
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket := s.Ratelimiter.GetBucket("bucket-a")
+	var longer atomic.Int64
+	server, requests := edgeRateLimitServer(t, "/a", true, func() {
+		if deadline := longer.Load(); deadline != 0 {
+			// Another response on this bucket recorded a longer Retry-After
+			// while this request was in flight.
+			bucket.setRetryReset(time.Unix(0, deadline))
+		}
+	})
+
+	for i := 1; i <= 3; i++ {
+		// Pretend the previous cooldown has elapsed.
+		bucket.retryUntil.Store(0)
+		before := time.Now()
+		_, err = s.RequestWithBucketID("GET", server.URL+"/a", nil, "bucket-a")
+		var rateLimitErr *RateLimitError
+		if !errors.As(err, &rateLimitErr) {
+			t.Fatalf("request %d error = %T %[2]v, want *RateLimitError", i, err)
+		}
+		if got := atomic.LoadInt32(requests); got != int32(i) {
+			t.Fatalf("requests after %d malformed 429s = %d, want %d", i, got, i)
+		}
+		if retryUntil := time.Unix(0, bucket.retryUntil.Load()); retryUntil.Before(before.Add(nonJSONRateLimitCooldown)) {
+			t.Fatalf("request %d bucket retry deadline = %v, want at least %v", i, retryUntil, before.Add(nonJSONRateLimitCooldown))
+		}
+	}
+
+	bucket.retryUntil.Store(0)
+	want := time.Now().Add(time.Minute).UnixNano()
+	longer.Store(want)
+	_, err = s.RequestWithBucketID("GET", server.URL+"/a", nil, "bucket-a")
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("error = %T %[1]v, want *RateLimitError", err)
+	}
+	if got := bucket.retryUntil.Load(); got != want {
+		t.Fatalf("bucket retry deadline = %v, want longer deadline %v kept", time.Unix(0, got), time.Unix(0, want))
+	}
+}
+
+// Edge pages can be large HTML documents. Only the start is kept as Message.
+func TestRequestNonJSONRateLimitTruncatesMessage(t *testing.T) {
+	session, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "<html>a" is 7 bytes, so the 512-byte cut lands inside a 2-byte rune.
+	body := "<html>a" + strings.Repeat("é", 4096) + "</html>"
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID("GET", EndpointGateway, nil, EndpointGateway, WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("error = %T %[1]v, want *RateLimitError", err)
+	}
+	if len(rateLimitErr.Message) > maxRateLimitMessageBytes {
+		t.Fatalf("Message length = %d, want at most %d", len(rateLimitErr.Message), maxRateLimitMessageBytes)
+	}
+	if !strings.HasPrefix(body, rateLimitErr.Message) || len(rateLimitErr.Message) < maxRateLimitMessageBytes-1 {
+		t.Fatalf("Message = %q, want the first %d bytes of the body", rateLimitErr.Message, maxRateLimitMessageBytes)
+	}
+	if !utf8.ValidString(rateLimitErr.Message) {
+		t.Fatalf("Message is not valid UTF-8: %q", rateLimitErr.Message)
 	}
 }
 
