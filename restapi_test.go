@@ -4299,6 +4299,54 @@ func TestRequestWithLockedBucketNonJSONRateLimitUsesRetryAfter(t *testing.T) {
 	}
 }
 
+// edgeRateLimitServer answers the first request on path banned like an edge
+// ban (non-JSON 429, no Retry-After, no X-RateLimit-* headers) and every other
+// request with 204. Discord documents the 10,000 invalid requests per 10
+// minutes limit but not the body or headers of the ban itself. With repeat set,
+// every request on banned gets the 429. onBanned runs before each 429 is sent.
+func edgeRateLimitServer(t *testing.T, banned string, repeat bool, onBanned func()) (*httptest.Server, *int32) {
+	t.Helper()
+	var requests, bannedRequests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		if r.URL.Path == banned && (atomic.AddInt32(&bannedRequests, 1) == 1 || repeat) {
+			if onBanned != nil {
+				onBanned()
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("error code: 1015"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	return server, &requests
+}
+
+// Without Retry-After a non-JSON 429 used to come back as a JSON syntax error,
+// so a caller could not tell it was rate limited, and no cooldown was recorded.
+func TestCloudflareBanWithoutRetryAfterReturnsRateLimitError(t *testing.T) {
+	server, requests := edgeRateLimitServer(t, "/channels/1/messages", false, nil)
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.Request("GET", server.URL+"/channels/1/messages", nil, WithRetryOnRatelimit(false))
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Errorf("edge 429 without Retry-After error = %T %[1]v, want *RateLimitError", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _ = s.Request("GET", server.URL+"/channels/1/messages", nil, WithContext(ctx))
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Errorf("same-bucket requests after edge 429 without Retry-After = %d, want 1", got)
+	}
+}
+
 func TestRequestWithLockedBucketJSONRateLimitUsesRetryAfterHeaderFallback(t *testing.T) {
 	session, err := New("")
 	if err != nil {
