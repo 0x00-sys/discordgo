@@ -3385,7 +3385,7 @@ func gatewayMembersChunkPayload(n int) []byte {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		id := strconv.Itoa(80351110224678912 + i)
+		id := strconv.FormatInt(80351110224678912+int64(i), 10)
 		b.WriteString(`{"user":{"id":"` + id + `","username":"member` + strconv.Itoa(i) + `","global_name":"Member ` + strconv.Itoa(i) + `","avatar":"a_1b2c3d4e5f60718293a4b5c6d7e8f901","discriminator":"0","public_flags":64},"nick":null,"avatar":null,"roles":["613425648685547542","613425648685547543"],"joined_at":"2024-03-01T12:34:56.789000+00:00","premium_since":null,"deaf":false,"mute":false,"flags":0,"pending":false}`)
 	}
 	b.WriteString(`],"presences":[`)
@@ -3393,7 +3393,7 @@ func gatewayMembersChunkPayload(n int) []byte {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(`{"user":{"id":"` + strconv.Itoa(80351110224678912+i) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
+		b.WriteString(`{"user":{"id":"` + strconv.FormatInt(80351110224678912+int64(i), 10) + `"},"status":"online","client_status":{"desktop":"online"},"activities":[]}`)
 	}
 	b.WriteString(`]}}`)
 	return []byte(b.String())
