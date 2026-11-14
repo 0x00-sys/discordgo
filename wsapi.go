@@ -297,12 +297,44 @@ func (s *Session) open(retryCancel <-chan struct{}) error {
 	sequence := atomic.LoadInt64(s.sequence)
 	resuming := s.sessionID != "" || sequence != 0
 
+	// Shards of one bot must pace IDENTIFY by max_concurrency.
+	var pacedApp *identifyApp
+	var pacedSlot *identifySlot
+	identifyToken, identifyShard, pacedIdentify := s.shardedIdentifyLocked()
+	if pacedIdentify && !resuming {
+		pacedApp = gatewayIdentifyLimiter.join(identifyToken)
+		defer gatewayIdentifyLimiter.leave(identifyToken, pacedApp)
+	}
+
 	var gateway string
 	// Get the gateway to use for the Websocket connection
 	if sequence != 0 && s.sessionID != "" && s.resumeGatewayURL != "" {
 		s.log(LogDebug, "using resume gateway %s", s.resumeGatewayURL)
 		gateway = s.resumeGatewayURL
 	} else {
+		if pacedApp != nil && (s.gateway == "" || s.identifyMaxConcurrency == 0) && identifyToken == s.Token {
+			// Sharded sessions use GET /gateway/bot to learn max_concurrency.
+			// On failure the plain Gateway lookup below runs and the
+			// concurrency stays unknown, which paces as 1.
+			s.Unlock()
+			botGateway, maxConcurrency := gatewayIdentifyLimiter.gatewayBot(ctx, pacedApp, func() (string, int, error) {
+				st, err := s.GatewayBot(WithContext(ctx))
+				if err != nil {
+					return "", 0, err
+				}
+				return st.URL, st.SessionStartLimit.MaxConcurrency, nil
+			})
+			s.Lock()
+			if s.gatewayOpen != gatewayOpen || reconnectCanceled(reconnectCancel) {
+				return ErrWSNotFound
+			}
+			if botGateway != "" && s.gateway == "" {
+				s.gateway = botGateway
+			}
+			if maxConcurrency > 0 {
+				s.identifyMaxConcurrency = maxConcurrency
+			}
+		}
 		if s.gateway == "" {
 			s.Unlock()
 			gateway, err = s.Gateway(WithContext(ctx))
@@ -319,6 +351,27 @@ func (s *Session) open(retryCancel <-chan struct{}) error {
 			s.gateway = gateway
 		} else {
 			gateway = s.gateway
+		}
+	}
+
+	if pacedApp != nil {
+		// Wait for this shard's identify bucket before dialing. The slot is
+		// held until IDENTIFY is written, bounded by the dial and HELLO
+		// timeouts so a hung connection cannot block the bucket.
+		maxConcurrency := s.identifyMaxConcurrency
+		holdLimit := 2 * gatewayStartupReadTimeout(s.Dialer)
+		s.Unlock()
+		slot, acquireErr := gatewayIdentifyLimiter.acquire(ctx, pacedApp, identifyShard, maxConcurrency, holdLimit)
+		s.Lock()
+		if slot != nil {
+			pacedSlot = slot
+			defer slot.release()
+		}
+		if s.gatewayOpen != gatewayOpen || reconnectCanceled(reconnectCancel) {
+			return ErrWSNotFound
+		}
+		if acquireErr != nil {
+			return acquireErr
 		}
 	}
 
@@ -425,7 +478,16 @@ func (s *Session) open(retryCancel <-chan struct{}) error {
 	if s.sessionID == "" && sequence == 0 {
 
 		// Send Op 2 Identity Packet
+		if pacedSlot != nil && !pacedSlot.beginSend() {
+			err = errIdentifySlotExpired
+			return err
+		}
 		err = s.identify(wsConn)
+		if pacedSlot != nil {
+			// Count the IDENTIFY as sent even if the write failed: Discord
+			// may still have received it.
+			pacedSlot.sent()
+		}
 		if err != nil {
 			err = fmt.Errorf("error sending identify packet to gateway, %s, %s", s.gateway, err)
 			return err
@@ -1827,6 +1889,362 @@ func (s *Session) onVoiceServerUpdate(wsConn *websocket.Conn, st *VoiceServerUpd
 	if err != nil {
 		s.log(LogError, "onVoiceServerUpdate voice.open, %s", err)
 	}
+}
+
+// Discord allows max_concurrency IDENTIFY calls per 5 seconds for each
+// rate_limit_key (shard_id % max_concurrency) of a bot and answers the rest
+// with op 9. Discord measures at receipt, so a margin is added after each send.
+// https://discord.com/developers/docs/events/gateway#sharding
+const identifyConcurrencyMargin = 250 * time.Millisecond
+
+// gatewayIdentifyLimiter paces IDENTIFY for the sharded sessions of each
+// token in this process. Tests shorten its window.
+var gatewayIdentifyLimiter = &identifyLimiter{window: 5 * time.Second}
+
+var errIdentifySlotExpired = errors.New("gateway connection took too long to reach IDENTIFY")
+
+type identifyLimiter struct {
+	mu     sync.Mutex
+	window time.Duration
+	apps   map[string]*identifyApp
+
+	// acquireHook runs after acquire has picked a bucket and before it
+	// reserves it. Tests use it to force interleavings.
+	acquireHook func(mapping int)
+}
+
+// identifyApp holds the identify state of one token. It is dropped once no
+// session uses it and every bucket's cooldown has passed.
+type identifyApp struct {
+	refs           int
+	gatewayURL     string
+	maxConcurrency int           // from GET /gateway/bot, 0 when unknown
+	fetching       chan struct{} // closed when an in-flight lookup ends
+	buckets        map[identifyBucketKey]*identifyBucket
+}
+
+// identifyBucketKey names a bucket under one shard-to-bucket mapping. Shards
+// that identified while max_concurrency was unknown used mapping 1, so their
+// cooldowns live under a different key than the buckets used once the real
+// value is known.
+type identifyBucketKey struct {
+	maxConcurrency int
+	key            int
+}
+
+type identifyBucket struct {
+	slot chan struct{} // holds a value while a session owns the bucket
+	next time.Time     // earliest time the next IDENTIFY may be sent
+}
+
+func (l *identifyLimiter) join(token string) *identifyApp {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.apps == nil {
+		l.apps = make(map[string]*identifyApp)
+	}
+	app := l.apps[token]
+	if app == nil {
+		app = &identifyApp{buckets: make(map[identifyBucketKey]*identifyBucket)}
+		l.apps[token] = app
+	}
+	app.refs++
+	return app
+}
+
+func (l *identifyLimiter) leave(token string, app *identifyApp) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	app.refs--
+	l.dropIdleLocked(token, app)
+}
+
+// dropIdleLocked removes an unused app once its cooldowns end, so a new
+// session of the token still waits out the last IDENTIFY.
+func (l *identifyLimiter) dropIdleLocked(token string, app *identifyApp) {
+	if app.refs > 0 || l.apps[token] != app {
+		return
+	}
+	var last time.Time
+	for _, b := range app.buckets {
+		if b.next.After(last) {
+			last = b.next
+		}
+	}
+	if wait := time.Until(last); wait > 0 {
+		time.AfterFunc(wait, func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			l.dropIdleLocked(token, app)
+		})
+		return
+	}
+	delete(l.apps, token)
+}
+
+// gatewayBot returns the gateway URL and max_concurrency for the app, running
+// fetch at most once at a time per token. A failed lookup returns "", 0 and
+// is not cached.
+func (l *identifyLimiter) gatewayBot(ctx context.Context, app *identifyApp, fetch func() (string, int, error)) (string, int) {
+	l.mu.Lock()
+	for app.maxConcurrency == 0 && app.fetching != nil {
+		fetching := app.fetching
+		l.mu.Unlock()
+		select {
+		case <-fetching:
+		case <-ctx.Done():
+			return "", 0
+		}
+		l.mu.Lock()
+	}
+	if app.maxConcurrency > 0 {
+		defer l.mu.Unlock()
+		return app.gatewayURL, app.maxConcurrency
+	}
+	fetching := make(chan struct{})
+	app.fetching = fetching
+	l.mu.Unlock()
+
+	url, maxConcurrency, err := fetch()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	app.fetching = nil
+	close(fetching)
+	if err != nil || maxConcurrency <= 0 {
+		return "", 0
+	}
+	app.gatewayURL, app.maxConcurrency = url, maxConcurrency
+	return url, maxConcurrency
+}
+
+// acquire waits until shard may IDENTIFY and returns the bucket slot. The
+// caller must call sent once it writes IDENTIFY, and release in every case.
+// If the slot is held longer than holdLimit it is taken back and beginSend
+// reports false.
+func (l *identifyLimiter) acquire(ctx context.Context, app *identifyApp, shard, maxConcurrency int, holdLimit time.Duration) (*identifySlot, error) {
+	var b *identifyBucket
+	for {
+		l.mu.Lock()
+		if app.maxConcurrency == 0 && maxConcurrency > 0 {
+			// The session learned max_concurrency earlier. Share it so
+			// sessions without it use the same mapping.
+			app.maxConcurrency = maxConcurrency
+		}
+		mapping := l.mappingLocked(app)
+		key := identifyBucketKey{maxConcurrency: mapping, key: shard % mapping}
+		b = app.buckets[key]
+		if b == nil {
+			b = &identifyBucket{slot: make(chan struct{}, 1)}
+			app.buckets[key] = b
+		}
+		// Buckets from another mapping may cover this shard too, for
+		// example an IDENTIFY sent with the fallback mapping before
+		// max_concurrency was learned. Wait until they are idle and cooled
+		// down first.
+		others := otherMappingBucketsLocked(app, mapping)
+		l.mu.Unlock()
+		if l.acquireHook != nil {
+			l.acquireHook(mapping)
+		}
+
+		for _, other := range others {
+			if err := l.drain(ctx, app, other); err != nil {
+				return nil, err
+			}
+		}
+
+		select {
+		case b.slot <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+
+		// The mapping may have changed, or a session on another mapping may
+		// have taken its bucket, while this one was waiting. Give the slot
+		// back and start over in that case. A session on the old mapping
+		// always yields here, so the two cannot keep undoing each other.
+		l.mu.Lock()
+		stale := l.mappingLocked(app) != mapping
+		if !stale {
+			now := time.Now()
+			for _, k := range otherMappingBucketsLocked(app, mapping) {
+				if other := app.buckets[k]; len(other.slot) > 0 || other.next.After(now) {
+					stale = true
+					break
+				}
+			}
+		}
+		l.mu.Unlock()
+		if !stale {
+			break
+		}
+		<-b.slot
+	}
+	return l.waitCooldown(ctx, b, holdLimit)
+}
+
+// mappingLocked returns the max_concurrency used to map shards to buckets.
+func (l *identifyLimiter) mappingLocked(app *identifyApp) int {
+	if app.maxConcurrency > 0 {
+		return app.maxConcurrency
+	}
+	return 1
+}
+
+func otherMappingBucketsLocked(app *identifyApp, mapping int) []identifyBucketKey {
+	var others []identifyBucketKey
+	for k := range app.buckets {
+		if k.maxConcurrency != mapping {
+			others = append(others, k)
+		}
+	}
+	return others
+}
+
+// waitCooldown waits out the cooldown of the bucket whose slot the caller
+// holds and returns the slot.
+func (l *identifyLimiter) waitCooldown(ctx context.Context, b *identifyBucket, holdLimit time.Duration) (*identifySlot, error) {
+	// Only the slot holder changes next.
+	l.mu.Lock()
+	wait := time.Until(b.next)
+	l.mu.Unlock()
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			<-b.slot
+			return nil, ctx.Err()
+		}
+	}
+
+	slot := &identifySlot{l: l, bucket: b}
+	l.mu.Lock()
+	slot.timer = time.AfterFunc(holdLimit, slot.expire)
+	l.mu.Unlock()
+	return slot, nil
+}
+
+// drain waits until no session holds the bucket at key and its cooldown has
+// passed, without using it. A bucket left over from an old mapping is then
+// removed, so later sessions do not wait on it again.
+func (l *identifyLimiter) drain(ctx context.Context, app *identifyApp, key identifyBucketKey) error {
+	l.mu.Lock()
+	b := app.buckets[key]
+	l.mu.Unlock()
+	if b == nil {
+		return nil
+	}
+	select {
+	case b.slot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-b.slot }()
+	l.mu.Lock()
+	wait := time.Until(b.next)
+	l.mu.Unlock()
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	l.mu.Lock()
+	if app.buckets[key] == b && key.maxConcurrency != l.mappingLocked(app) && !b.next.After(time.Now()) {
+		delete(app.buckets, key)
+	}
+	l.mu.Unlock()
+	return nil
+}
+
+const (
+	identifySlotHeld = iota
+	identifySlotSending
+	identifySlotDone
+)
+
+type identifySlot struct {
+	l      *identifyLimiter
+	bucket *identifyBucket
+	timer  *time.Timer
+	state  int
+}
+
+// endLocked frees the bucket, starting a new cooldown if IDENTIFY may have
+// been sent.
+func (s *identifySlot) endLocked(consumed bool) {
+	if s.state == identifySlotDone {
+		return
+	}
+	s.state = identifySlotDone
+	s.timer.Stop()
+	if consumed {
+		s.bucket.next = time.Now().Add(s.l.window + identifyConcurrencyMargin)
+	}
+	<-s.bucket.slot
+}
+
+// expire takes the slot back from a connection that has not reached IDENTIFY
+// in time. That connection may still be about to send, so it costs a cooldown.
+func (s *identifySlot) expire() {
+	s.l.mu.Lock()
+	defer s.l.mu.Unlock()
+	if s.state == identifySlotHeld {
+		s.endLocked(true)
+	}
+}
+
+// beginSend reports whether the slot is still held and keeps it until sent.
+func (s *identifySlot) beginSend() bool {
+	s.l.mu.Lock()
+	defer s.l.mu.Unlock()
+	if s.state != identifySlotHeld {
+		return false
+	}
+	s.state = identifySlotSending
+	s.timer.Stop()
+	return true
+}
+
+// sent starts the cooldown after an IDENTIFY write, including a failed one.
+func (s *identifySlot) sent() {
+	s.l.mu.Lock()
+	defer s.l.mu.Unlock()
+	s.endLocked(true)
+}
+
+// release frees a slot whose IDENTIFY was never written without a cooldown.
+func (s *identifySlot) release() {
+	s.l.mu.Lock()
+	defer s.l.mu.Unlock()
+	s.endLocked(s.state == identifySlotSending)
+}
+
+// shardedIdentifyLocked returns the token and shard the next IDENTIFY will
+// carry, and whether the session is sharded and must pace it.
+func (s *Session) shardedIdentifyLocked() (token string, shard int, ok bool) {
+	switch {
+	case s.ShardCount > 1:
+		if s.ShardID >= s.ShardCount {
+			return "", 0, false // identify fails with ErrWSShardBounds
+		}
+		shard = s.ShardID
+	case s.Identify.Shard != nil:
+		shard = s.Identify.Shard[0]
+	default:
+		return "", 0, false
+	}
+	token = s.Identify.Token
+	if token == "" {
+		token = s.Token
+	}
+	return token, shard, true
 }
 
 type identifyOp struct {

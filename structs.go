@@ -152,6 +152,9 @@ type Session struct {
 	// stores sessions current Discord Gateway
 	gateway string
 
+	// max_concurrency from GET /gateway/bot for a sharded session, 0 if unknown
+	identifyMaxConcurrency int
+
 	// stores session ID of current Gateway connection
 	sessionID string
 
