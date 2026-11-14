@@ -10587,7 +10587,7 @@ func TestPresenceUpdateRefreshesCachedMemberAvatar(t *testing.T) {
 				if !called {
 					t.Fatal("presence callback did not run")
 				}
-				if old != nil && (*old.User != cachedUser || old.Nick != "guild-name" || len(before.Members) != 1 || before.Members[0] != old) {
+				if old != nil && (*old.User != cachedUser || old.Nick != "guild-name" || len(old.Roles) != 1 || old.Roles[0] != "role" || len(before.Members) != 1 || before.Members[0] != old) {
 					t.Error("presence update modified an earlier guild/member snapshot")
 				}
 			})
