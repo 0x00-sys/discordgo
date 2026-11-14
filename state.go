@@ -552,49 +552,101 @@ func presenceAddToGuild(guild *Guild, presence *Presence) error {
 		}
 
 		if p.User.ID == presence.User.ID {
-			//guild.Presences[i] = presence
-
-			updated := copyPresence(p)
-
-			//Update status
-			updated.Activities = presence.Activities
-			if presence.Status != "" {
-				updated.Status = presence.Status
-			}
-			// Missing platforms are offline or invisible, so this object
-			// replaces the previous platform statuses rather than merging.
-			updated.ClientStatus = presence.ClientStatus
-
-			//Update the optionally sent user information
-			//ID Is a mandatory field so you should not need to check if it is empty
-			updated.User.ID = presence.User.ID
-
-			if presence.avatarPresent || presence.User.Avatar != "" {
-				updated.User.Avatar = presence.User.Avatar
-			}
-			if presence.globalNamePresent || presence.User.GlobalName != "" {
-				updated.User.GlobalName = presence.User.GlobalName
-			}
-			if presence.User.Discriminator != "" {
-				updated.User.Discriminator = presence.User.Discriminator
-			}
-			if presence.User.Email != "" {
-				updated.User.Email = presence.User.Email
-			}
-			if presence.User.Token != "" {
-				updated.User.Token = presence.User.Token
-			}
-			if presence.User.Username != "" {
-				updated.User.Username = presence.User.Username
-			}
-
-			guild.Presences[i] = updated
+			guild.Presences[i] = mergePresence(p, presence)
 			return nil
 		}
 	}
 
 	guild.Presences = append(guild.Presences, copyPresence(presence))
 	return nil
+}
+
+// mergePresence returns a copy of the cached presence p with the update
+// applied. Neither argument is modified.
+func mergePresence(p, presence *Presence) *Presence {
+	updated := copyPresence(p)
+
+	//Update status
+	updated.Activities = presence.Activities
+	if presence.Status != "" {
+		updated.Status = presence.Status
+	}
+	// Missing platforms are offline or invisible, so this object
+	// replaces the previous platform statuses rather than merging.
+	updated.ClientStatus = presence.ClientStatus
+
+	//Update the optionally sent user information
+	//ID Is a mandatory field so you should not need to check if it is empty
+	updated.User.ID = presence.User.ID
+
+	if presence.avatarPresent || presence.User.Avatar != "" {
+		updated.User.Avatar = presence.User.Avatar
+	}
+	if presence.globalNamePresent || presence.User.GlobalName != "" {
+		updated.User.GlobalName = presence.User.GlobalName
+	}
+	if presence.User.Discriminator != "" {
+		updated.User.Discriminator = presence.User.Discriminator
+	}
+	if presence.User.Email != "" {
+		updated.User.Email = presence.User.Email
+	}
+	if presence.User.Token != "" {
+		updated.User.Token = presence.User.Token
+	}
+	if presence.User.Username != "" {
+		updated.User.Username = presence.User.Username
+	}
+	return updated
+}
+
+// chunkIndexThreshold is the batch size above which one indexed pass over
+// a guild slice is cheaper than scanning the slice once per entry.
+const chunkIndexThreshold = 16
+
+// presencesAddToGuild applies presences in order, with the same result as
+// calling presenceAddToGuild for each one, but finds existing entries with
+// one pass over guild.Presences instead of one scan per presence.
+func presencesAddToGuild(guild *Guild, presences []*Presence) (err error) {
+	if len(presences) <= chunkIndexThreshold {
+		for _, p := range presences {
+			if perr := presenceAddToGuild(guild, p); perr != nil {
+				err = perr
+			}
+		}
+		return err
+	}
+
+	// slots holds the first index presenceAddToGuild would match for each
+	// user ID, or -1. A matched slot keeps that user ID after the merge, and
+	// other IDs only write their own slots, so the first match never moves.
+	slots := make(map[string]int, len(presences))
+	for _, p := range presences {
+		if p != nil && p.User != nil && p.User.ID != "" {
+			slots[p.User.ID] = -1
+		}
+	}
+	for i, p := range guild.Presences {
+		if p == nil || p.User == nil {
+			continue
+		}
+		if slot, ok := slots[p.User.ID]; ok && slot < 0 {
+			slots[p.User.ID] = i
+		}
+	}
+	for _, p := range presences {
+		if p == nil || p.User == nil || p.User.ID == "" {
+			err = ErrStateInvalidData
+			continue
+		}
+		if i := slots[p.User.ID]; i >= 0 {
+			guild.Presences[i] = mergePresence(guild.Presences[i], p)
+			continue
+		}
+		slots[p.User.ID] = len(guild.Presences)
+		guild.Presences = append(guild.Presences, copyPresence(p))
+	}
+	return err
 }
 
 // PresenceAdd adds a presence to the current world state, or
@@ -721,6 +773,123 @@ func memberAddToGuild(members map[string]*Member, guild *Guild, member *Member) 
 		}
 	}
 	guild.Members = append(guild.Members, member)
+}
+
+// memberSlotMatches is the match memberAddToGuild uses when replacing the
+// cached member m with a member for userID.
+func memberSlotMatches(guildMember, m *Member, userID string) bool {
+	return guildMember == m || (guildMember != nil && guildMember.User != nil && guildMember.User.ID == userID)
+}
+
+// membersAddToGuild applies copied members in order, with the same result
+// as calling memberAddToGuild for each one, but finds existing entries with
+// one pass over guild.Members instead of one scan per member. Every member
+// in batch must have a non-nil User.
+func membersAddToGuild(members map[string]*Member, guild *Guild, batch []*Member) {
+	if len(batch) <= chunkIndexThreshold {
+		for _, member := range batch {
+			memberAddToGuild(members, guild, member)
+		}
+		return
+	}
+
+	// memberAddToGuild only scans guild.Members for users already in the
+	// member map. Until the first such entry, members are just appended;
+	// a chunk of new users never builds the index.
+	var slots map[string]int
+	for k, member := range batch {
+		id := member.User.ID
+		m, ok := members[id]
+		if !ok {
+			members[id] = member
+			if slot, tracked := slots[id]; tracked && slot < 0 {
+				slots[id] = len(guild.Members)
+			}
+			guild.Members = append(guild.Members, member)
+			continue
+		}
+
+		if slots == nil {
+			slots = memberSlots(members, guild.Members, batch[k:])
+			if slots == nil {
+				for _, member := range batch[k:] {
+					memberAddToGuild(members, guild, member)
+				}
+				return
+			}
+		}
+
+		if member.JoinedAt.IsZero() {
+			member.JoinedAt = m.JoinedAt
+		}
+		members[id] = member
+
+		// The slot was the first match when the index was built. Entries
+		// before it can only have been overwritten with other users' new
+		// members since, so if the slot still matches it is still the
+		// first match. Otherwise fall back to the scan.
+		i := slots[id]
+		if i < 0 || !memberSlotMatches(guild.Members[i], m, id) {
+			i = -1
+			for j, guildMember := range guild.Members {
+				if memberSlotMatches(guildMember, m, id) {
+					i = j
+					break
+				}
+			}
+		}
+		if i >= 0 {
+			guild.Members[i] = member
+		} else {
+			i = len(guild.Members)
+			guild.Members = append(guild.Members, member)
+		}
+		slots[id] = i
+	}
+}
+
+// memberSlots returns, for each user in batch, the first index in list that
+// memberAddToGuild would match, or -1. It returns nil if two of those users
+// share one cached member pointer that doesn't carry either user's ID; the
+// caller then applies the entries one at a time.
+func memberSlots(members map[string]*Member, list []*Member, batch []*Member) map[string]int {
+	slots := make(map[string]int, len(batch))
+	for _, member := range batch {
+		slots[member.User.ID] = -1
+	}
+
+	// memberAddToGuild also matches the cached member by pointer. When the
+	// cached member carries its own user ID, the ID match already finds
+	// that entry, so only members cached under another ID need the
+	// pointer lookup. A consistent cache has none.
+	var byPointer map[*Member]string
+	for id := range slots {
+		m, ok := members[id]
+		if !ok || (m != nil && m.User != nil && m.User.ID == id) {
+			continue
+		}
+		if byPointer == nil {
+			byPointer = make(map[*Member]string)
+		}
+		if other, dup := byPointer[m]; dup && other != id {
+			return nil
+		}
+		byPointer[m] = id
+	}
+
+	for i, guildMember := range list {
+		if byPointer != nil {
+			if id, ok := byPointer[guildMember]; ok && slots[id] < 0 {
+				slots[id] = i
+			}
+		}
+		if guildMember != nil && guildMember.User != nil {
+			if slot, ok := slots[guildMember.User.ID]; ok && slot < 0 {
+				slots[guildMember.User.ID] = i
+			}
+		}
+	}
+	return slots
 }
 
 // MemberAdd adds a member to the current world state, or
@@ -2679,10 +2848,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			if gok && mok {
 				updated := *guild
 				updated.Members = append([]*Member(nil), guild.Members...)
+				batch := make([]*Member, len(t.Members))
 				for i := range t.Members {
 					t.Members[i].GuildID = t.GuildID
-					memberAddToGuild(members, &updated, copyMember(t.Members[i]))
+					batch[i] = copyMember(t.Members[i])
 				}
+				membersAddToGuild(members, &updated, batch)
 				s.replaceGuild(guild, &updated)
 			} else {
 				err = ErrStateNotFound
@@ -2696,10 +2867,8 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 			if ok {
 				updated := *guild
 				updated.Presences = append([]*Presence(nil), guild.Presences...)
-				for _, p := range t.Presences {
-					if perr := presenceAddToGuild(&updated, p); perr != nil {
-						err = perr
-					}
+				if perr := presencesAddToGuild(&updated, t.Presences); perr != nil {
+					err = perr
 				}
 				s.replaceGuild(guild, &updated)
 			} else {
