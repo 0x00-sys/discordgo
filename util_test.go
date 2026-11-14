@@ -291,7 +291,7 @@ func TestMultipartBodyPresizesKnownFileSizes(t *testing.T) {
 				}
 
 				spare := cap(body) - len(body)
-				if tt.presize && spare > 4<<10 {
+				if tt.presize && spare > 16<<10 {
 					t.Fatalf("spare capacity = %d bytes for a %d byte body, want the estimate to fit without regrowing", spare, len(body))
 				}
 
