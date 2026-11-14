@@ -38,6 +38,18 @@ func TestVoiceChannelEffectSendSoundIDUnmarshal(t *testing.T) {
 	}
 }
 
+func BenchmarkPresenceUpdateUnmarshal(b *testing.B) {
+	payload := []byte(`{"user":{"id":"80351110224678912"},"status":"online","guild_id":"613425648685547541","client_status":{"desktop":"online"},"activities":[{"type":0,"timestamps":{"start":1700000000000},"state":"In a match","session_id":"aa2f8a9d6f1c4b0e","name":"Some Game","id":"5cb2b8ab0bcd0b0","details":"Ranked","created_at":1700000000123,"assets":{"large_text":"Map","large_image":"mp:external/abc/def.png"},"application_id":"356875570916753438"}]}`)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		var update PresenceUpdate
+		if err := json.Unmarshal(payload, &update); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestMessageReactionGatewayFieldsUnmarshal(t *testing.T) {
 	t.Run("add burst reaction", func(t *testing.T) {
 		var event MessageReactionAdd
