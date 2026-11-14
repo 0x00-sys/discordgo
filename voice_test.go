@@ -4057,6 +4057,59 @@ func TestVoiceJoinWaitRechecksOwnershipWhenNotified(t *testing.T) {
 	}
 }
 
+// blockingSessionDescriptionDAVE pauses OP4 inside the DAVE backend call.
+type blockingSessionDescriptionDAVE struct {
+	*fakeVoiceDAVESession
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingSessionDescriptionDAVE) OnSessionDescription(protocolVersion uint16) {
+	close(b.entered)
+	<-b.release
+	b.fakeVoiceDAVESession.OnSessionDescription(protocolVersion)
+}
+
+// OP4 runs DAVE setup without the connection lock. If the transport is torn
+// down meanwhile, the finished setup must not publish Ready for it.
+func TestVoiceSessionDescriptionSkipsReadyAfterTeardown(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	voice := newVoiceJoinWaitTestConnection(t, udpConn)
+	backend := &blockingSessionDescriptionDAVE{
+		fakeVoiceDAVESession: &fakeVoiceDAVESession{maxVersion: 1},
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	voice.dave = backend
+	voice.daveMaxProtocolVersion = 1
+	transportClose := voice.close
+
+	handled := make(chan struct{})
+	go func() {
+		defer close(handled)
+		voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+			strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `],"dave_protocol_version":1}}`))
+	}()
+	<-backend.entered
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		voice.Close()
+	}()
+	// Close signals the transport before it waits for the DAVE lock.
+	<-transportClose
+	close(backend.release)
+	<-handled
+	<-closed
+
+	voice.RLock()
+	ready := voice.Ready
+	voice.RUnlock()
+	if ready {
+		t.Error("OP4 published Ready for a transport torn down during DAVE setup")
+	}
+}
+
 // Readiness reached without a new transport, such as a channel update on a
 // transport that is already ready, is still found by the fallback poll, and
 // the wait keeps its 11 second limit.
