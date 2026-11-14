@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -6054,6 +6056,169 @@ func TestMessageMutatorsDoNotRaceChannelSnapshot(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// TestGuildUpdateFollowsReorderedGuilds edits the exported Guilds slice
+// behind the state's back, then updates guilds. Each update must replace the
+// first entry with the guild's ID (or append the guild if it has none) and
+// leave every other entry alone.
+func TestGuildUpdateFollowsReorderedGuilds(t *testing.T) {
+	const count = 100
+	newState := func(t *testing.T) *State {
+		state := NewState()
+		for i := 0; i < count; i++ {
+			if err := state.GuildAdd(&Guild{ID: "guild-" + strconv.Itoa(i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Touch every guild so each one has been located once.
+		for i := 0; i < count; i++ {
+			if err := state.RoleAdd("guild-"+strconv.Itoa(i), &Role{ID: "seed"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state
+	}
+	update := 0
+	checkUpdate := func(t *testing.T, state *State, guildID string) {
+		t.Helper()
+		before := append([]*Guild(nil), state.Guilds...)
+		update++
+		roleID := "role-" + strconv.Itoa(update)
+		if err := state.RoleAdd(guildID, &Role{ID: roleID}); err != nil {
+			t.Fatalf("RoleAdd(%s): %v", guildID, err)
+		}
+		want := -1
+		for i, g := range before {
+			if g != nil && g.ID == guildID {
+				want = i
+				break
+			}
+		}
+		if want < 0 {
+			want = len(before)
+			if len(state.Guilds) != len(before)+1 {
+				t.Fatalf("Guilds len = %d, want %d", len(state.Guilds), len(before)+1)
+			}
+		} else if len(state.Guilds) != len(before) {
+			t.Fatalf("Guilds len = %d, want %d", len(state.Guilds), len(before))
+		}
+		for i, g := range state.Guilds {
+			if i != want {
+				if g != before[i] {
+					t.Fatalf("updating %s replaced Guilds[%d] (%v)", guildID, i, before[i])
+				}
+				continue
+			}
+			if g == nil || g.ID != guildID || len(g.Roles) == 0 || g.Roles[len(g.Roles)-1].ID != roleID {
+				t.Fatalf("Guilds[%d] = %+v, want %s with role %s", i, g, guildID, roleID)
+			}
+		}
+		if g, err := state.Guild(guildID); err != nil || g != state.Guilds[want] {
+			t.Fatalf("Guild(%s) = %p, %v; want Guilds[%d]", guildID, g, err, want)
+		}
+	}
+	id := func(i int) string { return "guild-" + strconv.Itoa(i) }
+
+	t.Run("swap", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds[0], state.Guilds[count-1] = state.Guilds[count-1], state.Guilds[0]
+		checkUpdate(t, state, id(0))
+		checkUpdate(t, state, id(count-1))
+		checkUpdate(t, state, id(50))
+	})
+	t.Run("reverse", func(t *testing.T) {
+		state := newState(t)
+		slices.Reverse(state.Guilds)
+		for i := 0; i < count; i += 7 {
+			checkUpdate(t, state, id(i))
+		}
+	})
+	t.Run("remove_from_slice", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds = slices.Delete(state.Guilds, 10, 11)
+		checkUpdate(t, state, id(11)) // now one slot earlier
+		checkUpdate(t, state, id(count-1))
+		checkUpdate(t, state, id(10)) // still cached, missing from Guilds
+	})
+	t.Run("truncate", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds = state.Guilds[:5]
+		checkUpdate(t, state, id(80))
+		checkUpdate(t, state, id(2))
+	})
+	t.Run("nil_entries", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds[20], state.Guilds[30] = nil, nil
+		checkUpdate(t, state, id(20))
+		checkUpdate(t, state, id(31))
+	})
+	t.Run("duplicate_entry", func(t *testing.T) {
+		state := newState(t)
+		state.Guilds = append([]*Guild{state.Guilds[60]}, state.Guilds...)
+		checkUpdate(t, state, id(60))
+	})
+	t.Run("duplicate_before_known_slot", func(t *testing.T) {
+		// The update may land on either copy of guild-60, but never on
+		// another guild.
+		state := newState(t)
+		state.Guilds[0] = state.Guilds[60]
+		before := append([]*Guild(nil), state.Guilds...)
+		if err := state.RoleAdd(id(60), &Role{ID: "dup"}); err != nil {
+			t.Fatal(err)
+		}
+		changed := 0
+		for i, g := range state.Guilds {
+			if g == before[i] {
+				continue
+			}
+			changed++
+			if g.ID != id(60) || before[i].ID != id(60) {
+				t.Fatalf("Guilds[%d] changed from %s to %s", i, before[i].ID, g.ID)
+			}
+		}
+		if g, err := state.Guild(id(60)); changed != 1 || err != nil || g.Roles[len(g.Roles)-1].ID != "dup" {
+			t.Fatalf("changed %d entries, Guild = %v, %v", changed, g, err)
+		}
+	})
+	t.Run("guild_remove", func(t *testing.T) {
+		state := newState(t)
+		if err := state.GuildRemove(&Guild{ID: id(5)}); err != nil {
+			t.Fatal(err)
+		}
+		checkUpdate(t, state, id(6))
+		checkUpdate(t, state, id(count-1))
+	})
+	t.Run("ready", func(t *testing.T) {
+		state := newState(t)
+		guilds := make([]*Guild, 0, count)
+		for i := count - 1; i >= 0; i-- {
+			guilds = append(guilds, &Guild{ID: id(i)})
+		}
+		if err := state.OnInterface(&Session{StateEnabled: true}, &Ready{Guilds: guilds}); err != nil {
+			t.Fatal(err)
+		}
+		checkUpdate(t, state, id(0))
+		checkUpdate(t, state, id(count-1))
+	})
+	t.Run("random_shuffles", func(t *testing.T) {
+		state := newState(t)
+		rng := rand.New(rand.NewPCG(5, 6))
+		for i := 0; i < 500; i++ {
+			switch rng.IntN(4) {
+			case 0:
+				rng.Shuffle(len(state.Guilds), func(a, b int) {
+					state.Guilds[a], state.Guilds[b] = state.Guilds[b], state.Guilds[a]
+				})
+			case 1:
+				if len(state.Guilds) > 1 {
+					j := rng.IntN(len(state.Guilds))
+					state.Guilds = slices.Delete(state.Guilds, j, j+1)
+				}
+			}
+			checkUpdate(t, state, id(rng.IntN(count)))
+		}
+	})
 }
 
 func TestGuildRemoveCleansChannelsAddedConcurrently(t *testing.T) {
