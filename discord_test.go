@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -261,6 +262,102 @@ func TestAddHandlerOnceConcurrentDispatch(t *testing.T) {
 
 	if atomic.LoadInt32(&handlerCalled) != 1 {
 		t.Fatalf("handlerCalled = %d, want 1", handlerCalled)
+	}
+}
+
+// Dispatch iterates the published handler slice without copying it, so a
+// handler that removes itself or another handler mid-dispatch must not shift
+// the entries the dispatch is still walking.
+func TestRemoveHandlerDuringDispatch(t *testing.T) {
+	var first, second, third int32
+	d := Session{SyncEvents: true}
+	var removeFirst, removeSecond func()
+	removeFirst = d.AddHandler(func(*Session, *MessageCreate) {
+		atomic.AddInt32(&first, 1)
+		removeFirst()
+	})
+	removeSecond = d.AddHandler(func(*Session, *MessageCreate) {
+		atomic.AddInt32(&second, 1)
+	})
+	d.AddHandler(func(*Session, *MessageCreate) {
+		atomic.AddInt32(&third, 1)
+		removeSecond()
+	})
+
+	d.handleEvent(messageCreateEventType, &MessageCreate{})
+	if first != 1 || second != 1 || third != 1 {
+		t.Fatalf("first dispatch calls = %d, %d, %d, want 1, 1, 1", first, second, third)
+	}
+	d.handleEvent(messageCreateEventType, &MessageCreate{})
+	if first != 1 || second != 1 || third != 2 {
+		t.Fatalf("calls after removals = %d, %d, %d, want 1, 1, 2", first, second, third)
+	}
+}
+
+// Handlers added and removed while other goroutines dispatch must not disturb
+// a handler that stays registered, and each once handler runs at most once.
+func TestHandlersConcurrentDispatchAddRemove(t *testing.T) {
+	const (
+		dispatchers = 8
+		dispatches  = 500
+		mutators    = 4
+	)
+	var stable, once, repeated atomic.Int32
+	d := Session{SyncEvents: true}
+	d.AddHandler(func(*Session, *MessageCreate) {})
+	d.AddHandler(func(*Session, *MessageCreate) { stable.Add(1) })
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	var addedOnce atomic.Int32
+	for range mutators {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				remove := d.AddHandler(func(*Session, *MessageCreate) {})
+				var calls atomic.Int32
+				removeOnce := d.AddHandlerOnce(func(*Session, *MessageCreate) {
+					once.Add(1)
+					if calls.Add(1) > 1 {
+						repeated.Add(1)
+					}
+				})
+				addedOnce.Add(1)
+				remove()
+				if addedOnce.Load()%2 == 0 {
+					removeOnce()
+				}
+			}
+		}()
+	}
+	var dispatchWG sync.WaitGroup
+	for range dispatchers {
+		dispatchWG.Add(1)
+		go func() {
+			defer dispatchWG.Done()
+			for range dispatches {
+				d.handleEvent(messageCreateEventType, &MessageCreate{})
+			}
+		}()
+	}
+	dispatchWG.Wait()
+	close(stop)
+	wg.Wait()
+
+	if got := stable.Load(); got != dispatchers*dispatches {
+		t.Fatalf("stable handler calls = %d, want %d", got, dispatchers*dispatches)
+	}
+	if got := repeated.Load(); got != 0 {
+		t.Fatalf("once handlers called more than once %d times", got)
+	}
+	if got, added := once.Load(), addedOnce.Load(); got > added {
+		t.Fatalf("once handler calls = %d, more than the %d once handlers added", got, added)
 	}
 }
 
