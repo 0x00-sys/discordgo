@@ -60,6 +60,10 @@ type State struct {
 	guildMap   map[string]*Guild
 	channelMap map[string]*Channel
 	memberMap  map[string]map[string]*Member
+	// guildSlot remembers each guild's index in Guilds once there are at
+	// least guildSlotThreshold guilds. Guilds is exported and callers may
+	// reorder it, so an entry is only a hint and is checked before use.
+	guildSlot map[string]int
 }
 
 // NewState creates an empty state.
@@ -242,15 +246,39 @@ func copyStageInstance(instance *StageInstance) *StageInstance {
 	return &instanceCopy
 }
 
+// guildSlotThreshold is the number of guilds below which replaceGuild only
+// scans Guilds. Below it a scan is cheap and the index would cost memory in
+// every small Session.
+const guildSlotThreshold = 32
+
 func (s *State) replaceGuild(oldGuild, newGuild *Guild) {
 	s.guildMap[newGuild.ID] = newGuild
-	for i, guild := range s.Guilds {
-		if guild == oldGuild || (guild != nil && guild.ID == newGuild.ID) {
+	if i, ok := s.guildSlot[newGuild.ID]; ok && i < len(s.Guilds) {
+		if guild := s.Guilds[i]; guild == oldGuild || (guild != nil && guild.ID == newGuild.ID) {
 			s.Guilds[i] = newGuild
 			return
 		}
 	}
+	for i, guild := range s.Guilds {
+		if guild == oldGuild || (guild != nil && guild.ID == newGuild.ID) {
+			s.Guilds[i] = newGuild
+			s.setGuildSlot(newGuild.ID, i)
+			return
+		}
+	}
+	s.setGuildSlot(newGuild.ID, len(s.Guilds))
 	s.Guilds = append(s.Guilds, newGuild)
+}
+
+// setGuildSlot records that the guild with the given ID is at Guilds[i].
+func (s *State) setGuildSlot(guildID string, i int) {
+	if len(s.Guilds) < guildSlotThreshold {
+		return
+	}
+	if s.guildSlot == nil {
+		s.guildSlot = make(map[string]int, len(s.Guilds)+1)
+	}
+	s.guildSlot[guildID] = i
 }
 
 func (s *State) updateGuildMemberCount(guildID string, delta int) error {
@@ -414,6 +442,7 @@ func (s *State) guildAdd(guild *Guild, preserveCreateFields bool) error {
 		return nil
 	}
 
+	s.setGuildSlot(guild.ID, len(s.Guilds))
 	s.Guilds = append(s.Guilds, guild)
 	s.guildMap[guild.ID] = guild
 
@@ -455,11 +484,22 @@ func (s *State) GuildRemove(guild *Guild) error {
 		}
 	}
 
+	delete(s.guildSlot, guild.ID)
 	for i, g := range s.Guilds {
 		if g != nil && g.ID == guild.ID {
 			copy(s.Guilds[i:], s.Guilds[i+1:])
 			s.Guilds[len(s.Guilds)-1] = nil
 			s.Guilds = s.Guilds[:len(s.Guilds)-1]
+			// Guilds after i moved down by one.
+			if s.guildSlot != nil {
+				for j := i; j < len(s.Guilds); j++ {
+					if g := s.Guilds[j]; g != nil {
+						if k, ok := s.guildSlot[g.ID]; !ok || k > j {
+							s.guildSlot[g.ID] = j
+						}
+					}
+				}
+			}
 			return nil
 		}
 	}
@@ -2408,6 +2448,7 @@ func (s *State) onReady(se *Session, r *Ready) (err error) {
 	s.guildMap = make(map[string]*Guild, len(r.Guilds))
 	s.channelMap = make(map[string]*Channel)
 	s.memberMap = make(map[string]map[string]*Member, len(r.Guilds))
+	s.guildSlot = nil
 
 	// We must track at least the current user for Voice, even
 	// if state is disabled, store the bare essentials.
@@ -2439,11 +2480,15 @@ func (s *State) onReady(se *Session, r *Ready) (err error) {
 	}
 	s.Ready = ready
 
-	for _, g := range s.Guilds {
+	for i, g := range s.Guilds {
 		if g == nil {
 			continue
 		}
 		s.guildMap[g.ID] = g
+		if _, ok := s.guildSlot[g.ID]; !ok {
+			// Keep the first index, which is the one replaceGuild's scan finds.
+			s.setGuildSlot(g.ID, i)
+		}
 		if s.TrackMembers {
 			s.createMemberMap(g)
 		} else {
