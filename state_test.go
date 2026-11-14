@@ -7933,6 +7933,84 @@ func BenchmarkStateMessageCreateGuildCount(b *testing.B) {
 	}
 }
 
+// TestReplaceChannelUpdatesOwningSnapshot checks that a channel update lands
+// in the snapshot that actually holds the channel, including when the
+// channel's GuildID does not point at that guild.
+func TestReplaceChannelUpdatesOwningSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		channel *Channel
+		owner   string // guild ID holding the channel, "" for private channels
+	}{
+		{name: "guild_channel", channel: &Channel{ID: "c", GuildID: "b", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "thread", channel: &Channel{ID: "c", GuildID: "b", Type: ChannelTypeGuildPublicThread}, owner: "b"},
+		{name: "guild_id_names_other_guild", channel: &Channel{ID: "c", GuildID: "c-guild", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "guild_id_not_cached", channel: &Channel{ID: "c", GuildID: "missing", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "guild_id_empty", channel: &Channel{ID: "c", Type: ChannelTypeGuildText}, owner: "b"},
+		{name: "dm", channel: &Channel{ID: "c", Type: ChannelTypeDM}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewState()
+			for _, id := range []string{"a", "b", "c-guild"} {
+				guild := &Guild{ID: id, Channels: []*Channel{{ID: id + "-other", GuildID: id}}}
+				if id == tc.owner {
+					if tc.channel.IsThread() {
+						guild.Threads = []*Channel{tc.channel}
+					} else {
+						guild.Channels = append(guild.Channels, tc.channel)
+					}
+				}
+				if err := state.GuildAdd(guild); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.owner == "" {
+				if err := state.ChannelAdd(tc.channel); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := map[string]*Guild{}
+			for _, guild := range state.Guilds {
+				before[guild.ID] = guild
+			}
+
+			update := *tc.channel
+			update.Name = "updated"
+			if err := state.ChannelAdd(&update); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := state.Channel("c")
+			if err != nil || got.Name != "updated" {
+				t.Fatalf("Channel = %+v, %v; want updated channel", got, err)
+			}
+			if tc.owner == "" {
+				if len(state.PrivateChannels) != 1 || state.PrivateChannels[0] != got {
+					t.Fatalf("private channels = %v, want only the updated channel", state.PrivateChannels)
+				}
+			}
+			for _, guild := range state.Guilds {
+				if guild.ID != tc.owner {
+					if guild != before[guild.ID] {
+						t.Errorf("guild %s was replaced, but it does not hold the channel", guild.ID)
+					}
+					continue
+				}
+				list := guild.Channels
+				if tc.channel.IsThread() {
+					list = guild.Threads
+				}
+				if list[len(list)-1] != got {
+					t.Errorf("guild %s does not hold the updated channel", guild.ID)
+				}
+				if tc.channel.Name != "" {
+					t.Error("channel update modified an earlier guild snapshot")
+				}
+			}
+		})
+	}
+}
+
 func TestReplaceChannelCopiesOnlyModifiedGuildSlice(t *testing.T) {
 	state := NewState()
 	state.MaxMessageCount = 2
