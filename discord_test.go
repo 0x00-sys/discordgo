@@ -2,8 +2,13 @@ package discordgo
 
 import (
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -78,6 +83,270 @@ func TestNewIncludesPollIntents(t *testing.T) {
 	want := IntentGuildMessagePolls | IntentDirectMessagePolls
 	if got := d.Identify.Intents & want; got != want {
 		t.Fatalf("default intents include poll intents = %d, want %d", got, want)
+	}
+}
+
+// resetDefaultRESTTransport makes the next New build its shared REST
+// transport again, so a test can control http.DefaultTransport and the ping
+// timers first. Everything is restored when the test ends.
+func resetDefaultRESTTransport(t *testing.T) {
+	t.Helper()
+	savedDefault := http.DefaultTransport
+	savedTransport, savedBase := restTransport, restTransportBase
+	savedShared := restTransportShared.Load()
+	savedSendPing, savedPing := restHTTP2SendPingTimeout, restHTTP2PingTimeout
+	restTransportOnce = sync.Once{}
+	restTransport, restTransportBase = nil, nil
+	restTransportShared.Store(nil)
+	t.Cleanup(func() {
+		http.DefaultTransport = savedDefault
+		restHTTP2SendPingTimeout, restHTTP2PingTimeout = savedSendPing, savedPing
+		restTransportOnce = sync.Once{}
+		restTransport, restTransportBase = savedTransport, savedBase
+		restTransportShared.Store(savedShared)
+		if savedTransport != nil {
+			restTransportOnce.Do(func() {})
+		}
+	})
+}
+
+// The default client sends all REST traffic for a host over one shared HTTP/2
+// connection. If that connection stops answering without closing, requests
+// must move to a new connection instead of each timing out on the old one.
+func TestNewClientReplacesUnresponsiveHTTP2Connection(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.Proto))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	// The proxy silently drops traffic on the first connection once stalled,
+	// like a stuck middlebox. Later connections pass through.
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proxy.Close() })
+	var stalled atomic.Bool
+	var dials atomic.Int32
+	var mu sync.Mutex
+	var conns []net.Conn
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	go func() {
+		for {
+			client, err := proxy.Accept()
+			if err != nil {
+				return
+			}
+			first := dials.Add(1) == 1
+			upstream, err := net.Dial("tcp", server.Listener.Addr().String())
+			if err != nil {
+				_ = client.Close()
+				return
+			}
+			mu.Lock()
+			conns = append(conns, client, upstream)
+			mu.Unlock()
+			pipe := func(dst, src net.Conn) {
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := src.Read(buf)
+					if err != nil {
+						return
+					}
+					if first && stalled.Load() {
+						continue
+					}
+					if _, err := dst.Write(buf[:n]); err != nil {
+						return
+					}
+				}
+			}
+			go pipe(upstream, client)
+			go pipe(client, upstream)
+		}
+	}()
+
+	// New builds its transport from http.DefaultTransport, so trust the test
+	// server there and shorten the ping timers before calling it.
+	resetDefaultRESTTransport(t)
+	restHTTP2SendPingTimeout = 100 * time.Millisecond
+	restHTTP2PingTimeout = 100 * time.Millisecond
+	trusting := http.DefaultTransport.(*http.Transport).Clone()
+	trusting.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	t.Cleanup(trusting.CloseIdleConnections)
+	http.DefaultTransport = trusting
+
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Client.Timeout = 500 * time.Millisecond
+	t.Cleanup(session.Client.CloseIdleConnections)
+	url := "https://" + proxy.Addr().String() + "/"
+	get := func() error {
+		body, err := session.RequestWithBucketID(http.MethodGet, url, nil, url)
+		if err != nil {
+			return err
+		}
+		if string(body) != "HTTP/2.0" {
+			t.Fatalf("protocol = %q, want HTTP/2.0", body)
+		}
+		return nil
+	}
+
+	if err := get(); err != nil {
+		t.Fatal(err)
+	}
+	stalled.Store(true)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if lastErr = get(); lastErr == nil {
+			return
+		}
+	}
+	t.Fatalf("REST requests still failing after the connection stalled for 5s (dials=%d): %v", dials.Load(), lastErr)
+}
+
+type countingTransport struct {
+	requests atomic.Int32
+}
+
+func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.requests.Add(1)
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
+}
+
+// Sessions share one ping-enabled transport so connections stay pooled. HTTP
+// mocks and tracing wrappers installed in http.DefaultTransport before New
+// must still see the requests of sessions created after the swap.
+func TestNewClientFollowsReplacedDefaultTransport(t *testing.T) {
+	resetDefaultRESTTransport(t)
+	original := http.DefaultTransport
+
+	first, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, ok := first.Client.Transport.(*http.Transport)
+	if !ok || shared == original || second.Client.Transport != first.Client.Transport {
+		t.Fatalf("transports = %T %p and %T %p, want one shared clone of http.DefaultTransport", first.Client.Transport, first.Client.Transport, second.Client.Transport, second.Client.Transport)
+	}
+	if shared.HTTP2 == nil || shared.HTTP2.SendPingTimeout == 0 || shared.HTTP2.PingTimeout == 0 {
+		t.Fatalf("shared transport HTTP2 = %+v, want ping timeouts set", shared.HTTP2)
+	}
+
+	mock := &countingTransport{}
+	http.DefaultTransport = mock
+	third, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Client.Transport != nil {
+		t.Fatalf("Client.Transport after DefaultTransport was replaced = %T, want nil", third.Client.Transport)
+	}
+	if _, err := third.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway); err != nil {
+		t.Fatal(err)
+	}
+	if got := mock.requests.Load(); got != 1 {
+		t.Fatalf("replaced DefaultTransport got %d requests, want 1", got)
+	}
+	// A Session created before the swap follows it too, like an HTTP mock
+	// activated after New.
+	if _, err := first.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway); err != nil {
+		t.Fatal(err)
+	}
+	if got := mock.requests.Load(); got != 2 {
+		t.Fatalf("replaced DefaultTransport got %d requests, want 2 after a request from a Session created before the swap", got)
+	}
+	if first.Client.Transport != shared {
+		t.Fatal("request changed the Session's Client.Transport")
+	}
+
+	http.DefaultTransport = original
+	fourth, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourth.Client.Transport != first.Client.Transport {
+		t.Fatal("New did not return to the shared pinging transport after DefaultTransport was restored")
+	}
+}
+
+// If something replaced http.DefaultTransport before the first New, there is
+// no *http.Transport to clone, so the client keeps using DefaultTransport.
+func TestNewClientWithCustomDefaultTransportUsesIt(t *testing.T) {
+	resetDefaultRESTTransport(t)
+	mock := &countingTransport{}
+	http.DefaultTransport = mock
+
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Client.Transport != nil {
+		t.Fatalf("Client.Transport = %T, want nil", session.Client.Transport)
+	}
+	if _, err := session.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway); err != nil {
+		t.Fatal(err)
+	}
+	if got := mock.requests.Load(); got != 1 {
+		t.Fatalf("DefaultTransport got %d requests, want 1", got)
+	}
+}
+
+// HTTP/2 settings an application put on http.DefaultTransport carry over, and
+// http.DefaultTransport itself is not modified.
+func TestNewClientKeepsDefaultTransportHTTP2Settings(t *testing.T) {
+	resetDefaultRESTTransport(t)
+	custom := http.DefaultTransport.(*http.Transport).Clone()
+	custom.HTTP2 = &http.HTTP2Config{SendPingTimeout: 3 * time.Second, MaxReadFrameSize: 1 << 20}
+	http.DefaultTransport = custom
+
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := session.Client.Transport.(*http.Transport).HTTP2
+	if got.SendPingTimeout != 3*time.Second || got.PingTimeout != restHTTP2PingTimeout || got.MaxReadFrameSize != 1<<20 {
+		t.Fatalf("HTTP2 = %+v, want SendPingTimeout 3s, PingTimeout %v, MaxReadFrameSize 1MiB", *got, restHTTP2PingTimeout)
+	}
+	if custom.HTTP2.PingTimeout != 0 {
+		t.Fatalf("http.DefaultTransport HTTP2 was modified: %+v", *custom.HTTP2)
+	}
+}
+
+// BenchmarkNewClientRequest measures a REST request through the client New
+// sets up, against a loopback HTTP/1.1 server.
+func BenchmarkNewClientRequest(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("{}"))
+	}))
+	b.Cleanup(server.Close)
+	session, err := New("Bot token")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(session.Client.CloseIdleConnections)
+	url := server.URL + "/api/v10/gateway"
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := session.RequestWithBucketID(http.MethodGet, url, nil, url); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

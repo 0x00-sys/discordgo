@@ -16,6 +16,8 @@ package discordgo
 import (
 	"net/http"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -46,7 +48,7 @@ func New(token string) (s *Session, err error) {
 		ShardID:                            0,
 		ShardCount:                         1,
 		MaxRestRetries:                     3,
-		Client:                             &http.Client{Timeout: (20 * time.Second)},
+		Client:                             &http.Client{Timeout: (20 * time.Second), Transport: defaultRESTRoundTripper()},
 		Dialer:                             websocket.DefaultDialer,
 		UserAgent:                          "DiscordBot (https://github.com/bwmarrin/discordgo, v" + VERSION + ")",
 		reconnectCancel:                    make(chan struct{}),
@@ -67,4 +69,88 @@ func New(token string) (s *Session, err error) {
 	s.Token = token
 
 	return
+}
+
+// HTTP/2 health check for the default REST client. Discord serves HTTP/2, so
+// all REST traffic to a host shares one connection. Without pings, a
+// connection that stops answering without closing keeps getting reused and
+// every request on it times out. With these values a dead connection is
+// closed at most 15s after the last frame arrived, before the 20s client
+// timeout, while a busy process that stalls for a few seconds does not drop
+// a healthy connection. They are variables so tests can shorten them.
+var (
+	restHTTP2SendPingTimeout = 10 * time.Second
+	restHTTP2PingTimeout     = 5 * time.Second
+)
+
+var (
+	restTransportOnce sync.Once
+	restTransportBase *http.Transport
+	restTransport     *http.Transport
+	// restTransportShared publishes the pair to the request path, which can
+	// run concurrently with the first New.
+	restTransportShared atomic.Pointer[restTransportPair]
+)
+
+type restTransportPair struct {
+	base, pinging *http.Transport
+}
+
+// defaultRESTRoundTripper returns the transport for a Session that New
+// creates. While http.DefaultTransport is still the transport seen by the
+// first New, every Session shares one clone of it with HTTP/2 pings enabled,
+// so connections stay pooled process-wide. Otherwise it returns nil, which
+// makes the client use http.DefaultTransport as before. That keeps HTTP mocks
+// and tracing wrappers installed before New working. The transport is used
+// directly instead of through a wrapper because net/http adds a timer and a
+// goroutine to every request on transports it does not recognize.
+func defaultRESTRoundTripper() http.RoundTripper {
+	restTransportOnce.Do(func() {
+		original, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return
+		}
+		pinging := original.Clone()
+		var config http.HTTP2Config
+		if pinging.HTTP2 != nil {
+			config = *pinging.HTTP2
+		}
+		if config.SendPingTimeout == 0 {
+			config.SendPingTimeout = restHTTP2SendPingTimeout
+		}
+		if config.PingTimeout == 0 {
+			config.PingTimeout = restHTTP2PingTimeout
+		}
+		pinging.HTTP2 = &config
+		restTransportBase = original
+		restTransport = pinging
+		restTransportShared.Store(&restTransportPair{base: original, pinging: pinging})
+	})
+	if restTransport == nil {
+		return nil
+	}
+	if current, ok := http.DefaultTransport.(*http.Transport); !ok || current != restTransportBase {
+		return nil
+	}
+	return restTransport
+}
+
+// restClient returns the client to send a request with. A Session from New
+// holds the shared pinging transport. If http.DefaultTransport has been
+// replaced since then, for example by an HTTP mock activated after New, the
+// request goes through http.DefaultTransport instead, as it did before the
+// shared transport existed. This costs a type check and an atomic load per
+// request, and only allocates while DefaultTransport is replaced.
+func restClient(client *http.Client) *http.Client {
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return client
+	}
+	shared := restTransportShared.Load()
+	if shared == nil || transport != shared.pinging || http.DefaultTransport == http.RoundTripper(shared.base) {
+		return client
+	}
+	replaced := *client
+	replaced.Transport = nil
+	return &replaced
 }
