@@ -2933,6 +2933,26 @@ func TestGatewayShardsOpenedInSequenceRespectIdentifyConcurrency(t *testing.T) {
 	}
 }
 
+// With max_concurrency 2 from GET /gateway/bot, shards in different buckets
+// open back to back without waiting for each other.
+func TestGatewayShardsInDifferentBucketsOpenWithoutWaiting(t *testing.T) {
+	setIdentifyWindowForTest(t, 5*time.Second)
+	g := newIdentifyLimitedGateway(t, 5*time.Second, 2)
+	token := newIdentifyTestToken()
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		if err := newIdentifyLimitedShard(t, g, token, i, 2, http.StatusOK).Open(); err != nil {
+			t.Fatalf("shard %d: %v", i, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("opening shards 0 and 1 with max_concurrency=2 took %v, want no identify wait", elapsed)
+	}
+	if identifies, rejected, _ := g.counts(); identifies != 2 || rejected != 0 {
+		t.Fatalf("%d IDENTIFY sent, %d rejected; want 2 sent, 0 rejected", identifies, rejected)
+	}
+}
+
 // Shards of one bot that must all re-identify at once (gateway restart, close
 // 4009) are paced like a fresh start.
 func TestGatewayShardsReidentifyingTogetherRespectIdentifyConcurrency(t *testing.T) {

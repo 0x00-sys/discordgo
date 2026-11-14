@@ -1759,7 +1759,7 @@ func (s *Session) onVoiceServerUpdate(wsConn *websocket.Conn, st *VoiceServerUpd
 // Discord allows max_concurrency IDENTIFY calls per 5 seconds for each
 // rate_limit_key (shard_id % max_concurrency) of a bot and answers the rest
 // with op 9. Discord measures at receipt, so a margin is added after each send.
-// https://discord.com/developers/docs/events/gateway#sharding-max-concurrency
+// https://discord.com/developers/docs/events/gateway#sharding
 const identifyConcurrencyMargin = 250 * time.Millisecond
 
 // gatewayIdentifyLimiter paces IDENTIFY for the sharded sessions of each
