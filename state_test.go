@@ -7750,6 +7750,49 @@ func BenchmarkStateGuildMembersChunkGuildSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkStateGuildMembersChunkFullLoad measures loading a whole guild
+// with presences through 1000-member chunks, as RequestGuildMembers does.
+func BenchmarkStateGuildMembersChunkFullLoad(b *testing.B) {
+	const chunkSize = 1000
+	for _, size := range []int{10000, 25000, 50000} {
+		b.Run("members="+strconv.Itoa(size), func(b *testing.B) {
+			chunks := make([]*GuildMembersChunk, size/chunkSize)
+			for c := range chunks {
+				chunk := &GuildMembersChunk{
+					GuildID:    "guild",
+					ChunkIndex: c,
+					ChunkCount: len(chunks),
+					Members:    make([]*Member, chunkSize),
+					Presences:  make([]*Presence, chunkSize),
+				}
+				for i := range chunk.Members {
+					id := "user-" + strconv.Itoa(c*chunkSize+i)
+					chunk.Members[i] = &Member{User: &User{ID: id, Username: id}}
+					chunk.Presences[i] = &Presence{User: &User{ID: id}, Status: StatusOnline}
+				}
+				chunks[c] = chunk
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				state := NewState()
+				if err := state.GuildAdd(&Guild{ID: "guild", MemberCount: size}); err != nil {
+					b.Fatal(err)
+				}
+				session := &Session{StateEnabled: true, State: state}
+				b.StartTimer()
+				for _, chunk := range chunks {
+					if err := state.OnInterface(session, chunk); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkStateMessageReactionUpdateSnapshot(b *testing.B) {
 	reactions := make([]*MessageReactions, 20)
 	for i := range reactions {
