@@ -1,6 +1,11 @@
 package discordgo
 
 import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +123,51 @@ func TestMultipartBodyWithoutJSONOmitsPayload(t *testing.T) {
 	}
 	if !strings.Contains(bodyText, `name="target_users_file"; filename="users.csv"`) {
 		t.Fatalf("target user file field was not present: %q", bodyText)
+	}
+}
+
+// Readers without WriteTo are copied in 32 KiB chunks, so an unsized body
+// buffer doubles repeatedly and keeps up to half of its capacity unused.
+func BenchmarkMultipartBodyWithJSONFile(b *testing.B) {
+	for _, size := range []int{1 << 10, 256 << 10, 8 << 20} {
+		data := bytes.Repeat([]byte{'a'}, size)
+		path := filepath.Join(b.TempDir(), "upload.png")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			b.Fatal(err)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { file.Close() })
+
+		for _, tc := range []struct {
+			name   string
+			reader func() io.Reader
+		}{
+			{"section", func() io.Reader { return io.NewSectionReader(bytes.NewReader(data), 0, int64(size)) }},
+			{"os.File", func() io.Reader {
+				if _, err := file.Seek(0, io.SeekStart); err != nil {
+					b.Fatal(err)
+				}
+				return file
+			}},
+			{"bytes.Reader", func() io.Reader { return bytes.NewReader(data) }},
+		} {
+			b.Run(fmt.Sprintf("%s/%dKiB", tc.name, size>>10), func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(size))
+				var spare int
+				for b.Loop() {
+					_, body, err := MultipartBodyWithJSON(&MessageSend{Content: "upload"}, []*File{{Name: "upload.png", ContentType: "image/png", Reader: tc.reader()}})
+					if err != nil {
+						b.Fatal(err)
+					}
+					spare = cap(body) - len(body)
+				}
+				b.ReportMetric(float64(spare), "spare-B")
+			})
+		}
 	}
 }
 
