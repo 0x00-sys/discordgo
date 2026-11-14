@@ -124,7 +124,7 @@ func TestNewClientReplacesUnresponsiveHTTP2Connection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { proxy.Close() })
+	t.Cleanup(func() { _ = proxy.Close() })
 	var stalled atomic.Bool
 	var dials atomic.Int32
 	var mu sync.Mutex
@@ -133,7 +133,7 @@ func TestNewClientReplacesUnresponsiveHTTP2Connection(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, c := range conns {
-			c.Close()
+			_ = c.Close()
 		}
 	})
 	go func() {
@@ -145,7 +145,7 @@ func TestNewClientReplacesUnresponsiveHTTP2Connection(t *testing.T) {
 			first := dials.Add(1) == 1
 			upstream, err := net.Dial("tcp", server.Listener.Addr().String())
 			if err != nil {
-				client.Close()
+				_ = client.Close()
 				return
 			}
 			mu.Lock()
@@ -318,7 +318,7 @@ func TestNewClientKeepsDefaultTransportHTTP2Settings(t *testing.T) {
 // BenchmarkNewClientRequest measures a REST request through the client New
 // sets up, against a loopback HTTP/1.1 server.
 func BenchmarkNewClientRequest(b *testing.B) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("{}"))
 	}))
 	b.Cleanup(server.Close)
