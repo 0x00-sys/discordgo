@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -1866,7 +1867,7 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 
 			s.log(LogError, "error reconnecting to gateway, %s", err)
 
-			timer := time.NewTimer(wait * time.Second)
+			timer := time.NewTimer(jitteredGatewayBackoff(wait * time.Second))
 			select {
 			case <-timer.C:
 			case <-cancel:
@@ -1885,6 +1886,16 @@ func (s *Session) reconnect(cancel <-chan struct{}) {
 			}
 		}
 	}
+}
+
+// jitteredGatewayBackoff returns a delay in [d/2, 3d/2), so sessions that
+// lost their connections together spread their retries out instead of
+// redialing in lockstep. The mean delay stays d.
+func jitteredGatewayBackoff(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return d/2 + mrand.N(d)
 }
 
 func (s *Session) reconnectCancelSignal() <-chan struct{} {
