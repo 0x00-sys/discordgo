@@ -973,14 +973,21 @@ func BenchmarkOpusSenderPacket(b *testing.B) {
 				voice.opusSender(client, closeChan, opus, 48000, 1)
 				close(done)
 			}()
+			defer func() {
+				close(closeChan)
+				<-done
+			}()
+			// UDP can drop packets even on loopback. Fail instead of hanging
+			// if a packet never arrives.
+			if err := server.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+				b.Fatal(err)
+			}
 			for range b.N {
 				if _, err := server.Read(buf); err != nil {
 					b.Fatal(err)
 				}
 			}
 			b.StopTimer()
-			close(closeChan)
-			<-done
 		})
 	}
 }
