@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1020,6 +1021,100 @@ func TestReconnectStopsAfterTerminalCloseDuringOpen(t *testing.T) {
 
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Fatalf("gateway connection attempts = %d, want 1", got)
+	}
+}
+
+// Sessions dropped together, as in a network blip or gateway restart, must not
+// retry in lockstep. Without jitter, every retry round of thousands of
+// sessions in one process lands in the same few milliseconds.
+func TestReconnectRetriesAreSpreadAcrossSessions(t *testing.T) {
+	const sessions = 20
+	var (
+		mu       sync.Mutex
+		accepted = map[string]*websocket.Conn{}
+		attempts = map[string][]time.Time{}
+		dropped  atomic.Bool
+	)
+	upgrader := websocket.Upgrader{}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if dropped.Load() {
+			mu.Lock()
+			attempts[r.URL.Path] = append(attempts[r.URL.Path], time.Now())
+			mu.Unlock()
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		resumeURL := "ws" + strings.TrimPrefix(server.URL, "http") + r.URL.Path
+		ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"spread","resume_gateway_url":"` + resumeURL + `","user":{"id":"1"},"guilds":[]}}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+			return
+		}
+		mu.Lock()
+		accepted[r.URL.Path] = conn
+		mu.Unlock()
+	}))
+	defer server.Close()
+
+	all := make([]*Session, sessions)
+	for i := range all {
+		session, err := New("Bot test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session.LogLevel = -1
+		session.gateway = "ws" + strings.TrimPrefix(server.URL, "http") + "/s" + strconv.Itoa(i)
+		if err := session.Open(); err != nil {
+			t.Fatal(err)
+		}
+		all[i] = session
+	}
+	defer func() {
+		for _, session := range all {
+			_ = session.Close()
+		}
+	}()
+
+	dropped.Store(true)
+	mu.Lock()
+	for _, conn := range accepted {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4000, ""), time.Now().Add(time.Second))
+		_ = conn.Close()
+	}
+	mu.Unlock()
+	time.Sleep(4 * time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var first, last time.Time
+	for path, times := range attempts {
+		if len(times) < 2 {
+			t.Fatalf("%s retried %d times, want at least 2", path, len(times))
+		}
+		// The first retry after the drop is immediate; compare the second.
+		retry := times[1]
+		if first.IsZero() || retry.Before(first) {
+			first = retry
+		}
+		if retry.After(last) {
+			last = retry
+		}
+	}
+	if len(attempts) != sessions {
+		t.Fatalf("sessions that retried = %d, want %d", len(attempts), sessions)
+	}
+	if spread := last.Sub(first); spread < 250*time.Millisecond {
+		t.Fatalf("second reconnect attempts of %d sessions spread over %v, want >= 250ms", sessions, spread)
 	}
 }
 
