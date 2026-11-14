@@ -660,9 +660,12 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 
 	s.log(LogInformational, "called")
 
+	var readBuffer gatewayReadBuffer
+	releaseReadBuffer := readBuffer.release
+
 	for {
 
-		messageType, message, err := wsConn.ReadMessage()
+		messageType, message, err := readBuffer.readMessage(wsConn)
 
 		if err != nil {
 			readErr := err
@@ -708,13 +711,58 @@ func (s *Session) listen(wsConn *websocket.Conn, listening <-chan interface{}) {
 		select {
 
 		case <-listening:
+			readBuffer.release()
 			return
 
 		default:
-			_, _ = s.onEventForConnection(wsConn, messageType, message)
+			// The buffer goes back to the pool as soon as the message is
+			// decoded, before handlers run or an Op 7/Op 9 reconnects.
+			_, _ = s.onEventForConnectionReleasing(wsConn, messageType, message, releaseReadBuffer)
+			readBuffer.release()
 
 		}
 	}
+}
+
+// maxPooledGatewayReadBuffer keeps one large payload, such as READY or
+// GUILD_CREATE, from pinning its read buffer in the pool.
+const maxPooledGatewayReadBuffer = 64 << 10
+
+var gatewayReadBufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+// gatewayReadBuffer holds the pooled buffer for the message listen is
+// handling. Idle connections hold no buffer.
+type gatewayReadBuffer struct {
+	buf *bytes.Buffer
+}
+
+// readMessage reads the next message into a pooled buffer. The returned bytes
+// are valid until release is called.
+func (b *gatewayReadBuffer) readMessage(wsConn *websocket.Conn) (int, []byte, error) {
+	b.release()
+	messageType, r, err := wsConn.NextReader()
+	if err != nil {
+		return messageType, nil, err
+	}
+	b.buf = gatewayReadBufferPool.Get().(*bytes.Buffer)
+	b.buf.Reset()
+	if _, err := b.buf.ReadFrom(r); err != nil {
+		b.release()
+		return messageType, nil, err
+	}
+	return messageType, b.buf.Bytes(), nil
+}
+
+// release returns the buffer to the pool. It is safe to call more than once.
+func (b *gatewayReadBuffer) release() {
+	if b.buf == nil {
+		return
+	}
+	if b.buf.Cap() <= maxPooledGatewayReadBuffer {
+		b.buf.Reset()
+		gatewayReadBufferPool.Put(b.buf)
+	}
+	b.buf = nil
 }
 
 func shouldReconnectOnGatewayClose(err error) bool {
@@ -1208,6 +1256,13 @@ func (s *Session) onEvent(messageType int, message []byte) (*Event, error) {
 }
 
 func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, message []byte) (*Event, error) {
+	return s.onEventForConnectionReleasing(wsConn, messageType, message, nil)
+}
+
+// onEventForConnectionReleasing is onEventForConnection that calls release,
+// when not nil, once message is no longer needed. The decoded Event holds its
+// own copy of the payload, so release runs before any handler.
+func (s *Session) onEventForConnectionReleasing(wsConn *websocket.Conn, messageType int, message []byte, release func()) (*Event, error) {
 
 	var err error
 	var reader io.Reader
@@ -1243,6 +1298,16 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 		err = fmt.Errorf("invalid gateway event")
 		s.log(LogError, "error decoding websocket message, %s", err)
 		return nil, err
+	}
+	if release != nil {
+		if e.Operation != 0 && s.LogLevel >= LogWarning {
+			// The unknown Op warning below logs the raw message.
+			// Non-dispatch payloads are small, so keep a copy.
+			message = bytes.Clone(message)
+		} else {
+			message = nil
+		}
+		release()
 	}
 
 	// Redacting the payload is expensive; skip it unless the message
