@@ -254,7 +254,10 @@ func TestMultipartBodyPresizesKnownFileSizes(t *testing.T) {
 
 	// Names that escaping lengthens and an invalid content type that gets
 	// replaced must still fit in the estimate.
+	// CR and LF are left out of field names: mime/multipart only escapes them
+	// from Go 1.26 on, so Go 1.25 would write a broken header.
 	longName := strings.Repeat("\r\n\"", 200)
+	longField := strings.Repeat("\\\"", 300)
 	tests := []struct {
 		name    string
 		reader  func() io.Reader
@@ -284,7 +287,7 @@ func TestMultipartBodyPresizesKnownFileSizes(t *testing.T) {
 					{Name: "small.txt", ContentType: "text/plain", Reader: strings.NewReader("small")},
 					{Name: longName, FieldName: longName, ContentType: "bad\r\ntype", Reader: tt.reader()},
 				}
-				fields := map[string]string{longName: "value"}
+				fields := map[string]string{longField: "value"}
 				contentType, body, err := multipartBody(&MessageSend{Content: "upload"}, fields, files, includePayload)
 				if err != nil {
 					t.Fatal(err)
