@@ -7417,6 +7417,40 @@ func BenchmarkStateRoleUpdateGuildSnapshot(b *testing.B) {
 	}
 }
 
+// BenchmarkStateRoleUpdateGuildCount measures a small guild mutation as the
+// number of cached guilds grows. The target is the last guild in Guilds.
+func BenchmarkStateRoleUpdateGuildCount(b *testing.B) {
+	for _, guilds := range []int{1, 100, 1000, 2500} {
+		b.Run("guilds="+strconv.Itoa(guilds), func(b *testing.B) {
+			state := NewState()
+			for g := 0; g < guilds; g++ {
+				guildID := "guild-" + strconv.Itoa(g)
+				roles := make([]*Role, 20)
+				for r := range roles {
+					roles[r] = &Role{ID: guildID + "-role-" + strconv.Itoa(r)}
+				}
+				if err := state.GuildAdd(&Guild{ID: guildID, Roles: roles}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			session := &Session{StateEnabled: true, State: state}
+			guildID := "guild-" + strconv.Itoa(guilds-1)
+			update := &GuildRoleUpdate{GuildRole: &GuildRole{
+				GuildID: guildID,
+				Role:    &Role{ID: guildID + "-role-10", Name: "updated"},
+			}}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := state.OnInterface(session, update); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkStateVoiceUpdateGuildSnapshot(b *testing.B) {
 	voiceStates := make([]*VoiceState, 500)
 	for i := range voiceStates {
