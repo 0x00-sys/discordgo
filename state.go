@@ -3054,6 +3054,12 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 					User:    t.User,
 				}
 			} else {
+				if !presenceChangesMemberUser(m.User, t) {
+					// Most presence updates carry only the user ID; the
+					// cached member is already current, so skip copying
+					// the guild member slice.
+					return
+				}
 				// The cached member is a shared snapshot; mutate a
 				// copy and let memberAdd replace it.
 				m = copyMember(m)
@@ -3084,6 +3090,24 @@ func (s *State) OnInterface(se *Session, i interface{}) (err error) {
 	}
 
 	return
+}
+
+// presenceChangesMemberUser reports whether applying the presence update
+// would change any cached member user field.
+func presenceChangesMemberUser(cached *User, t *PresenceUpdate) bool {
+	if cached == nil {
+		return false
+	}
+	if t.Status != StatusOffline && t.User.Username != "" && t.User.Username != cached.Username {
+		return true
+	}
+	if t.User.Discriminator != "" && t.User.Discriminator != cached.Discriminator {
+		return true
+	}
+	if (t.avatarPresent || t.User.Avatar != "") && t.User.Avatar != cached.Avatar {
+		return true
+	}
+	return (t.globalNamePresent || t.User.GlobalName != "") && t.User.GlobalName != cached.GlobalName
 }
 
 // UserChannelPermissions returns the permission of a user in a channel.
