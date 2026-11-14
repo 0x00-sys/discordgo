@@ -7751,45 +7751,67 @@ func BenchmarkStateGuildMembersChunkGuildSnapshot(b *testing.B) {
 }
 
 // BenchmarkStateGuildMembersChunkFullLoad measures loading a whole guild
-// with presences through 1000-member chunks, as RequestGuildMembers does.
+// through 1000-member chunks, as RequestGuildMembers does:
+//
+//   - fresh_presences: nothing cached yet, each chunk has a presence per member
+//   - fresh_members: nothing cached yet, chunks carry members only
+//   - rechunk: every member and presence is already cached and sent again
 func BenchmarkStateGuildMembersChunkFullLoad(b *testing.B) {
 	const chunkSize = 1000
-	for _, size := range []int{10000, 25000, 50000} {
-		b.Run("members="+strconv.Itoa(size), func(b *testing.B) {
-			chunks := make([]*GuildMembersChunk, size/chunkSize)
-			for c := range chunks {
-				chunk := &GuildMembersChunk{
-					GuildID:    "guild",
-					ChunkIndex: c,
-					ChunkCount: len(chunks),
-					Members:    make([]*Member, chunkSize),
-					Presences:  make([]*Presence, chunkSize),
+	for _, scenario := range []string{"fresh_presences", "fresh_members", "rechunk"} {
+		for _, size := range []int{10000, 25000, 50000} {
+			b.Run(scenario+"/members="+strconv.Itoa(size), func(b *testing.B) {
+				var cachedMembers []*Member
+				var cachedPresences []*Presence
+				chunks := make([]*GuildMembersChunk, size/chunkSize)
+				for c := range chunks {
+					chunk := &GuildMembersChunk{
+						GuildID:    "guild",
+						ChunkIndex: c,
+						ChunkCount: len(chunks),
+						Members:    make([]*Member, chunkSize),
+					}
+					if scenario != "fresh_members" {
+						chunk.Presences = make([]*Presence, chunkSize)
+					}
+					for i := range chunk.Members {
+						id := "user-" + strconv.Itoa(c*chunkSize+i)
+						chunk.Members[i] = &Member{User: &User{ID: id, Username: id}}
+						if chunk.Presences != nil {
+							chunk.Presences[i] = &Presence{User: &User{ID: id}, Status: StatusOnline}
+						}
+						if scenario == "rechunk" {
+							cachedMembers = append(cachedMembers, &Member{GuildID: "guild", User: &User{ID: id, Username: id}})
+							cachedPresences = append(cachedPresences, &Presence{User: &User{ID: id}, Status: StatusIdle})
+						}
+					}
+					chunks[c] = chunk
 				}
-				for i := range chunk.Members {
-					id := "user-" + strconv.Itoa(c*chunkSize+i)
-					chunk.Members[i] = &Member{User: &User{ID: id, Username: id}}
-					chunk.Presences[i] = &Presence{User: &User{ID: id}, Status: StatusOnline}
-				}
-				chunks[c] = chunk
-			}
 
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				state := NewState()
-				if err := state.GuildAdd(&Guild{ID: "guild", MemberCount: size}); err != nil {
-					b.Fatal(err)
-				}
-				session := &Session{StateEnabled: true, State: state}
-				b.StartTimer()
-				for _, chunk := range chunks {
-					if err := state.OnInterface(session, chunk); err != nil {
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					state := NewState()
+					guild := &Guild{
+						ID:          "guild",
+						MemberCount: size,
+						Members:     append([]*Member(nil), cachedMembers...),
+						Presences:   append([]*Presence(nil), cachedPresences...),
+					}
+					if err := state.GuildAdd(guild); err != nil {
 						b.Fatal(err)
 					}
+					session := &Session{StateEnabled: true, State: state}
+					b.StartTimer()
+					for _, chunk := range chunks {
+						if err := state.OnInterface(session, chunk); err != nil {
+							b.Fatal(err)
+						}
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
