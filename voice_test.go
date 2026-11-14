@@ -4127,6 +4127,277 @@ func TestVoiceJoinWaitCancellation(t *testing.T) {
 	}
 }
 
+// newVoiceJoinWaitTestConnection returns a connection whose UDP transport is
+// open and whose encryption mode is selected, waiting only for OP4.
+func newVoiceJoinWaitTestConnection(t *testing.T, udpConn *net.UDPConn) *VoiceConnection {
+	t.Helper()
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LogLevel = -1
+	voice := &VoiceConnection{
+		LogLevel:       -1,
+		GuildID:        "guild",
+		ChannelID:      "channel",
+		session:        session,
+		close:          make(chan struct{}),
+		udpConn:        udpConn,
+		deaf:           true,
+		encryptionMode: voiceModeAES256GCMRTPSize,
+	}
+	session.VoiceConnections = map[string]*VoiceConnection{"guild": voice}
+	return voice
+}
+
+func newVoiceJoinWaitTestUDP(t *testing.T) *net.UDPConn {
+	t.Helper()
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("net.ListenUDP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = udpConn.Close() })
+	return udpConn
+}
+
+// A join must return when its transport becomes ready, not at the next
+// one-second poll. The handshake usually completes in well under a second.
+func TestVoiceJoinWaitReturnsWhenReady(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	synctest.Test(t, func(t *testing.T) {
+		voice := newVoiceJoinWaitTestConnection(t, udpConn)
+		defer voice.Close()
+
+		result := make(chan error, 1)
+		go func() { result <- voice.waitUntilConnected("channel", nil) }()
+
+		// Complete the handshake partway through the first poll interval.
+		time.Sleep(300 * time.Millisecond)
+		voice.onEvent(voiceSessionDescriptionMessage(t, voiceModeAES256GCMRTPSize, make([]int, 32)))
+		readyAt := time.Now()
+		synctest.Wait()
+
+		if len(result) == 0 {
+			t.Error("join is still waiting after the voice connection became ready")
+		}
+		if err := <-result; err != nil {
+			t.Fatalf("waitUntilConnected() error = %v", err)
+		}
+		if delay := time.Since(readyAt); delay != 0 {
+			t.Errorf("join returned %v after the voice connection became ready, want no delay", delay)
+		}
+	})
+}
+
+// A ready notification wakes every waiting join, so each must recheck that
+// the ready transport serves its channel and is not the one it excludes.
+func TestVoiceJoinWaitRechecksOwnershipWhenNotified(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		channelID      string
+		excludeCurrent bool
+	}{
+		{name: "another channel", channelID: "other"},
+		{name: "excluded previous transport", channelID: "channel", excludeCurrent: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			udpConn := newVoiceJoinWaitTestUDP(t)
+			synctest.Test(t, func(t *testing.T) {
+				voice := newVoiceJoinWaitTestConnection(t, udpConn)
+				voice.ChannelID = test.channelID
+				defer voice.Close()
+				var previousClose <-chan struct{}
+				if test.excludeCurrent {
+					previousClose = voice.close
+				}
+				result := make(chan error, 1)
+				go func() { result <- voice.waitUntilConnected("channel", previousClose) }()
+				synctest.Wait()
+
+				voice.onEvent(voiceSessionDescriptionMessage(t, voiceModeAES256GCMRTPSize, make([]int, 32)))
+				synctest.Wait()
+				if len(result) != 0 {
+					t.Errorf("join for channel returned %v after a transport it does not own became ready", <-result)
+					return
+				}
+				if err := <-result; err == nil {
+					t.Error("join reported success for a transport it does not own")
+				}
+			})
+		})
+	}
+}
+
+// blockingSessionDescriptionDAVE pauses OP4 inside the DAVE backend call.
+type blockingSessionDescriptionDAVE struct {
+	*fakeVoiceDAVESession
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingSessionDescriptionDAVE) OnSessionDescription(protocolVersion uint16) {
+	close(b.entered)
+	<-b.release
+	b.fakeVoiceDAVESession.OnSessionDescription(protocolVersion)
+}
+
+// OP4 runs DAVE setup without the connection lock. If the transport is torn
+// down meanwhile, the finished setup must not publish Ready for it.
+func TestVoiceSessionDescriptionSkipsReadyAfterTeardown(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	voice := newVoiceJoinWaitTestConnection(t, udpConn)
+	backend := &blockingSessionDescriptionDAVE{
+		fakeVoiceDAVESession: &fakeVoiceDAVESession{maxVersion: 1},
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	voice.dave = backend
+	voice.daveMaxProtocolVersion = 1
+	transportClose := voice.close
+
+	handled := make(chan struct{})
+	go func() {
+		defer close(handled)
+		voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+			strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `],"dave_protocol_version":1}}`))
+	}()
+	<-backend.entered
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		voice.Close()
+	}()
+	// Close signals the transport before it waits for the DAVE lock.
+	<-transportClose
+	close(backend.release)
+	<-handled
+	<-closed
+
+	voice.RLock()
+	ready := voice.Ready
+	voice.RUnlock()
+	if ready {
+		t.Error("OP4 published Ready for a transport torn down during DAVE setup")
+	}
+}
+
+// Readiness reached without a new transport, such as a channel update on a
+// transport that is already ready, is still found by the fallback poll, and
+// the wait keeps its 11 second limit.
+func TestVoiceJoinWaitFallbackPollAndTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		ready   bool
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "channel updated on a ready transport", ready: true, want: time.Second},
+		{name: "never ready", wantErr: true, want: 11 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				voice := &VoiceConnection{LogLevel: -1, ChannelID: "previous", Ready: true, close: make(chan struct{})}
+				defer voice.Close()
+				started := time.Now()
+				result := make(chan error, 1)
+				go func() { result <- voice.waitUntilConnected("channel", nil) }()
+
+				time.Sleep(300 * time.Millisecond)
+				if test.ready {
+					voice.Lock()
+					voice.ChannelID = "channel"
+					voice.Unlock()
+				}
+				err := <-result
+				if gotErr := err != nil; gotErr != test.wantErr {
+					t.Errorf("waitUntilConnected() error = %v, want error %t", err, test.wantErr)
+				}
+				if elapsed := time.Since(started); elapsed != test.want {
+					t.Errorf("waitUntilConnected() returned after %v, want %v", elapsed, test.want)
+				}
+			})
+		})
+	}
+}
+
+// A join must not report success for a transport whose OP4 setup fails,
+// even while the failure is still being handled.
+func TestVoiceJoinWaitIgnoresFailedSetup(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		disconnect bool
+	}{
+		{name: "timeout"},
+		{name: "disconnect", disconnect: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			udpConn := newVoiceJoinWaitTestUDP(t)
+			synctest.Test(t, func(t *testing.T) {
+				voice := newVoiceJoinWaitTestConnection(t, udpConn)
+				voice.LogLevel = LogError
+				// Pause the OP4 handler after DAVE setup failed but before its cleanup.
+				paused, release := make(chan struct{}), make(chan struct{})
+				oldLogger := Logger
+				Logger = func(_, _ int, format string, _ ...interface{}) {
+					if format == "OP4 DAVE setup error, %s" {
+						close(paused)
+						<-release
+					}
+				}
+				defer func() { Logger = oldLogger }()
+				defer voice.Close()
+
+				started := time.Now()
+				result := make(chan error, 1)
+				go func() { result <- voice.waitUntilConnected("channel", nil) }()
+
+				// No DAVE backend is installed, so a nonzero protocol version fails setup.
+				handled := make(chan struct{})
+				go func() {
+					defer close(handled)
+					voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+						strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `],"dave_protocol_version":1}}`))
+				}()
+				<-paused
+				// Let the join poll while the failure is still in flight.
+				time.Sleep(2 * time.Second)
+				synctest.Wait()
+				if len(result) != 0 {
+					t.Error("join returned while OP4 setup was failing, want it still waiting")
+				}
+				voice.RLock()
+				ready := voice.Ready
+				voice.RUnlock()
+				if ready {
+					t.Error("failing OP4 setup published Ready")
+				}
+
+				var closedAt time.Time
+				if test.disconnect {
+					if err := voice.Disconnect(); err != nil {
+						t.Fatal(err)
+					}
+					closedAt = time.Now()
+				}
+				close(release)
+				<-handled
+
+				err := <-result
+				switch {
+				case err == nil:
+					t.Error("join reported success for a voice connection whose setup failed")
+				case test.disconnect && !errors.Is(err, ErrWSNotFound):
+					t.Errorf("wait error = %v, want %v", err, ErrWSNotFound)
+				case test.disconnect && time.Since(closedAt) != 0:
+					t.Errorf("wait returned %v after disconnect, want no delay", time.Since(closedAt))
+				case !test.disconnect && time.Since(started) != 11*time.Second:
+					t.Errorf("failed setup wait returned after %v, want the 11s timeout", time.Since(started))
+				}
+			})
+		})
+	}
+}
+
 func TestVoiceOnEventSkipsRedactionWhenDebugDisabled(t *testing.T) {
 	payload := strings.Builder{}
 	payload.WriteString(`{"op":99,"d":{`)

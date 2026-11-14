@@ -84,6 +84,9 @@ type VoiceConnection struct {
 
 	// Used to allow blocking until connected
 	connected chan bool
+	// Created by a waiting join and closed when Ready is published, so the
+	// join wakes at once instead of at its next poll.
+	readyChanged chan struct{}
 
 	// Used to pass the sessionid from onVoiceStateUpdate
 	// sessionRecv chan string UNUSED ATM
@@ -525,27 +528,49 @@ func (v *VoiceConnection) waitUntilConnected(channelID string, previousClose <-c
 	disconnectCancel := v.disconnectCancel
 	v.Unlock()
 
-	i := 0
+	deadline := time.NewTimer(11 * time.Second)
+	defer deadline.Stop()
+	// Readiness can also be reached without publishing Ready, for example
+	// when the channel changes on a transport that is already ready, so
+	// keep polling as a fallback.
+	poll := time.NewTicker(time.Second)
+	defer poll.Stop()
+	expired := false
 	for {
-		v.RLock()
+		// Recheck ownership on every wake: a notification only means some
+		// transport became ready, not that it serves this channel.
+		v.Lock()
 		ready := v.Ready && v.ChannelID == channelID && (previousClose == nil || v.close != previousClose)
-		v.RUnlock()
+		if !ready && v.readyChanged == nil {
+			v.readyChanged = make(chan struct{})
+		}
+		readyChanged := v.readyChanged
+		v.Unlock()
 		if ready {
 			return nil
 		}
-
-		if i > 10 {
+		if expired {
 			return fmt.Errorf("timeout waiting for voice")
 		}
 
-		timer := time.NewTimer(time.Second)
 		select {
-		case <-timer.C:
+		case <-readyChanged:
+		case <-poll.C:
+		case <-deadline.C:
+			expired = true
 		case <-disconnectCancel:
-			timer.Stop()
 			return ErrWSNotFound
 		}
-		i++
+	}
+}
+
+// publishReadyLocked marks the transport ready and wakes waiting joins.
+// The caller must hold v's lock.
+func (v *VoiceConnection) publishReadyLocked() {
+	v.Ready = true
+	if v.readyChanged != nil {
+		close(v.readyChanged)
+		v.readyChanged = nil
 	}
 }
 
@@ -1065,7 +1090,6 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 			opusRecv = v.OpusRecv
 			receive = !v.deaf
 			startTransport = true
-			v.Ready = true
 		}
 		v.Unlock()
 		if err := v.onDAVESessionDescription(wsConn, eventClose, op4.DAVEProtocolVersion); err != nil {
@@ -1074,6 +1098,17 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 			return
 		}
 
+		if startTransport {
+			// Publish readiness only once setup succeeded, and only if this
+			// transport still owns the connection. A join must not report
+			// success for a transport that is failing or was replaced.
+			v.Lock()
+			startTransport = !v.Ready && v.wsConn == wsConn && v.close == eventClose && v.udpConn == udpConn
+			if startTransport {
+				v.publishReadyLocked()
+			}
+			v.Unlock()
+		}
 		if startTransport {
 			go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
 			if receive {
