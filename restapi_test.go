@@ -4352,7 +4352,7 @@ func TestCloudflareBanWithoutRetryAfterReturnsRateLimitError(t *testing.T) {
 // bucket, not only the one that got it.
 func TestRequestNonJSONGlobalRateLimitWithoutRetryAfterPausesOtherBuckets(t *testing.T) {
 	var requests int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if atomic.AddInt32(&requests, 1) == 1 {
 			w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
 			w.Header().Set("X-RateLimit-Global", "true")

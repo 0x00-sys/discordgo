@@ -5739,10 +5739,10 @@ func TestMembersAddToGuildMatchesPerEntry(t *testing.T) {
 	for iter := 0; iter < 2000; iter++ {
 		c := memberChunkCase{members: map[string]*Member{}}
 		for n := rng.IntN(40); len(c.guild) < n; {
-			switch r := rng.IntN(20); {
-			case r == 0:
+			switch rng.IntN(20) {
+			case 0:
 				c.guild = append(c.guild, nil)
-			case r == 1:
+			case 1:
 				c.guild = append(c.guild, &Member{JoinedAt: randomTime()})
 			default:
 				c.guild = append(c.guild, member(ids[rng.IntN(len(ids))], randomTime()))
