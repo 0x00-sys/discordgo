@@ -3018,6 +3018,27 @@ func TestGatewayShardFallsBackToGatewayWhenGatewayBotFails(t *testing.T) {
 	}
 }
 
+// A shard that identified while max_concurrency was unknown used the fallback
+// mapping. Once a later lookup learns the real value, a shard in the same
+// Discord bucket must still wait out that cooldown.
+func TestGatewayShardWaitsForFallbackCooldownAfterLearningConcurrency(t *testing.T) {
+	const window = 300 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 2)
+	token := newIdentifyTestToken()
+	// Shard 1 can't reach GET /gateway/bot and paces with mapping 1.
+	if err := newIdentifyLimitedShard(t, g, token, 1, 4, http.StatusUnauthorized).Open(); err != nil {
+		t.Fatalf("shard 1: %v", err)
+	}
+	// Shard 3 learns max_concurrency 2. It shares rate_limit_key 1 with shard 1.
+	if err := newIdentifyLimitedShard(t, g, token, 3, 4, http.StatusOK).Open(); err != nil {
+		t.Fatalf("shard 3: %v", err)
+	}
+	if identifies, rejected, _ := g.counts(); identifies != 2 || rejected != 0 {
+		t.Fatalf("%d IDENTIFY sent, %d rejected with op 9; want 2 sent, 0 rejected", identifies, rejected)
+	}
+}
+
 // A shard waiting for its identify bucket must not block Close, and must not
 // send IDENTIFY after it.
 func TestGatewayCloseDuringIdentifyWaitReturnsPromptly(t *testing.T) {
@@ -3037,8 +3058,9 @@ func TestGatewayCloseDuringIdentifyWaitReturnsPromptly(t *testing.T) {
 	for {
 		l.mu.Lock()
 		held := false
-		if app := l.apps[token]; app != nil && app.buckets[0] != nil {
-			held = len(app.buckets[0].slot) == 1
+		bucket := identifyBucketKey{maxConcurrency: 1, key: 0}
+		if app := l.apps[token]; app != nil && app.buckets[bucket] != nil {
+			held = len(app.buckets[bucket].slot) == 1
 		}
 		l.mu.Unlock()
 		if held {

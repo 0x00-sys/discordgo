@@ -1781,7 +1781,16 @@ type identifyApp struct {
 	gatewayURL     string
 	maxConcurrency int           // from GET /gateway/bot, 0 when unknown
 	fetching       chan struct{} // closed when an in-flight lookup ends
-	buckets        map[int]*identifyBucket
+	buckets        map[identifyBucketKey]*identifyBucket
+}
+
+// identifyBucketKey names a bucket under one shard-to-bucket mapping. Shards
+// that identified while max_concurrency was unknown used mapping 1, so their
+// cooldowns live under a different key than the buckets used once the real
+// value is known.
+type identifyBucketKey struct {
+	maxConcurrency int
+	key            int
 }
 
 type identifyBucket struct {
@@ -1797,7 +1806,7 @@ func (l *identifyLimiter) join(token string) *identifyApp {
 	}
 	app := l.apps[token]
 	if app == nil {
-		app = &identifyApp{buckets: make(map[int]*identifyBucket)}
+		app = &identifyApp{buckets: make(map[identifyBucketKey]*identifyBucket)}
 		l.apps[token] = app
 	}
 	app.refs++
@@ -1882,13 +1891,28 @@ func (l *identifyLimiter) acquire(ctx context.Context, app *identifyApp, shard, 
 	if maxConcurrency <= 0 {
 		maxConcurrency = 1
 	}
-	key := shard % maxConcurrency
+	key := identifyBucketKey{maxConcurrency: maxConcurrency, key: shard % maxConcurrency}
 	b := app.buckets[key]
 	if b == nil {
 		b = &identifyBucket{slot: make(chan struct{}, 1)}
 		app.buckets[key] = b
 	}
+	// Buckets from another mapping may cover this shard too, for example an
+	// IDENTIFY sent with the fallback mapping before max_concurrency was
+	// learned. Wait until they are idle and cooled down first.
+	var others []*identifyBucket
+	for k, other := range app.buckets {
+		if k.maxConcurrency != maxConcurrency {
+			others = append(others, other)
+		}
+	}
 	l.mu.Unlock()
+
+	for _, other := range others {
+		if err := l.drain(ctx, other); err != nil {
+			return nil, err
+		}
+	}
 
 	select {
 	case b.slot <- struct{}{}:
@@ -1916,6 +1940,31 @@ func (l *identifyLimiter) acquire(ctx context.Context, app *identifyApp, shard, 
 	slot.timer = time.AfterFunc(holdLimit, slot.expire)
 	l.mu.Unlock()
 	return slot, nil
+}
+
+// drain waits until no session holds b and its cooldown has passed. It leaves
+// b unused.
+func (l *identifyLimiter) drain(ctx context.Context, b *identifyBucket) error {
+	select {
+	case b.slot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-b.slot }()
+	l.mu.Lock()
+	wait := time.Until(b.next)
+	l.mu.Unlock()
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 const (
