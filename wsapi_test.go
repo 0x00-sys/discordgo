@@ -1057,12 +1057,13 @@ func TestReconnectRetriesAreSpreadAcrossSessions(t *testing.T) {
 		}
 		resumeURL := "ws" + strings.TrimPrefix(server.URL, "http") + r.URL.Path
 		ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"spread","resume_gateway_url":"` + resumeURL + `","user":{"id":"1"},"guilds":[]}}`
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
-			return
-		}
+		// Register before READY: Open returns once READY is read.
 		mu.Lock()
 		accepted[r.URL.Path] = conn
 		mu.Unlock()
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+			return
+		}
 	}))
 	defer server.Close()
 
