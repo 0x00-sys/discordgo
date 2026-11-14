@@ -4806,6 +4806,50 @@ func TestRequestWithLockedBucketRetriesGetServerError(t *testing.T) {
 	}
 }
 
+// Once retries run out, callers still need the status code and body that a
+// non-retried request would return as a *RESTError.
+func TestRequestServerErrorAfterRetriesReturnsRESTError(t *testing.T) {
+	session, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.MaxRestRetries = 1
+
+	attempts := 0
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"upstream unavailable","code":0}`)),
+			Request:    r,
+		}, nil
+	})
+
+	_, err = session.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway)
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	const wantMsg = `Exceeded Max retries HTTP 503 Service Unavailable, {"message":"upstream unavailable","code":0}`
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("error = %v, want %q", err, wantMsg)
+	}
+	var restErr *RESTError
+	if !errors.As(err, &restErr) {
+		t.Fatalf("error = %T %v, want *RESTError in chain", err, err)
+	}
+	if restErr.Response == nil || restErr.Response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("RESTError response = %+v, want 503", restErr.Response)
+	}
+	if restErr.Message == nil || restErr.Message.Message != "upstream unavailable" {
+		t.Fatalf("RESTError message = %+v, want decoded body", restErr.Message)
+	}
+	if got := session.Ratelimiter.buckets[EndpointGateway].activeRequests; got != 0 {
+		t.Fatalf("active requests = %d, want 0", got)
+	}
+}
+
 func TestRequestWithLockedBucketRetriesPatchServerError(t *testing.T) {
 	session, err := New("")
 	if err != nil {
