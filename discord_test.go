@@ -93,14 +93,17 @@ func resetDefaultRESTTransport(t *testing.T) {
 	t.Helper()
 	savedDefault := http.DefaultTransport
 	savedTransport, savedBase := restTransport, restTransportBase
+	savedShared := restTransportShared.Load()
 	savedSendPing, savedPing := restHTTP2SendPingTimeout, restHTTP2PingTimeout
 	restTransportOnce = sync.Once{}
 	restTransport, restTransportBase = nil, nil
+	restTransportShared.Store(nil)
 	t.Cleanup(func() {
 		http.DefaultTransport = savedDefault
 		restHTTP2SendPingTimeout, restHTTP2PingTimeout = savedSendPing, savedPing
 		restTransportOnce = sync.Once{}
 		restTransport, restTransportBase = savedTransport, savedBase
+		restTransportShared.Store(savedShared)
 		if savedTransport != nil {
 			restTransportOnce.Do(func() {})
 		}
@@ -260,6 +263,17 @@ func TestNewClientFollowsReplacedDefaultTransport(t *testing.T) {
 	}
 	if got := mock.requests.Load(); got != 1 {
 		t.Fatalf("replaced DefaultTransport got %d requests, want 1", got)
+	}
+	// A Session created before the swap follows it too, like an HTTP mock
+	// activated after New.
+	if _, err := first.RequestWithBucketID(http.MethodGet, EndpointGateway, nil, EndpointGateway); err != nil {
+		t.Fatal(err)
+	}
+	if got := mock.requests.Load(); got != 2 {
+		t.Fatalf("replaced DefaultTransport got %d requests, want 2 after a request from a Session created before the swap", got)
+	}
+	if first.Client.Transport != shared {
+		t.Fatal("request changed the Session's Client.Transport")
 	}
 
 	http.DefaultTransport = original

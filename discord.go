@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -86,7 +87,14 @@ var (
 	restTransportOnce sync.Once
 	restTransportBase *http.Transport
 	restTransport     *http.Transport
+	// restTransportShared publishes the pair to the request path, which can
+	// run concurrently with the first New.
+	restTransportShared atomic.Pointer[restTransportPair]
 )
+
+type restTransportPair struct {
+	base, pinging *http.Transport
+}
 
 // defaultRESTRoundTripper returns the transport for a Session that New
 // creates. While http.DefaultTransport is still the transport seen by the
@@ -116,6 +124,7 @@ func defaultRESTRoundTripper() http.RoundTripper {
 		pinging.HTTP2 = &config
 		restTransportBase = original
 		restTransport = pinging
+		restTransportShared.Store(&restTransportPair{base: original, pinging: pinging})
 	})
 	if restTransport == nil {
 		return nil
@@ -124,4 +133,24 @@ func defaultRESTRoundTripper() http.RoundTripper {
 		return nil
 	}
 	return restTransport
+}
+
+// restClient returns the client to send a request with. A Session from New
+// holds the shared pinging transport. If http.DefaultTransport has been
+// replaced since then, for example by an HTTP mock activated after New, the
+// request goes through http.DefaultTransport instead, as it did before the
+// shared transport existed. This costs a type check and an atomic load per
+// request, and only allocates while DefaultTransport is replaced.
+func restClient(client *http.Client) *http.Client {
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return client
+	}
+	shared := restTransportShared.Load()
+	if shared == nil || transport != shared.pinging || http.DefaultTransport == http.RoundTripper(shared.base) {
+		return client
+	}
+	replaced := *client
+	replaced.Transport = nil
+	return &replaced
 }

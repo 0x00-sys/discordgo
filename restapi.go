@@ -444,7 +444,7 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 		}
 	}
 
-	resp, err := cfg.Client.Do(req)
+	resp, err := restClient(cfg.Client).Do(req)
 	if err != nil {
 		bucket.Release(nil)
 		err = redactedRequestError(err)
