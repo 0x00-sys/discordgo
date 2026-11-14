@@ -2563,56 +2563,35 @@ func TestVoiceHelloStartsHeartbeat(t *testing.T) {
 }
 
 func TestVoiceHeartbeatStopsAfterConnectionReplacement(t *testing.T) {
-	heartbeats := make(chan struct{}, 1)
-	upgrader := websocket.Upgrader{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
+	synctest.Test(t, func(t *testing.T) {
+		conn, peer := newVoicePipeWebsocket(t)
+		closeChan := make(chan struct{})
+		defer close(closeChan)
+		voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			voice.wsHeartbeat(conn, closeChan, 1000)
+		}()
+
+		if _, err := readVoiceHeartbeat(peer); err != nil {
+			t.Fatal(err)
 		}
-		defer conn.Close()
-		for {
-			if _, _, err = conn.ReadMessage(); err != nil {
-				return
-			}
-			select {
-			case heartbeats <- struct{}{}:
-			default:
-			}
+		// Acknowledge it so only the replacement, not a missed ACK, can stop the loop.
+		voice.onEventForConnection(conn, closeChan, []byte(`{"op":6,"d":{"t":1}}`))
+		voice.Lock()
+		voice.wsConn = &websocket.Conn{}
+		voice.Unlock()
+
+		// The peer stops reading, so another heartbeat would block on the pipe.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("heartbeat did not stop after websocket replacement")
 		}
-	}))
-	defer server.Close()
-
-	url := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("Dial() error = %v", err)
-	}
-	defer conn.Close()
-
-	closeChan := make(chan struct{})
-	defer close(closeChan)
-	voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
-	done := make(chan struct{})
-	go func() {
-		voice.wsHeartbeat(conn, closeChan, 10)
-		close(done)
-	}()
-
-	select {
-	case <-heartbeats:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial heartbeat")
-	}
-	voice.Lock()
-	voice.wsConn = &websocket.Conn{}
-	voice.Unlock()
-
-	select {
-	case <-done:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("heartbeat did not stop after websocket replacement")
-	}
+	})
 }
 
 func TestVoiceHeartbeatWriteFailureClosesConnection(t *testing.T) {
@@ -2631,6 +2610,198 @@ func TestVoiceHeartbeatWriteFailureClosesConnection(t *testing.T) {
 	case <-transport.closed:
 	default:
 		t.Error("heartbeat write failure left the websocket transport open")
+	}
+}
+
+// voicePipeResponseWriter lets websocket.Upgrader take over a net.Pipe end.
+type voicePipeResponseWriter struct {
+	conn   net.Conn
+	rw     *bufio.ReadWriter
+	header http.Header
+}
+
+func (w *voicePipeResponseWriter) Header() http.Header         { return w.header }
+func (w *voicePipeResponseWriter) Write(p []byte) (int, error) { return w.rw.Write(p) }
+func (w *voicePipeResponseWriter) WriteHeader(int)             {}
+func (w *voicePipeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.rw, nil
+}
+
+// newVoicePipeWebsocket connects a client websocket to a server peer over
+// net.Pipe. Created inside a synctest bubble, both ends block durably, so
+// heartbeat timing runs on the bubble's fake clock.
+func newVoicePipeWebsocket(t *testing.T) (*websocket.Conn, *websocket.Conn) {
+	t.Helper()
+	client, server := net.Pipe()
+	type upgraded struct {
+		conn *websocket.Conn
+		err  error
+	}
+	peerReady := make(chan upgraded, 1)
+	go func() {
+		reader := bufio.NewReader(server)
+		request, err := http.ReadRequest(reader)
+		if err != nil {
+			peerReady <- upgraded{err: err}
+			return
+		}
+		w := &voicePipeResponseWriter{conn: server, rw: bufio.NewReadWriter(reader, bufio.NewWriter(server)), header: http.Header{}}
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, request, nil)
+		peerReady <- upgraded{conn: conn, err: err}
+	}()
+	dialer := &websocket.Dialer{NetDialContext: func(context.Context, string, string) (net.Conn, error) {
+		return client, nil
+	}}
+	conn, _, err := dialer.Dial("ws://voice.invalid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := <-peerReady
+	if peer.err != nil {
+		t.Fatal(peer.err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = peer.conn.Close()
+	})
+	return conn, peer.conn
+}
+
+// readVoiceHeartbeat reads peer messages until a heartbeat (op 3) arrives
+// and returns its nonce.
+func readVoiceHeartbeat(peer *websocket.Conn) (int64, error) {
+	for {
+		_, message, err := peer.ReadMessage()
+		if err != nil {
+			return 0, err
+		}
+		var heartbeat struct {
+			Op   int `json:"op"`
+			Data struct {
+				Nonce int64 `json:"t"`
+			} `json:"d"`
+		}
+		if json.Unmarshal(message, &heartbeat) == nil && heartbeat.Op == 3 {
+			return heartbeat.Data.Nonce, nil
+		}
+	}
+}
+
+func writeVoiceHeartbeatAck(peer *websocket.Conn, nonce int64) error {
+	return peer.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"op":6,"d":{"t":%d}}`, nonce)))
+}
+
+// A voice websocket whose peer stops acknowledging heartbeats is zombied,
+// for example after a NAT timeout or a silent server failure. Heartbeat
+// writes still succeed into the kernel buffer, so the connection must be
+// dropped on a missed ACK rather than after TCP retransmissions give up.
+func TestVoiceHeartbeatMissedAckClosesConnection(t *testing.T) {
+	const interval = time.Second
+	const heartbeatLimit = 20
+	for _, test := range []struct {
+		name string
+		// The peer acknowledges each heartbeat this long after reading it.
+		ackDelay time.Duration
+		noAck    bool
+		// ACKs arrive on a replaced websocket that shares the close signal,
+		// as after a resume, instead of on the current one.
+		staleAck bool
+		// The peer stalls before reading the first heartbeat, so its write
+		// completes late in the interval.
+		firstReadDelay time.Duration
+		wantClose      bool
+	}{
+		{name: "unacknowledged", noAck: true, wantClose: true},
+		{name: "acknowledged on a replaced websocket", staleAck: true, wantClose: true},
+		{name: "acknowledged"},
+		{name: "acknowledged late in the interval", ackDelay: 900 * time.Millisecond},
+		{name: "acknowledged after a delayed write", firstReadDelay: 900 * time.Millisecond, ackDelay: 600 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn, peer := newVoicePipeWebsocket(t)
+				closeChan := make(chan struct{})
+				voice := &VoiceConnection{LogLevel: -1, close: closeChan, wsConn: conn}
+				var staleDone chan struct{}
+				var stalePeer *websocket.Conn
+				if test.staleAck {
+					var staleConn *websocket.Conn
+					staleConn, stalePeer = newVoicePipeWebsocket(t)
+					staleDone = make(chan struct{})
+					go func() {
+						defer close(staleDone)
+						voice.wsListen(staleConn, closeChan)
+					}()
+				}
+				listenDone := make(chan struct{})
+				go func() {
+					defer close(listenDone)
+					voice.wsListen(conn, closeChan)
+				}()
+				heartbeatDone := make(chan struct{})
+				go func() {
+					defer close(heartbeatDone)
+					voice.wsHeartbeat(conn, closeChan, interval/time.Millisecond)
+				}()
+
+				started := time.Now()
+				time.Sleep(test.firstReadDelay)
+				heartbeats := 0
+				var readErr error
+				for heartbeats < heartbeatLimit {
+					nonce, err := readVoiceHeartbeat(peer)
+					if err != nil {
+						readErr = err
+						break
+					}
+					heartbeats++
+					if test.noAck {
+						continue
+					}
+					time.Sleep(test.ackDelay)
+					ackPeer := peer
+					if test.staleAck {
+						ackPeer = stalePeer
+					}
+					if err := writeVoiceHeartbeatAck(ackPeer, nonce); err != nil {
+						readErr = err
+						break
+					}
+				}
+				elapsed := time.Since(started)
+
+				switch {
+				case test.wantClose && readErr == nil:
+					t.Errorf("voice websocket stayed open after %d unacknowledged heartbeats over %v", heartbeats, elapsed)
+				case test.wantClose && elapsed != interval:
+					// The first heartbeat is written at once; its ACK window is one interval.
+					t.Errorf("missed ACK closed the voice websocket after %v, want %v", elapsed, interval)
+				case !test.wantClose && readErr != nil:
+					t.Errorf("acknowledged heartbeats closed the voice websocket after %d heartbeats over %v: %v", heartbeats, elapsed, readErr)
+				}
+				if test.wantClose && readErr != nil {
+					// The listener must take the existing reconnect path.
+					<-listenDone
+					voice.RLock()
+					detached := voice.wsConn == nil
+					voice.RUnlock()
+					if !detached {
+						t.Error("listener kept the closed voice websocket installed")
+					}
+				}
+
+				_ = peer.Close()
+				if stalePeer != nil {
+					_ = stalePeer.Close()
+				}
+				voice.Close()
+				<-listenDone
+				<-heartbeatDone
+				if staleDone != nil {
+					<-staleDone
+				}
+			})
+		})
 	}
 }
 
