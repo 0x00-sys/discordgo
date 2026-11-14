@@ -3299,6 +3299,77 @@ func BenchmarkGatewayTextDispatch(b *testing.B) {
 	}
 }
 
+// BenchmarkGatewayListen measures one received dispatch end to end through
+// listen: websocket read, decode and dispatch.
+func BenchmarkGatewayListen(b *testing.B) {
+	small := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"user_id":"80351110224678912","channel_id":"613425648685547541","guild_id":"613425648685547541","timestamp":1700000000}}`)
+	large := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"user_id":"80351110224678912","channel_id":"613425648685547541","guild_id":"613425648685547541","timestamp":1700000000,"padding":"` + strings.Repeat("x", 32<<10) + `"}}`)
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{{"small", small}, {"32KiB", large}} {
+		b.Run(tc.name, func(b *testing.B) {
+			var header []byte
+			switch n := len(tc.payload); {
+			case n < 126:
+				header = []byte{0x81, byte(n)}
+			case n < 1<<16:
+				header = []byte{0x81, 126, byte(n >> 8), byte(n)}
+			default:
+				b.Fatal("payload too large")
+			}
+			frame := append(header, tc.payload...)
+
+			start := make(chan int)
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				raw := conn.UnderlyingConn()
+				for n := range start {
+					for i := 0; i < n; i++ {
+						if _, err := raw.Write(frame); err != nil {
+							return
+						}
+					}
+					// A close frame ends this round of listen.
+					if _, err := raw.Write([]byte{0x88, 0x02, 0x03, 0xe8}); err != nil {
+						return
+					}
+					return
+				}
+			}))
+			defer server.Close()
+
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer conn.Close()
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.LogLevel = -1
+			session.StateEnabled = false
+			session.SyncEvents = true
+			session.ShouldReconnectOnError = false
+			session.wsConn = conn
+			listening := make(chan interface{})
+			session.listening = listening
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.payload)))
+			b.ResetTimer()
+			start <- b.N
+			session.listen(conn, listening)
+		})
+	}
+}
+
 func TestGatewayErrorLoggingConcurrentEndpointUpdate(t *testing.T) {
 	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
 	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
