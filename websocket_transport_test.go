@@ -12,9 +12,12 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +52,40 @@ func TestWebsocketMasksDoNotFollowMathRand(t *testing.T) {
 	}
 	if matches == 4 {
 		t.Fatal("all four WebSocket masks were predictable from math/rand seed 42")
+	}
+}
+
+func TestDialWebsocketIdleConnectionHoldsNoWriteBuffer(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, err := dialWebsocket(context.Background(), websocket.DefaultDialer, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(heartbeatOp{1, 42}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Gateway and voice connections idle between infrequent heartbeats.
+	// Keeping a 4 KiB write buffer per idle connection costs about 40 MB
+	// for 10,000 sessions in one process.
+	if n := reflect.ValueOf(conn).Elem().FieldByName("writeBuf").Len(); n != 0 {
+		t.Fatalf("idle connection holds a %d byte write buffer", n)
 	}
 }
 
