@@ -1145,6 +1145,68 @@ func TestJitteredGatewayBackoffStaysWithinBounds(t *testing.T) {
 	}
 }
 
+// A gateway that accepts every session and drops it right after READY must
+// not be redialed in a tight loop. With close 4009 every cycle is a new
+// Identify, and Discord resets the token after 1000 Identify calls a day.
+func TestReconnectBacksOffWhenGatewayDropsAfterReady(t *testing.T) {
+	for _, closeCode := range []int{4000, 4009} {
+		t.Run(strconv.Itoa(closeCode), func(t *testing.T) {
+			var identifies, resumes int32
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+					return
+				}
+				_, message, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var op struct {
+					Op int `json:"op"`
+				}
+				_ = json.Unmarshal(message, &op)
+				ready := `{"op":0,"s":1,"t":"READY","d":{"session_id":"flap","user":{"id":"1"},"guilds":[]}}`
+				if op.Op == 6 {
+					atomic.AddInt32(&resumes, 1)
+					ready = `{"op":0,"s":2,"t":"RESUMED","d":{}}`
+				} else {
+					atomic.AddInt32(&identifies, 1)
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(ready)); err != nil {
+					return
+				}
+				_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, ""), time.Now().Add(time.Second))
+				time.Sleep(10 * time.Millisecond)
+			}))
+			defer server.Close()
+
+			session, err := newGatewayOpenTestSession(server, "Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LogLevel = -1
+			if err := session.Open(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2 * time.Second)
+			_ = session.Close()
+
+			// Any backoff starting near one second allows only a handful of
+			// sessions in two seconds; the bound leaves room for jitter.
+			got := atomic.LoadInt32(&identifies) + atomic.LoadInt32(&resumes)
+			if got > 10 {
+				t.Fatalf("gateway sessions started in 2s = %d (identify=%d resume=%d), want <= 10",
+					got, atomic.LoadInt32(&identifies), atomic.LoadInt32(&resumes))
+			}
+		})
+	}
+}
+
 func TestReconnectVoiceSchedulingDoesNotHoldSessionLock(t *testing.T) {
 	serverDone := make(chan struct{})
 	upgrader := websocket.Upgrader{}
