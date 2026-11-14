@@ -264,6 +264,27 @@ func TestAddHandlerOnceConcurrentDispatch(t *testing.T) {
 	}
 }
 
+// BenchmarkDispatchToHandlers runs the handler lookups that one gateway
+// dispatch performs: interface{} handlers, typed handlers and the legacy
+// *Event handlers.
+func BenchmarkDispatchToHandlers(b *testing.B) {
+	d := Session{SyncEvents: true}
+	d.AddHandler(func(*Session, interface{}) {})
+	d.AddHandler(func(*Session, *MessageCreate) {})
+	d.AddHandler(func(*Session, *MessageCreate) {})
+	d.AddHandler(func(*Session, *Event) {})
+	m := &MessageCreate{Message: &Message{}}
+	e := &Event{Type: messageCreateEventType, Struct: m}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		d.handle(interfaceEventType, m)
+		d.handle(messageCreateEventType, m)
+		d.handle(interfaceEventType, e)
+		d.handle(eventEventType, e)
+	}
+}
+
 func TestSyncHandlerPanicDoesNotCrashDispatch(t *testing.T) {
 	handlerCalled := int32(0)
 	panicHandler := func(s *Session, event *MessageCreate) {
