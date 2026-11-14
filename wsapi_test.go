@@ -3299,6 +3299,37 @@ func BenchmarkGatewayTextDispatch(b *testing.B) {
 	}
 }
 
+// gatewayPresenceUpdatePayload is a typical PRESENCE_UPDATE, the most frequent
+// dispatch for bots with the presence intent.
+var gatewayPresenceUpdatePayload = []byte(`{"op":0,"s":42,"t":"PRESENCE_UPDATE","d":{"user":{"id":"80351110224678912"},"status":"online","guild_id":"613425648685547541","client_status":{"desktop":"online"},"activities":[{"type":0,"timestamps":{"start":1700000000000},"state":"In a match","session_id":"aa2f8a9d6f1c4b0e","name":"Some Game","id":"5cb2b8ab0bcd0b0","details":"Ranked","created_at":1700000000123,"assets":{"large_text":"Map","large_image":"mp:external/abc/def.png"},"application_id":"356875570916753438"}]}}`)
+
+func BenchmarkGatewayPresenceDispatch(b *testing.B) {
+	for _, tc := range []struct {
+		name        string
+		messageType int
+		message     []byte
+	}{
+		{"text", websocket.TextMessage, gatewayPresenceUpdatePayload},
+		{"zlib", websocket.BinaryMessage, compressedGatewayPayload(b, gatewayPresenceUpdatePayload)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			session, err := New("Bot token")
+			if err != nil {
+				b.Fatal(err)
+			}
+			session.StateEnabled = false
+			session.SyncEvents = true
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err = session.onEvent(tc.messageType, tc.message); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestGatewayErrorLoggingConcurrentEndpointUpdate(t *testing.T) {
 	oldJitter := gatewayHeartbeatInitialJitter.Swap(func(time.Duration) time.Duration { return 0 })
 	defer gatewayHeartbeatInitialJitter.Store(oldJitter)
