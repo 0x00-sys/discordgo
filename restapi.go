@@ -2364,7 +2364,7 @@ func (s *Session) GuildEmojis(guildID string, options ...RequestOption) (emoji [
 // emojiID : The ID of an Emoji to retrieve
 func (s *Session) GuildEmoji(guildID, emojiID string, options ...RequestOption) (emoji *Emoji, err error) {
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", EndpointGuildEmoji(guildID, emojiID), nil, EndpointGuildEmoji(guildID, emojiID), options...)
+	body, err = s.RequestWithBucketID("GET", EndpointGuildEmoji(guildID, emojiID), nil, EndpointGuildEmojis(guildID), options...)
 	if err != nil {
 		return
 	}
@@ -2465,7 +2465,7 @@ func (s *Session) GuildStickers(guildID string, options ...RequestOption) (stick
 // GuildSticker returns the specified guild sticker.
 func (s *Session) GuildSticker(guildID, stickerID string, options ...RequestOption) (sticker *Sticker, err error) {
 	endpoint := EndpointGuildSticker(guildID, stickerID)
-	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointGuildStickers(guildID), options...)
 	if err != nil {
 		return nil, err
 	}
@@ -2579,7 +2579,7 @@ func (s *Session) GuildSoundboardSounds(guildID string, options ...RequestOption
 // soundID : The ID of a Soundboard Sound.
 func (s *Session) GuildSoundboardSound(guildID, soundID string, options ...RequestOption) (sound *SoundboardSound, err error) {
 	endpoint := EndpointGuildSoundboardSound(guildID, soundID)
-	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, EndpointGuildSoundboardSound(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -2616,7 +2616,7 @@ func (s *Session) GuildSoundboardSoundEdit(guildID, soundID string, data *Soundb
 	}
 
 	endpoint := EndpointGuildSoundboardSound(guildID, soundID)
-	body, err := s.RequestWithBucketID("PATCH", endpoint, data, endpoint, options...)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, data, EndpointGuildSoundboardSound(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -2630,7 +2630,7 @@ func (s *Session) GuildSoundboardSoundEdit(guildID, soundID string, data *Soundb
 // soundID : The ID of a Soundboard Sound.
 func (s *Session) GuildSoundboardSoundDelete(guildID, soundID string, options ...RequestOption) (err error) {
 	endpoint := EndpointGuildSoundboardSound(guildID, soundID)
-	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, EndpointGuildSoundboardSound(guildID, ""), options...)
 	return
 }
 
@@ -2748,7 +2748,7 @@ func (s *Session) ApplicationEmojis(appID string, options ...RequestOption) (emo
 // emojiID : ID of an Emoji to retrieve
 func (s *Session) ApplicationEmoji(appID, emojiID string, options ...RequestOption) (emoji *Emoji, err error) {
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", EndpointApplicationEmoji(appID, emojiID), nil, EndpointApplicationEmoji(appID, emojiID), options...)
+	body, err = s.RequestWithBucketID("GET", EndpointApplicationEmoji(appID, emojiID), nil, EndpointApplicationEmojis(appID), options...)
 	if err != nil {
 		return
 	}
@@ -3544,7 +3544,7 @@ func (s *Session) ChannelMessageCrosspost(channelID, messageID string, options .
 
 	endpoint := EndpointChannelMessageCrosspost(channelID, messageID)
 
-	body, err := s.RequestWithBucketID("POST", endpoint, nil, endpoint, options...)
+	body, err := s.RequestWithBucketID("POST", endpoint, nil, EndpointChannelMessageCrosspost(channelID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -4821,11 +4821,13 @@ func (s *Session) ApplicationCommandEdit(appID, guildID, cmdID string, cmd *Appl
 	}
 
 	endpoint := EndpointApplicationGlobalCommand(appID, cmdID)
+	bucket := EndpointApplicationGlobalCommand(appID, "")
 	if guildID != "" {
 		endpoint = EndpointApplicationGuildCommand(appID, guildID, cmdID)
+		bucket = EndpointApplicationGuildCommand(appID, guildID, "")
 	}
 
-	body, err := s.RequestWithBucketID("PATCH", endpoint, *cmd, endpoint, options...)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, *cmd, bucket, options...)
 	if err != nil {
 		return
 	}
@@ -4860,11 +4862,13 @@ func (s *Session) ApplicationCommandBulkOverwrite(appID string, guildID string, 
 // guildID     : Guild ID to delete guild-specific application command. If empty - deletes global application command.
 func (s *Session) ApplicationCommandDelete(appID, guildID, cmdID string, options ...RequestOption) error {
 	endpoint := EndpointApplicationGlobalCommand(appID, cmdID)
+	bucket := EndpointApplicationGlobalCommand(appID, "")
 	if guildID != "" {
 		endpoint = EndpointApplicationGuildCommand(appID, guildID, cmdID)
+		bucket = EndpointApplicationGuildCommand(appID, guildID, "")
 	}
 
-	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err := s.RequestWithBucketID("DELETE", endpoint, nil, bucket, options...)
 
 	return err
 }
@@ -4875,11 +4879,13 @@ func (s *Session) ApplicationCommandDelete(appID, guildID, cmdID string, options
 // guildID     : Guild ID to retrieve guild-specific application command. If empty - retrieves global application command.
 func (s *Session) ApplicationCommand(appID, guildID, cmdID string, options ...RequestOption) (cmd *ApplicationCommand, err error) {
 	endpoint := EndpointApplicationGlobalCommand(appID, cmdID)
+	bucket := EndpointApplicationGlobalCommand(appID, "")
 	if guildID != "" {
 		endpoint = EndpointApplicationGuildCommand(appID, guildID, cmdID)
+		bucket = EndpointApplicationGuildCommand(appID, guildID, "")
 	}
 
-	body, err := s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err := s.RequestWithBucketID("GET", endpoint, nil, bucket, options...)
 	if err != nil {
 		return
 	}
@@ -5173,7 +5179,7 @@ func (s *Session) GuildScheduledEvent(guildID, eventID string, userCount bool, o
 		uri += "?with_user_count=true"
 	}
 
-	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointGuildScheduledEvent(guildID, eventID), options...)
+	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointGuildScheduledEvent(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -5199,7 +5205,7 @@ func (s *Session) GuildScheduledEventCreate(guildID string, event *GuildSchedule
 // guildID   : The ID of a Guild
 // eventID   : The ID of the event
 func (s *Session) GuildScheduledEventEdit(guildID, eventID string, event *GuildScheduledEventParams, options ...RequestOption) (st *GuildScheduledEvent, err error) {
-	body, err := s.RequestWithBucketID("PATCH", EndpointGuildScheduledEvent(guildID, eventID), event, EndpointGuildScheduledEvent(guildID, eventID), options...)
+	body, err := s.RequestWithBucketID("PATCH", EndpointGuildScheduledEvent(guildID, eventID), event, EndpointGuildScheduledEvent(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -5212,7 +5218,7 @@ func (s *Session) GuildScheduledEventEdit(guildID, eventID string, event *GuildS
 // guildID   : The ID of a Guild
 // eventID   : The ID of the event
 func (s *Session) GuildScheduledEventDelete(guildID, eventID string, options ...RequestOption) (err error) {
-	_, err = s.RequestWithBucketID("DELETE", EndpointGuildScheduledEvent(guildID, eventID), nil, EndpointGuildScheduledEvent(guildID, eventID), options...)
+	_, err = s.RequestWithBucketID("DELETE", EndpointGuildScheduledEvent(guildID, eventID), nil, EndpointGuildScheduledEvent(guildID, ""), options...)
 	return
 }
 
@@ -5223,7 +5229,7 @@ func (s *Session) GuildScheduledEventExceptionCreate(guildID, eventID string, pa
 	}
 
 	endpoint := EndpointGuildScheduledEventExceptions(guildID, eventID)
-	body, err := s.RequestWithBucketID("POST", endpoint, params, endpoint, options...)
+	body, err := s.RequestWithBucketID("POST", endpoint, params, EndpointGuildScheduledEventExceptions(guildID, ""), options...)
 	if err != nil {
 		return nil, err
 	}
@@ -5244,7 +5250,7 @@ func (s *Session) GuildScheduledEventExceptionEdit(guildID, eventID, exceptionID
 	}
 
 	endpoint := EndpointGuildScheduledEventException(guildID, eventID, exceptionID)
-	body, err := s.RequestWithBucketID("PATCH", endpoint, params, endpoint, options...)
+	body, err := s.RequestWithBucketID("PATCH", endpoint, params, EndpointGuildScheduledEventException(guildID, "", ""), options...)
 	if err != nil {
 		return nil, err
 	}
@@ -5261,7 +5267,7 @@ func (s *Session) GuildScheduledEventExceptionEdit(guildID, eventID, exceptionID
 // GuildScheduledEventExceptionDelete deletes an exception to a recurring event.
 func (s *Session) GuildScheduledEventExceptionDelete(guildID, eventID, exceptionID string, options ...RequestOption) (err error) {
 	endpoint := EndpointGuildScheduledEventException(guildID, eventID, exceptionID)
-	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, EndpointGuildScheduledEventException(guildID, "", ""), options...)
 	return
 }
 
@@ -5293,7 +5299,7 @@ func (s *Session) GuildScheduledEventUsers(guildID, eventID string, limit int, w
 		uri += "?" + queryParams.Encode()
 	}
 
-	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointGuildScheduledEventUsers(guildID, eventID), options...)
+	body, err := s.RequestWithBucketID("GET", uri, nil, EndpointGuildScheduledEventUsers(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -5528,7 +5534,7 @@ func (s *Session) AutoModerationRule(guildID, ruleID string, options ...RequestO
 	endpoint := EndpointGuildAutoModerationRule(guildID, ruleID)
 
 	var body []byte
-	body, err = s.RequestWithBucketID("GET", endpoint, nil, endpoint, options...)
+	body, err = s.RequestWithBucketID("GET", endpoint, nil, EndpointGuildAutoModerationRule(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -5561,7 +5567,7 @@ func (s *Session) AutoModerationRuleEdit(guildID, ruleID string, rule *AutoModer
 	endpoint := EndpointGuildAutoModerationRule(guildID, ruleID)
 
 	var body []byte
-	body, err = s.RequestWithBucketID("PATCH", endpoint, rule, endpoint, options...)
+	body, err = s.RequestWithBucketID("PATCH", endpoint, rule, EndpointGuildAutoModerationRule(guildID, ""), options...)
 	if err != nil {
 		return
 	}
@@ -5575,7 +5581,7 @@ func (s *Session) AutoModerationRuleEdit(guildID, ruleID string, rule *AutoModer
 // ruleID  : ID of the auto moderation rule
 func (s *Session) AutoModerationRuleDelete(guildID, ruleID string, options ...RequestOption) (err error) {
 	endpoint := EndpointGuildAutoModerationRule(guildID, ruleID)
-	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, endpoint, options...)
+	_, err = s.RequestWithBucketID("DELETE", endpoint, nil, EndpointGuildAutoModerationRule(guildID, ""), options...)
 	return
 }
 
@@ -5734,7 +5740,7 @@ func (s *Session) PollExpire(channelID, messageID string, options ...RequestOpti
 	endpoint := EndpointPollExpire(channelID, messageID)
 
 	var body []byte
-	body, err = s.RequestWithBucketID("POST", endpoint, nil, endpoint, options...)
+	body, err = s.RequestWithBucketID("POST", endpoint, nil, EndpointPollExpire(channelID, ""), options...)
 	if err != nil {
 		return
 	}

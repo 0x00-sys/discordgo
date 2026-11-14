@@ -824,70 +824,86 @@ func TestUserApplicationEntitlementsUsesStableBucket(t *testing.T) {
 	}
 }
 
-// Discord only scopes route limits by channel, guild and webhook IDs, so
-// other path IDs must not split a route into separate buckets.
-func TestMinorIDRoutesUseStableBuckets(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		call func(s *Session, id string)
-	}{
-		{"GuildBan", func(s *Session, id string) { s.GuildBan("guild", id) }},
-		{"GuildEmoji", func(s *Session, id string) { s.GuildEmoji("guild", id) }},
-		{"GuildSticker", func(s *Session, id string) { s.GuildSticker("guild", id) }},
-		{"GuildSoundboardSound", func(s *Session, id string) { s.GuildSoundboardSound("guild", id) }},
-		{"GuildSoundboardSoundEdit", func(s *Session, id string) { s.GuildSoundboardSoundEdit("guild", id, &SoundboardSoundParams{}) }},
-		{"GuildSoundboardSoundDelete", func(s *Session, id string) { s.GuildSoundboardSoundDelete("guild", id) }},
-		{"ApplicationEmoji", func(s *Session, id string) { s.ApplicationEmoji("application", id) }},
-		{"ApplicationActivityInstance", func(s *Session, id string) { s.ApplicationActivityInstance("application", id) }},
-		{"ChannelMessageCrosspost", func(s *Session, id string) { s.ChannelMessageCrosspost("channel", id) }},
-		{"MessageReactionsRemoveAll", func(s *Session, id string) { s.MessageReactionsRemoveAll("channel", id) }},
-		{"MessageReactionsRemoveEmoji", func(s *Session, id string) { s.MessageReactionsRemoveEmoji("channel", id, "emoji") }},
-		{"PollExpire", func(s *Session, id string) { s.PollExpire("channel", id) }},
-		{"InviteTargetUsers", func(s *Session, id string) { s.InviteTargetUsers(id) }},
-		{"ApplicationCommand", func(s *Session, id string) { s.ApplicationCommand("application", "", id) }},
-		{"ApplicationCommandEdit", func(s *Session, id string) { s.ApplicationCommandEdit("application", "", id, &ApplicationCommand{}) }},
-		{"ApplicationCommandEditGuild", func(s *Session, id string) {
-			s.ApplicationCommandEdit("application", "guild", id, &ApplicationCommand{})
-		}},
-		{"ApplicationCommandDelete", func(s *Session, id string) { s.ApplicationCommandDelete("application", "", id) }},
-		{"ApplicationCommandPermissions", func(s *Session, id string) { s.ApplicationCommandPermissions("application", "guild", id) }},
-		{"ApplicationCommandPermissionsEdit", func(s *Session, id string) {
-			s.ApplicationCommandPermissionsEdit("application", "guild", id, &ApplicationCommandPermissionsList{})
-		}},
-		{"GuildScheduledEvent", func(s *Session, id string) { s.GuildScheduledEvent("guild", id, false) }},
-		{"GuildScheduledEventEdit", func(s *Session, id string) { s.GuildScheduledEventEdit("guild", id, &GuildScheduledEventParams{}) }},
-		{"GuildScheduledEventDelete", func(s *Session, id string) { s.GuildScheduledEventDelete("guild", id) }},
-		{"GuildScheduledEventUsers", func(s *Session, id string) { s.GuildScheduledEventUsers("guild", id, 0, false, "", "") }},
-		{"GuildScheduledEventExceptionCreate", func(s *Session, id string) {
-			s.GuildScheduledEventExceptionCreate("guild", id, &GuildScheduledEventExceptionCreateParams{})
-		}},
-		{"GuildScheduledEventExceptionEdit", func(s *Session, id string) {
-			s.GuildScheduledEventExceptionEdit("guild", id, id+"-exception", &GuildScheduledEventExceptionEditParams{})
-		}},
-		{"GuildScheduledEventExceptionDelete", func(s *Session, id string) { s.GuildScheduledEventExceptionDelete("guild", id, id+"-exception") }},
-		{"AutoModerationRule", func(s *Session, id string) { s.AutoModerationRule("guild", id) }},
-		{"AutoModerationRuleEdit", func(s *Session, id string) { s.AutoModerationRuleEdit("guild", id, &AutoModerationRule{}) }},
-		{"AutoModerationRuleDelete", func(s *Session, id string) { s.AutoModerationRuleDelete("guild", id) }},
-		{"UserVoiceState", func(s *Session, id string) { s.UserVoiceState("guild", id) }},
-		{"UserVoiceStateEdit", func(s *Session, id string) { s.UserVoiceStateEdit("guild", id, &UserVoiceStateEditParams{}) }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			session, err := New("Bot test")
-			if err != nil {
-				t.Fatal(err)
-			}
-			var requests atomic.Int32
-			session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				requests.Add(1)
-				body := `{}`
-				if strings.HasSuffix(r.URL.Path, "/users") {
-					body = `[]`
-				}
-				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
-			})
+// routeScopedCalls are endpoints whose path carries an ID below the top-level
+// resource. Discord scopes per-route limits only by channel, guild and
+// webhook IDs, so these must share one bucket per top-level resource.
+var routeScopedCalls = []struct {
+	name string
+	call func(s *Session, major, minor string)
+}{
+	{"GuildEmoji", func(s *Session, major, minor string) { s.GuildEmoji(major, minor) }},
+	{"GuildSticker", func(s *Session, major, minor string) { s.GuildSticker(major, minor) }},
+	{"GuildSoundboardSound", func(s *Session, major, minor string) { s.GuildSoundboardSound(major, minor) }},
+	{"GuildSoundboardSoundEdit", func(s *Session, major, minor string) {
+		s.GuildSoundboardSoundEdit(major, minor, &SoundboardSoundParams{})
+	}},
+	{"GuildSoundboardSoundDelete", func(s *Session, major, minor string) { s.GuildSoundboardSoundDelete(major, minor) }},
+	{"ApplicationEmoji", func(s *Session, major, minor string) { s.ApplicationEmoji(major, minor) }},
+	{"ChannelMessageCrosspost", func(s *Session, major, minor string) { s.ChannelMessageCrosspost(major, minor) }},
+	{"PollExpire", func(s *Session, major, minor string) { s.PollExpire(major, minor) }},
+	{"ApplicationCommand", func(s *Session, major, minor string) { s.ApplicationCommand(major, "", minor) }},
+	{"ApplicationCommandGuild", func(s *Session, major, minor string) { s.ApplicationCommand("application", major, minor) }},
+	{"ApplicationCommandEdit", func(s *Session, major, minor string) {
+		s.ApplicationCommandEdit(major, "", minor, &ApplicationCommand{})
+	}},
+	{"ApplicationCommandEditGuild", func(s *Session, major, minor string) {
+		s.ApplicationCommandEdit("application", major, minor, &ApplicationCommand{})
+	}},
+	{"ApplicationCommandDelete", func(s *Session, major, minor string) { s.ApplicationCommandDelete(major, "", minor) }},
+	{"ApplicationCommandDeleteGuild", func(s *Session, major, minor string) {
+		s.ApplicationCommandDelete("application", major, minor)
+	}},
+	{"GuildScheduledEvent", func(s *Session, major, minor string) { s.GuildScheduledEvent(major, minor, false) }},
+	{"GuildScheduledEventEdit", func(s *Session, major, minor string) {
+		s.GuildScheduledEventEdit(major, minor, &GuildScheduledEventParams{})
+	}},
+	{"GuildScheduledEventDelete", func(s *Session, major, minor string) { s.GuildScheduledEventDelete(major, minor) }},
+	{"GuildScheduledEventUsers", func(s *Session, major, minor string) {
+		s.GuildScheduledEventUsers(major, minor, 0, false, "", "")
+	}},
+	{"GuildScheduledEventExceptionCreate", func(s *Session, major, minor string) {
+		s.GuildScheduledEventExceptionCreate(major, minor, &GuildScheduledEventExceptionCreateParams{})
+	}},
+	{"GuildScheduledEventExceptionEdit", func(s *Session, major, minor string) {
+		s.GuildScheduledEventExceptionEdit(major, minor, minor+"-exception", &GuildScheduledEventExceptionEditParams{})
+	}},
+	{"GuildScheduledEventExceptionDelete", func(s *Session, major, minor string) {
+		s.GuildScheduledEventExceptionDelete(major, minor, minor+"-exception")
+	}},
+	{"AutoModerationRule", func(s *Session, major, minor string) { s.AutoModerationRule(major, minor) }},
+	{"AutoModerationRuleEdit", func(s *Session, major, minor string) {
+		s.AutoModerationRuleEdit(major, minor, &AutoModerationRule{})
+	}},
+	{"AutoModerationRuleDelete", func(s *Session, major, minor string) { s.AutoModerationRuleDelete(major, minor) }},
+}
 
-			tc.call(session, "minor-one")
-			tc.call(session, "minor-two")
+// newBucketKeySession returns a session whose requests all succeed with no
+// rate limit headers, and a counter of requests sent.
+func newBucketKeySession(t *testing.T) (*Session, *atomic.Int32) {
+	t.Helper()
+	session, err := New("Bot test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := &atomic.Int32{}
+	session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		body := `{}`
+		if strings.HasSuffix(r.URL.Path, "/users") {
+			body = `[]`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	return session, requests
+}
+
+func TestRouteScopedEndpointsShareBucketAcrossMinorIDs(t *testing.T) {
+	for _, tc := range routeScopedCalls {
+		t.Run(tc.name, func(t *testing.T) {
+			session, requests := newBucketKeySession(t)
+
+			tc.call(session, "major", "minor-one")
+			tc.call(session, "major", "minor-two")
 
 			if got := requests.Load(); got != 2 {
 				t.Fatalf("requests = %d, want 2", got)
@@ -900,43 +916,122 @@ func TestMinorIDRoutesUseStableBuckets(t *testing.T) {
 	}
 }
 
-// An exhausted route bucket must hold back the next request to the same route
-// even when it targets another command, or it is sent into a known 429.
-func TestMinorIDRouteWaitsForSharedReset(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		session, err := New("Bot test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var sent []time.Duration
-		started := time.Now()
-		session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			sent = append(sent, time.Since(started))
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Header: http.Header{
-					"X-Ratelimit-Remaining":   {"0"},
-					"X-Ratelimit-Reset-After": {"1"},
-				},
-				Body:    io.NopCloser(strings.NewReader(`{}`)),
-				Request: r,
-			}, nil
-		})
+// Guard: merging minor IDs must keep the top-level resource in the key, so
+// different guilds, channels and applications keep separate buckets.
+func TestRouteScopedEndpointsKeepMajorIDBuckets(t *testing.T) {
+	for _, tc := range routeScopedCalls {
+		t.Run(tc.name, func(t *testing.T) {
+			session, requests := newBucketKeySession(t)
 
-		for _, cmdID := range []string{"command-one", "command-two"} {
-			if _, err := session.ApplicationCommandEdit("application", "", cmdID, &ApplicationCommand{}); err != nil {
-				t.Fatal(err)
+			tc.call(session, "major-one", "minor")
+			tc.call(session, "major-two", "minor")
+
+			if got := requests.Load(); got != 2 {
+				t.Fatalf("requests = %d, want 2", got)
 			}
-		}
+			if got := len(session.Ratelimiter.buckets); got != 2 {
+				t.Errorf("buckets = %d, want one per top-level resource", got)
+			}
+		})
+	}
+}
 
-		if len(sent) != 2 {
-			t.Fatalf("requests = %d, want 2", len(sent))
-		}
-		if gap := sent[1] - sent[0]; gap < time.Second {
-			t.Errorf("second command edit sent %v after an exhausted route reply, want >= 1s", gap)
-		}
-	})
+// Guard: these routes still key on the minor ID on purpose. GuildBan GET and
+// UserVoiceState lookups are often sent in parallel for many users, and
+// reaction routes have their own limits.
+func TestMinorIDBucketsKeptForConcurrentRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(s *Session, minor string)
+	}{
+		{"GuildBan", func(s *Session, minor string) { s.GuildBan("guild", minor) }},
+		{"UserVoiceState", func(s *Session, minor string) { s.UserVoiceState("guild", minor) }},
+		{"UserVoiceStateEdit", func(s *Session, minor string) {
+			s.UserVoiceStateEdit("guild", minor, &UserVoiceStateEditParams{})
+		}},
+		{"MessageReactionsRemoveAll", func(s *Session, minor string) { s.MessageReactionsRemoveAll("channel", minor) }},
+		{"MessageReactionsRemoveEmoji", func(s *Session, minor string) {
+			s.MessageReactionsRemoveEmoji("channel", minor, "emoji")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session, _ := newBucketKeySession(t)
+
+			tc.call(session, "minor-one")
+			tc.call(session, "minor-two")
+
+			if got := len(session.Ratelimiter.buckets); got != 2 {
+				t.Errorf("buckets = %d, want 2 (one per minor ID, unchanged)", got)
+			}
+		})
+	}
+}
+
+// An exhausted route bucket must hold back the next request to the same route
+// even when it targets another command, rule or message, or it is sent into a
+// known 429.
+func TestRouteScopedEndpointWaitsForSharedReset(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(s *Session, minor string) error
+	}{
+		{"ApplicationCommandEdit", func(s *Session, minor string) error {
+			_, err := s.ApplicationCommandEdit("application", "", minor, &ApplicationCommand{})
+			return err
+		}},
+		{"ApplicationCommandDeleteGuild", func(s *Session, minor string) error {
+			return s.ApplicationCommandDelete("application", "guild", minor)
+		}},
+		{"AutoModerationRuleEdit", func(s *Session, minor string) error {
+			_, err := s.AutoModerationRuleEdit("guild", minor, &AutoModerationRule{})
+			return err
+		}},
+		{"ChannelMessageCrosspost", func(s *Session, minor string) error {
+			_, err := s.ChannelMessageCrosspost("channel", minor)
+			return err
+		}},
+		{"GuildScheduledEventEdit", func(s *Session, minor string) error {
+			_, err := s.GuildScheduledEventEdit("guild", minor, &GuildScheduledEventParams{})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				session, err := New("Bot test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sent []time.Duration
+				started := time.Now()
+				session.Client.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					sent = append(sent, time.Since(started))
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Status:     "200 OK",
+						Header: http.Header{
+							"X-Ratelimit-Remaining":   {"0"},
+							"X-Ratelimit-Reset-After": {"1"},
+						},
+						Body:    io.NopCloser(strings.NewReader(`{}`)),
+						Request: r,
+					}, nil
+				})
+
+				for _, minor := range []string{"minor-one", "minor-two"} {
+					if err := tc.call(session, minor); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				if len(sent) != 2 {
+					t.Fatalf("requests = %d, want 2", len(sent))
+				}
+				if gap := sent[1] - sent[0]; gap < time.Second {
+					t.Errorf("second request sent %v after an exhausted route reply, want >= 1s", gap)
+				}
+			})
+		})
+	}
 }
 
 func assertRateLimitBucketsDoNotContain(t *testing.T, session *Session, value string) {
