@@ -2751,6 +2751,588 @@ func newGatewayTricklingStartupTestServer(t *testing.T, gap time.Duration, trick
 	return server
 }
 
+// identifyLimitedGateway is a fake gateway that enforces Discord's documented
+// identify concurrency: one IDENTIFY per window per rate_limit_key
+// (shard_id % max_concurrency) for the whole application. A violating
+// IDENTIFY gets Invalid Session (op 9, d=false). RESUME is always accepted.
+type identifyLimitedGateway struct {
+	*httptest.Server
+	window         time.Duration
+	maxConcurrency int
+
+	mu         sync.Mutex
+	lastByKey  map[int]time.Time
+	identifies int
+	rejected   int
+	resumes    int
+	restCalls  map[string]int
+	conns      []*websocket.Conn
+}
+
+func newIdentifyLimitedGateway(t *testing.T, window time.Duration, maxConcurrency int) *identifyLimitedGateway {
+	t.Helper()
+	g := &identifyLimitedGateway{window: window, maxConcurrency: maxConcurrency, lastByKey: map[int]time.Time{}, restCalls: map[string]int{}}
+	upgrader := websocket.Upgrader{}
+	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"op":10,"d":{"heartbeat_interval":41250}}`)); err != nil {
+			return
+		}
+		var op struct {
+			Op   int `json:"op"`
+			Data struct {
+				Shard *[2]int `json:"shard"`
+			} `json:"d"`
+		}
+		for {
+			if err := conn.ReadJSON(&op); err != nil {
+				return
+			}
+			if op.Op == 2 || op.Op == 6 {
+				break
+			}
+		}
+		if op.Op == 6 {
+			g.mu.Lock()
+			g.resumes++
+			g.conns = append(g.conns, conn)
+			g.mu.Unlock()
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":0,"s":2,"t":"RESUMED","d":{}}`))
+			return
+		}
+		shard := 0
+		if op.Data.Shard != nil {
+			shard = op.Data.Shard[0]
+		}
+		g.mu.Lock()
+		key := shard % g.maxConcurrency
+		g.identifies++
+		now := time.Now()
+		if last, ok := g.lastByKey[key]; ok && now.Sub(last) < g.window {
+			g.rejected++
+			g.mu.Unlock()
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"op":9,"d":false}`))
+			_ = conn.Close()
+			return
+		}
+		g.lastByKey[key] = now
+		g.conns = append(g.conns, conn)
+		g.mu.Unlock()
+		ready := fmt.Sprintf(`{"op":0,"s":1,"t":"READY","d":{"session_id":"shard%d","user":{"id":"1"},"guilds":[]}}`, shard)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(ready))
+	}))
+	t.Cleanup(g.Close)
+	return g
+}
+
+func (g *identifyLimitedGateway) counts() (identifies, rejected, resumes int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.identifies, g.rejected, g.resumes
+}
+
+func (g *identifyLimitedGateway) dropAll(closeCode int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, conn := range g.conns {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, "test"), time.Now().Add(time.Second))
+		_ = conn.Close()
+	}
+	g.conns = nil
+}
+
+var identifyTestTokens atomic.Int64
+
+// newIdentifyTestToken returns a token no other test run uses, since the
+// identify limiter is package-level.
+func newIdentifyTestToken() string {
+	return fmt.Sprintf("Bot identify-test-%d", identifyTestTokens.Add(1))
+}
+
+// setIdentifyWindowForTest shortens the identify window for one test.
+func setIdentifyWindowForTest(t *testing.T, window time.Duration) {
+	t.Helper()
+	l := gatewayIdentifyLimiter
+	l.mu.Lock()
+	old := l.window
+	l.window = window
+	l.mu.Unlock()
+	t.Cleanup(func() {
+		l.mu.Lock()
+		l.window = old
+		l.mu.Unlock()
+	})
+}
+
+// newIdentifyLimitedShard returns a shard whose REST client answers
+// GET /gateway/bot (or GET /gateway) with g's URL and max_concurrency.
+func newIdentifyLimitedShard(t *testing.T, g *identifyLimitedGateway, token string, shard, shards int, gatewayBotStatus int) *Session {
+	t.Helper()
+	s, err := New(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LogLevel = -1
+	s.ShardID = shard
+	s.ShardCount = shards
+	wsURL := "ws" + strings.TrimPrefix(g.URL, "http")
+	s.Client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		path := strings.TrimPrefix(req.URL.Path, "/api/v"+APIVersion)
+		g.mu.Lock()
+		g.restCalls[path]++
+		maxConcurrency := g.maxConcurrency
+		g.mu.Unlock()
+		status, body := http.StatusOK, fmt.Sprintf(`{"url":%q}`, wsURL)
+		if path == "/gateway/bot" {
+			status = gatewayBotStatus
+			body = fmt.Sprintf(`{"url":%q,"shards":%d,"session_start_limit":{"total":1000,"remaining":1000,"reset_after":0,"max_concurrency":%d}}`, wsURL, shards, maxConcurrency)
+			if status != http.StatusOK {
+				body = `{"message":"401: Unauthorized","code":0}`
+			}
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// Opening the shards of one bot one after another, the usual way to start a
+// sharded bot, must not violate identify concurrency.
+func TestGatewayShardsOpenedInSequenceRespectIdentifyConcurrency(t *testing.T) {
+	const shards = 3
+	const window = 200 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 1)
+	token := newIdentifyTestToken()
+	var failed []string
+	for i := 0; i < shards; i++ {
+		if err := newIdentifyLimitedShard(t, g, token, i, shards, http.StatusOK).Open(); err != nil {
+			failed = append(failed, fmt.Sprintf("shard %d: %v", i, err))
+		}
+	}
+	identifies, rejected, _ := g.counts()
+	if len(failed) > 0 || rejected > 0 {
+		t.Fatalf("opening %d shards (max_concurrency=1): %d IDENTIFY sent, %d rejected with op 9; failed Opens: %q", shards, identifies, rejected, failed)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if got := g.restCalls["/gateway/bot"]; got != 1 {
+		t.Errorf("GET /gateway/bot calls = %d, want 1 shared by the shards of one token", got)
+	}
+	if got := g.restCalls["/gateway"]; got != 0 {
+		t.Errorf("GET /gateway calls = %d, want 0 for sharded sessions", got)
+	}
+}
+
+// Shards of one bot that must all re-identify at once (gateway restart, close
+// 4009) are paced like a fresh start.
+func TestGatewayShardsReidentifyingTogetherRespectIdentifyConcurrency(t *testing.T) {
+	const shards = 3
+	const window = 200 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 1)
+	token := newIdentifyTestToken()
+	for i := 0; i < shards; i++ {
+		if i > 0 {
+			// Space the first start out so only the re-identify is tested.
+			time.Sleep(window + identifyConcurrencyMargin)
+		}
+		if err := newIdentifyLimitedShard(t, g, token, i, shards, http.StatusOK).Open(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.mu.Lock()
+	g.identifies = 0
+	g.mu.Unlock()
+	g.dropAll(4009)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		identifies, rejected, _ := g.counts()
+		if rejected > 0 {
+			t.Fatalf("%d shards re-identifying (max_concurrency=1): %d of %d IDENTIFY rejected with op 9, want 0", shards, rejected, identifies)
+		}
+		if identifies >= shards {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d shards re-identified within 10s", identifies, shards)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Leave time for any extra IDENTIFY to show up.
+	time.Sleep(2 * (window + identifyConcurrencyMargin))
+	if identifies, rejected, _ := g.counts(); identifies != shards || rejected != 0 {
+		t.Fatalf("after re-identifying: %d IDENTIFY sent, %d rejected; want %d sent, 0 rejected", identifies, rejected, shards)
+	}
+}
+
+// When GET /gateway/bot fails, a sharded session still opens through
+// GET /gateway and paces with max_concurrency 1.
+func TestGatewayShardFallsBackToGatewayWhenGatewayBotFails(t *testing.T) {
+	const window = 200 * time.Millisecond
+	setIdentifyWindowForTest(t, window)
+	g := newIdentifyLimitedGateway(t, window, 1)
+	token := newIdentifyTestToken()
+	for i := 0; i < 2; i++ {
+		if err := newIdentifyLimitedShard(t, g, token, i, 2, http.StatusUnauthorized).Open(); err != nil {
+			t.Fatalf("shard %d: %v", i, err)
+		}
+	}
+	if identifies, rejected, _ := g.counts(); identifies != 2 || rejected != 0 {
+		t.Fatalf("%d IDENTIFY sent, %d rejected; want 2 sent, 0 rejected", identifies, rejected)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if got := g.restCalls["/gateway"]; got != 2 {
+		t.Errorf("GET /gateway calls = %d, want 2 fallback lookups", got)
+	}
+}
+
+// A shard waiting for its identify bucket must not block Close, and must not
+// send IDENTIFY after it.
+func TestGatewayCloseDuringIdentifyWaitReturnsPromptly(t *testing.T) {
+	setIdentifyWindowForTest(t, 5*time.Second)
+	g := newIdentifyLimitedGateway(t, 5*time.Second, 1)
+	token := newIdentifyTestToken()
+	if err := newIdentifyLimitedShard(t, g, token, 0, 2, http.StatusOK).Open(); err != nil {
+		t.Fatal(err)
+	}
+	waiting := newIdentifyLimitedShard(t, g, token, 1, 2, http.StatusOK)
+	openDone := make(chan error, 1)
+	go func() { openDone <- waiting.Open() }()
+
+	// Wait until shard 1 owns bucket 0 and is waiting out shard 0's cooldown.
+	l := gatewayIdentifyLimiter
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l.mu.Lock()
+		held := false
+		if app := l.apps[token]; app != nil && app.buckets[0] != nil {
+			held = len(app.buckets[0].slot) == 1
+		}
+		l.mu.Unlock()
+		if held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("shard 1 never started waiting for its identify bucket")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	start := time.Now()
+	if err := waiting.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-openDone:
+		if !errors.Is(err, ErrWSNotFound) {
+			t.Fatalf("Open returned %v after Close, want %v", err, ErrWSNotFound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Open still waiting for the identify bucket 1s after Close")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Open returned %v after Close, want promptly", elapsed)
+	}
+	if identifies, _, _ := g.counts(); identifies != 1 {
+		t.Fatalf("%d IDENTIFY sent, want 1 (none from the closed shard)", identifies)
+	}
+}
+
+// RESUME is not an IDENTIFY and must not wait for the identify bucket.
+func TestGatewayShardResumeIsNotPacedByIdentifyConcurrency(t *testing.T) {
+	setIdentifyWindowForTest(t, 5*time.Second)
+	g := newIdentifyLimitedGateway(t, 5*time.Second, 1)
+	s := newIdentifyLimitedShard(t, g, newIdentifyTestToken(), 0, 2, http.StatusOK)
+	resumed := make(chan struct{}, 1)
+	s.AddHandler(func(*Session, *Resumed) {
+		select {
+		case resumed <- struct{}{}:
+		default:
+		}
+	})
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	// The identify bucket is now cooling down for 5s; a resumable close
+	// must resume right away.
+	start := time.Now()
+	g.dropAll(4000)
+	select {
+	case <-resumed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no RESUMED within 3s of a resumable close; resume waited for the identify bucket")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("resume took %v", elapsed)
+	}
+	if identifies, _, resumes := g.counts(); identifies != 1 || resumes != 1 {
+		t.Fatalf("%d IDENTIFY and %d RESUME sent, want 1 and 1", identifies, resumes)
+	}
+}
+
+func TestIdentifyLimiterIndependentTokensDoNotBlock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		ctx := context.Background()
+		start := time.Now()
+
+		a := l.join("token a")
+		slot, err := l.acquire(ctx, a, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.sent()
+		slot.release()
+
+		b := l.join("token b")
+		slot, err = l.acquire(ctx, b, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited := time.Since(start); waited != 0 {
+			t.Fatalf("token b waited %v behind token a, want 0", waited)
+		}
+		slot.sent()
+		slot.release()
+
+		slot, err = l.acquire(ctx, a, 1, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited, want := time.Since(start), 5*time.Second+identifyConcurrencyMargin; waited != want {
+			t.Fatalf("second identify of token a waited %v, want %v", waited, want)
+		}
+		slot.release()
+		l.leave("token a", a)
+		l.leave("token b", b)
+	})
+}
+
+func TestIdentifyLimiterBucketsProceedInParallel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		start := time.Now()
+		var mu sync.Mutex
+		sentAt := map[int]time.Duration{}
+		var wg sync.WaitGroup
+		for shard := 0; shard < 4; shard++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if shard >= 2 {
+					time.Sleep(time.Millisecond) // shards 0 and 1 start first
+				}
+				slot, err := l.acquire(context.Background(), app, shard, 2, time.Hour)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				sentAt[shard] = time.Since(start)
+				mu.Unlock()
+				slot.beginSend()
+				slot.sent()
+				slot.release()
+			}()
+		}
+		wg.Wait()
+		next := 5*time.Second + identifyConcurrencyMargin
+		want := map[int]time.Duration{0: 0, 1: 0, 2: next, 3: next}
+		if !reflect.DeepEqual(sentAt, want) {
+			t.Fatalf("identify times with max_concurrency=2 = %v, want %v", sentAt, want)
+		}
+	})
+}
+
+func TestIdentifyLimiterCancelDuringWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		start := time.Now()
+		next := 5*time.Second + identifyConcurrencyMargin
+
+		slot, err := l.acquire(context.Background(), app, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.sent()
+		slot.release()
+
+		// Canceled while waiting out the cooldown.
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(time.Second, cancel)
+		if _, err := l.acquire(ctx, app, 1, 1, time.Hour); !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquire after cancel = %v, want context.Canceled", err)
+		}
+		if waited := time.Since(start); waited != time.Second {
+			t.Fatalf("canceled acquire returned after %v, want 1s", waited)
+		}
+
+		// The canceled waiter neither reset the cooldown nor kept the slot.
+		holder, err := l.acquire(context.Background(), app, 2, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited := time.Since(start); waited != next {
+			t.Fatalf("next acquire returned after %v, want %v", waited, next)
+		}
+
+		// Canceled while another session holds the slot: the holder keeps it.
+		ctx, cancel = context.WithCancel(context.Background())
+		time.AfterFunc(time.Second, cancel)
+		if _, err := l.acquire(ctx, app, 3, 1, time.Hour); !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquire after cancel = %v, want context.Canceled", err)
+		}
+		if !holder.beginSend() {
+			t.Fatal("holder lost its slot when a waiter was canceled")
+		}
+		holder.sent()
+		holder.release()
+		sentAt := time.Now()
+
+		slot, err = l.acquire(context.Background(), app, 4, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited := time.Since(sentAt); waited != next {
+			t.Fatalf("acquire after holder sent waited %v, want %v", waited, next)
+		}
+		slot.release()
+	})
+}
+
+func TestIdentifyLimiterSlotHoldIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		start := time.Now()
+
+		hung, err := l.acquire(context.Background(), app, 0, 1, 10*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot, err := l.acquire(context.Background(), app, 1, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The hung holder lost the slot at 10s, and that counts as a send.
+		if waited, want := time.Since(start), 10*time.Second+5*time.Second+identifyConcurrencyMargin; waited != want {
+			t.Fatalf("acquire behind a hung holder returned after %v, want %v", waited, want)
+		}
+		if hung.beginSend() {
+			t.Fatal("hung holder may still send IDENTIFY after its slot expired")
+		}
+		hung.release()
+		slot.release()
+	})
+}
+
+func TestIdentifyLimiterKeepsCooldownAfterLastSessionLeaves(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		start := time.Now()
+
+		// Released without sending: no cooldown, entry dropped at once.
+		app := l.join("token")
+		slot, err := l.acquire(context.Background(), app, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.release()
+		l.leave("token", app)
+		if n := len(l.apps); n != 0 {
+			t.Fatalf("%d entries after an unsent release, want 0", n)
+		}
+
+		// Sent, then the only session leaves (failed open or Close).
+		app = l.join("token")
+		slot, err = l.acquire(context.Background(), app, 0, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slot.sent()
+		slot.release()
+		l.leave("token", app)
+
+		time.Sleep(time.Second)
+		app = l.join("token")
+		slot, err = l.acquire(context.Background(), app, 1, 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waited, want := time.Since(start), 5*time.Second+identifyConcurrencyMargin; waited != want {
+			t.Fatalf("identify after the last session left waited until %v, want %v", waited, want)
+		}
+		slot.release()
+		l.leave("token", app)
+
+		// Once the cooldown is over, nothing is kept for the token.
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		l.mu.Lock()
+		n := len(l.apps)
+		l.mu.Unlock()
+		if n != 0 {
+			t.Fatalf("%d entries left after every cooldown ended, want 0", n)
+		}
+	})
+}
+
+func TestIdentifyLimiterLooksUpGatewayBotOncePerToken(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &identifyLimiter{window: 5 * time.Second}
+		app := l.join("token")
+		defer l.leave("token", app)
+		var calls atomic.Int32
+		fetch := func() (string, int, error) {
+			calls.Add(1)
+			time.Sleep(100 * time.Millisecond)
+			return "wss://gateway/", 16, nil
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				url, maxConcurrency := l.gatewayBot(context.Background(), app, fetch)
+				if url != "wss://gateway/" || maxConcurrency != 16 {
+					t.Errorf("gatewayBot = %q, %d", url, maxConcurrency)
+				}
+			}()
+		}
+		wg.Wait()
+		if n := calls.Load(); n != 1 {
+			t.Fatalf("GET /gateway/bot lookups = %d for 16 concurrent shards, want 1", n)
+		}
+
+		// A failed lookup is not cached as max_concurrency 1.
+		other := l.join("other")
+		defer l.leave("other", other)
+		if _, mc := l.gatewayBot(context.Background(), other, func() (string, int, error) { return "", 0, errors.New("boom") }); mc != 0 {
+			t.Fatalf("failed lookup returned max_concurrency %d, want 0", mc)
+		}
+		if _, mc := l.gatewayBot(context.Background(), other, func() (string, int, error) { return "wss://gateway/", 4, nil }); mc != 4 {
+			t.Fatalf("lookup after a failure returned max_concurrency %d, want 4", mc)
+		}
+	})
+}
+
 func TestOpenSurvivesSlowStartupReplayWithinPerReadDeadline(t *testing.T) {
 	// Total startup traffic takes ~500ms, exceeding the 200ms startup
 	// read timeout, but every individual gap stays well below it. The
