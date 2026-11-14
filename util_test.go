@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,6 +168,156 @@ func BenchmarkMultipartBodyWithJSONFile(b *testing.B) {
 					spare = cap(body) - len(body)
 				}
 				b.ReportMetric(float64(spare), "spare-B")
+			})
+		}
+	}
+}
+
+func TestReaderSizeHintCountsFromCurrentOffset(t *testing.T) {
+	data := bytes.Repeat([]byte{'a'}, 100)
+	path := filepath.Join(t.TempDir(), "upload.bin")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	openAt := func(offset int64) io.Reader {
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { file.Close() })
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		return file
+	}
+	readerAt := func(offset int64) io.Reader {
+		r := bytes.NewReader(data)
+		if _, err := r.Seek(offset, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	sectionAt := func(offset int64) io.Reader {
+		r := io.NewSectionReader(bytes.NewReader(data), 0, int64(len(data)))
+		if _, err := r.Seek(offset, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pipeReader.Close(); pipeWriter.Close() })
+
+	tests := []struct {
+		name   string
+		reader io.Reader
+		want   int64
+	}{
+		{"bytes.Reader", readerAt(10), 90},
+		{"strings.Reader", strings.NewReader("hello"), 5},
+		{"os.File", openAt(30), 70},
+		{"os.File past end", openAt(150), -1},
+		{"SectionReader", sectionAt(40), 60},
+		{"LimitReader", io.LimitReader(bytes.NewReader(data), 50), -1},
+		{"MultiReader", io.MultiReader(bytes.NewReader(data)), -1},
+		{"pipe", pipeReader, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readerSizeHint(tt.reader); got != tt.want {
+				t.Fatalf("readerSizeHint = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A presized body must hold the whole upload without growing again, and the
+// file bytes must still start at the reader's current offset.
+func TestMultipartBodyPresizesKnownFileSizes(t *testing.T) {
+	const size = 256 << 10
+	const offset = 1000
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	path := filepath.Join(t.TempDir(), "upload.bin")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { file.Close() })
+
+	// Names that escaping lengthens and an invalid content type that gets
+	// replaced must still fit in the estimate.
+	longName := strings.Repeat("\r\n\"", 200)
+	tests := []struct {
+		name    string
+		reader  func() io.Reader
+		presize bool
+	}{
+		{"os.File", func() io.Reader {
+			if _, err := file.Seek(offset, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			return file
+		}, true},
+		{"SectionReader", func() io.Reader {
+			r := io.NewSectionReader(bytes.NewReader(data), 0, size)
+			if _, err := r.Seek(offset, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}, true},
+		{"unknown size", func() io.Reader {
+			return io.MultiReader(bytes.NewReader(data[offset:]))
+		}, false},
+	}
+	for _, tt := range tests {
+		for _, includePayload := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/payload=%v", tt.name, includePayload), func(t *testing.T) {
+				files := []*File{
+					{Name: "small.txt", ContentType: "text/plain", Reader: strings.NewReader("small")},
+					{Name: longName, FieldName: longName, ContentType: "bad\r\ntype", Reader: tt.reader()},
+				}
+				fields := map[string]string{longName: "value"}
+				contentType, body, err := multipartBody(&MessageSend{Content: "upload"}, fields, files, includePayload)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				spare := cap(body) - len(body)
+				if tt.presize && spare > 4<<10 {
+					t.Fatalf("spare capacity = %d bytes for a %d byte body, want the estimate to fit without regrowing", spare, len(body))
+				}
+
+				_, params, err := mime.ParseMediaType(contentType)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+				var got []byte
+				for {
+					part, err := reader.NextPart()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if part.FileName() != "" && part.FormName() != "files[0]" {
+						if got, err = io.ReadAll(part); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if !bytes.Equal(got, data[offset:]) {
+					t.Fatalf("file part has %d bytes, want the %d bytes after offset %d", len(got), size-offset, offset)
+				}
 			})
 		}
 	}
