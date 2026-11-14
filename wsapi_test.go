@@ -156,6 +156,305 @@ func TestOnEventRejectsNullEvent(t *testing.T) {
 	}
 }
 
+// TestStateIgnoredEventTypesAreIgnoredByState fails when State.OnInterface
+// gains a case for a type the dispatcher leaves undecoded when unhandled.
+//
+// Known weakness: it passes a typed nil, which today hits every State case as
+// either ErrStateInvalidData or a panic. A future case that accepts a typed
+// nil without error and without changing state would not be caught.
+func TestStateIgnoredEventTypesAreIgnoredByState(t *testing.T) {
+	for _, always := range []string{readyEventType, voiceStateUpdateEventType, voiceServerUpdateEventType} {
+		if stateIgnoredEventTypes[always] {
+			t.Errorf("%s is always consumed and must not be listed", always)
+		}
+	}
+	for typ := range stateIgnoredEventTypes {
+		provider, ok := registeredInterfaceProviders[typ]
+		if !ok {
+			t.Fatalf("%s is not a registered event type", typ)
+		}
+		session, err := New("Bot token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, _ := json.Marshal(session.State)
+		v := reflect.Zero(reflect.TypeOf(provider.New())).Interface()
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("State.OnInterface handles %s (panic on nil: %v)", typ, r)
+				}
+			}()
+			if err := session.State.OnInterface(session, v); err != nil {
+				t.Errorf("State.OnInterface handles %s: %v", typ, err)
+			}
+		}()
+		if after, _ := json.Marshal(session.State); !bytes.Equal(after, before) {
+			t.Errorf("State.OnInterface changed state for %s", typ)
+		}
+	}
+}
+
+func TestGatewaySkipsDecodeOnlyWhenNothingConsumesEvent(t *testing.T) {
+	message := []byte(`{"op":0,"s":42,"t":"TYPING_START","d":{"channel_id":"1","user_id":"2","timestamp":1}}`)
+	cases := []struct {
+		name   string
+		setup  func(*Session)
+		decode bool
+	}{
+		{"nothing", func(*Session) {}, false},
+		{"typed", func(s *Session) { s.AddHandler(func(*Session, *TypingStart) {}) }, true},
+		{"typed once", func(s *Session) { s.AddHandlerOnce(func(*Session, *TypingStart) {}) }, true},
+		{"interface", func(s *Session) { s.AddHandler(func(*Session, interface{}) {}) }, true},
+		{"interface once", func(s *Session) { s.AddHandlerOnce(func(*Session, interface{}) {}) }, true},
+		{"event", func(s *Session) { s.AddHandler(func(*Session, *Event) {}) }, true},
+		{"event once", func(s *Session) { s.AddHandlerOnce(func(*Session, *Event) {}) }, true},
+		{"other type only", func(s *Session) { s.AddHandler(func(*Session, *InteractionCreate) {}) }, false},
+		{"removed", func(s *Session) { s.AddHandler(func(*Session, *TypingStart) {})() }, false},
+	}
+	for _, state := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("state=%t/%s", state, tc.name), func(t *testing.T) {
+				s, err := New("Bot token")
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.StateEnabled = state
+				s.SyncEvents = true
+				tc.setup(s)
+				e, err := s.onEvent(websocket.TextMessage, message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := e.Struct != nil; got != tc.decode {
+					t.Fatalf("decoded = %t, want %t", got, tc.decode)
+				}
+				if atomic.LoadInt64(s.sequence) != 42 {
+					t.Fatalf("sequence = %d, want 42", atomic.LoadInt64(s.sequence))
+				}
+				if e.Type != "TYPING_START" || !bytes.Contains(e.RawData, []byte(`"channel_id":"1"`)) {
+					t.Fatalf("event = %s %s, want type and raw data kept", e.Type, e.RawData)
+				}
+			})
+		}
+	}
+
+	// *Event handlers keep getting a decoded Struct and the raw data.
+	s, _ := New("Bot token")
+	s.SyncEvents = true
+	var got *Event
+	s.AddHandler(func(_ *Session, e *Event) { got = e })
+	if _, err := s.onEvent(websocket.TextMessage, message); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Struct == nil || got.Sequence != 42 || len(got.RawData) == 0 {
+		t.Fatalf("*Event handler got %+v, want decoded struct, sequence and raw data", got)
+	}
+	if ts, ok := got.Struct.(*TypingStart); !ok || ts.ChannelID != "1" {
+		t.Fatalf("*Event Struct = %#v, want decoded *TypingStart", got.Struct)
+	}
+
+	// State-consumed types still decode with no handlers.
+	s, _ = New("Bot token")
+	e, err := s.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"MESSAGE_CREATE","d":{"id":"1","channel_id":"2"}}`))
+	if err != nil || e.Struct == nil {
+		t.Fatalf("MESSAGE_CREATE with state enabled: struct=%v err=%v", e.Struct, err)
+	}
+	// READY always decodes.
+	s, _ = New("Bot token")
+	s.StateEnabled = false
+	if _, err = s.onEvent(websocket.TextMessage, []byte(`{"op":0,"s":1,"t":"READY","d":{"session_id":"abc","resume_gateway_url":"wss://x"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if s.sessionID != "abc" {
+		t.Fatalf("sessionID = %q after READY with no handlers", s.sessionID)
+	}
+}
+
+// waitForDispatchBlockedOnSessionLock waits until a goroutine is parked on
+// the session lock inside onEventForConnection, which is after the decision
+// whether to decode.
+func waitForDispatchBlockedOnSessionLock(t *testing.T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "(*Session).onEventForConnection") && strings.Contains(g, "sync.(*RWMutex).Lock") {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("dispatch did not block on the session lock")
+}
+
+// interfaceSaw returns an interface{} handler that reports each TYPING_START
+// delivery, typed or as *Event, and whether it carried a decoded struct.
+func interfaceSaw(s *Session, saw func(seq int64, decoded bool)) func(*Session, interface{}) {
+	return func(_ *Session, i interface{}) {
+		switch v := i.(type) {
+		case *Event:
+			if v.Type == typingStartEventType {
+				saw(v.Sequence, v.Struct != nil)
+			}
+		case *TypingStart:
+			saw(atomic.LoadInt64(s.sequence), v != nil)
+		}
+	}
+}
+
+// A handler registered after the decode decision but before delivery must
+// never see a known event type with a nil Struct. It misses that event and
+// starts with the next one; once handlers stay registered for it.
+func TestGatewayHandlerAddedAfterSkipNeverSeesNilStruct(t *testing.T) {
+	message := func(seq int) []byte {
+		return []byte(fmt.Sprintf(`{"op":0,"s":%d,"t":"TYPING_START","d":{"channel_id":"1","user_id":"2","timestamp":1}}`, seq))
+	}
+	cases := []struct {
+		name string
+		add  func(s *Session, saw func(seq int64, decoded bool))
+	}{
+		{"event", func(s *Session, saw func(int64, bool)) {
+			s.AddHandler(func(_ *Session, e *Event) { saw(e.Sequence, e.Struct != nil) })
+		}},
+		{"event once", func(s *Session, saw func(int64, bool)) {
+			s.AddHandlerOnce(func(_ *Session, e *Event) { saw(e.Sequence, e.Struct != nil) })
+		}},
+		{"interface", func(s *Session, saw func(int64, bool)) {
+			s.AddHandler(interfaceSaw(s, saw))
+		}},
+		{"interface once", func(s *Session, saw func(int64, bool)) {
+			s.AddHandlerOnce(interfaceSaw(s, saw))
+		}},
+		{"typed once", func(s *Session, saw func(int64, bool)) {
+			s.AddHandlerOnce(func(_ *Session, ts *TypingStart) { saw(atomic.LoadInt64(s.sequence), ts != nil) })
+		}},
+	}
+	for _, state := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("state=%t/%s", state, tc.name), func(t *testing.T) {
+				s, err := New("Bot token")
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.StateEnabled = state
+				s.SyncEvents = true
+
+				var mu sync.Mutex
+				var seen []int64
+				saw := func(seq int64, decoded bool) {
+					if !decoded {
+						t.Errorf("handler got TYPING_START seq %d with nil Struct", seq)
+					}
+					mu.Lock()
+					seen = append(seen, seq)
+					mu.Unlock()
+				}
+
+				s.Lock()
+				done := make(chan error, 1)
+				go func() {
+					_, err := s.onEventForConnection(nil, websocket.TextMessage, message(1))
+					done <- err
+				}()
+				waitForDispatchBlockedOnSessionLock(t)
+				tc.add(s, saw)
+				s.Unlock()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+
+				if _, err := s.onEventForConnection(nil, websocket.TextMessage, message(2)); err != nil {
+					t.Fatal(err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(seen) == 0 {
+					t.Fatal("handler saw nothing, want event 2")
+				}
+				for _, seq := range seen {
+					if seq != 2 {
+						t.Fatalf("handler saw sequences %v, want only 2", seen)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Handlers of every kind are added and removed while TYPING_START events are
+// dispatched. No handler may ever see a nil Struct. Run with -race.
+func TestGatewayConcurrentHandlerChangesDuringSkippedDispatch(t *testing.T) {
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.StateEnabled = false
+	s.SyncEvents = true
+	message := []byte(`{"op":0,"s":7,"t":"TYPING_START","d":{"channel_id":"1","user_id":"2","timestamp":1}}`)
+
+	var nilStructs, deliveries atomic.Int64
+	check := func(decoded bool) {
+		deliveries.Add(1)
+		if !decoded {
+			nilStructs.Add(1)
+		}
+	}
+	adders := []func() func(){
+		func() func() { return s.AddHandler(func(_ *Session, e *Event) { check(e.Struct != nil) }) },
+		func() func() { return s.AddHandlerOnce(func(_ *Session, e *Event) { check(e.Struct != nil) }) },
+		func() func() {
+			return s.AddHandler(func(_ *Session, i interface{}) {
+				if e, ok := i.(*Event); ok {
+					check(e.Struct != nil)
+				}
+			})
+		},
+		func() func() { return s.AddHandler(func(_ *Session, ts *TypingStart) { check(ts != nil) }) },
+		func() func() { return s.AddHandlerOnce(func(_ *Session, ts *TypingStart) { check(ts != nil) }) },
+	}
+
+	stop := make(chan struct{})
+	var adding, dispatching sync.WaitGroup
+	for i := range adders {
+		add := adders[i]
+		adding.Add(1)
+		go func() {
+			defer adding.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				remove := add()
+				runtime.Gosched()
+				remove()
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		dispatching.Add(1)
+		go func() {
+			defer dispatching.Done()
+			for j := 0; j < 2000; j++ {
+				if _, err := s.onEvent(websocket.TextMessage, message); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	dispatching.Wait()
+	close(stop)
+	adding.Wait()
+	if n := nilStructs.Load(); n != 0 {
+		t.Fatalf("%d of %d deliveries had a nil Struct", n, deliveries.Load())
+	}
+}
+
 func TestOnEventReconnectsAfterMalformedInvalidSession(t *testing.T) {
 	var attempts int32
 	server := newGatewayCloseAfterIdentifyTestServer(t, 4014, &attempts)

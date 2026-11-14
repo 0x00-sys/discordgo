@@ -1340,7 +1340,13 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 	}
 
 	// Map event to registered event handlers and pass it along to any registered handlers.
-	if eh, ok := registeredInterfaceProviders[e.Type]; ok {
+	// Skip the typed decode when nothing will read the struct. Delivery
+	// below follows this decision: a skipped event goes to no handler at all,
+	// so a handler registered after the check never receives a known event
+	// with a nil Struct. It starts with the next event instead.
+	eh, registered := registeredInterfaceProviders[e.Type]
+	skipped := registered && !s.typedEventConsumed(e.Type)
+	if registered && !skipped {
 		e.Struct = eh.New()
 
 		// Attempt to unmarshal our event.
@@ -1375,6 +1381,11 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 	if stateErr != nil {
 		s.log(LogDebug, "error dispatching internal event, %s", stateErr)
 	}
+	if skipped {
+		// No interface{} or *Event handler existed at the check, and
+		// State does not handle *Event, so there is nothing to deliver.
+		return e, nil
+	}
 
 	if e.Struct != nil {
 		// Send event to any registered event handlers for it's type.
@@ -1395,6 +1406,65 @@ func (s *Session) onEventForConnection(wsConn *websocket.Conn, messageType int, 
 	s.handleEvent(eventEventType, e)
 
 	return e, nil
+}
+
+// stateIgnoredEventTypes are registered dispatch types State.OnInterface has
+// no case for. READY and VOICE_SERVER_UPDATE are left out because the session
+// always consumes them. TestStateIgnoredEventTypesAreIgnoredByState guards the
+// list against State gaining a case for one of these types.
+var stateIgnoredEventTypes = map[string]bool{
+	applicationCommandPermissionsUpdateEventType: true,
+	autoModerationActionExecutionEventType:       true,
+	autoModerationRuleCreateEventType:            true,
+	autoModerationRuleDeleteEventType:            true,
+	autoModerationRuleUpdateEventType:            true,
+	channelInfoEventType:                         true,
+	entitlementCreateEventType:                   true,
+	entitlementDeleteEventType:                   true,
+	entitlementUpdateEventType:                   true,
+	guildAuditLogEntryCreateEventType:            true,
+	guildBanAddEventType:                         true,
+	guildBanRemoveEventType:                      true,
+	guildIntegrationsUpdateEventType:             true,
+	integrationCreateEventType:                   true,
+	integrationDeleteEventType:                   true,
+	integrationUpdateEventType:                   true,
+	interactionCreateEventType:                   true,
+	inviteCreateEventType:                        true,
+	inviteDeleteEventType:                        true,
+	presencesReplaceEventType:                    true,
+	rateLimitedEventType:                         true,
+	resumedEventType:                             true,
+	subscriptionCreateEventType:                  true,
+	subscriptionDeleteEventType:                  true,
+	subscriptionUpdateEventType:                  true,
+	typingStartEventType:                         true,
+	voiceChannelEffectSendEventType:              true,
+	voiceChannelStartTimeUpdateEventType:         true,
+	voiceChannelStatusUpdateEventType:            true,
+	webhooksUpdateEventType:                      true,
+}
+
+// typedEventConsumed reports whether anything will read the typed struct for
+// a dispatch of type t: the session's own READY and voice handling, the state
+// cache, or any typed, interface{}, or *Event handler, including once
+// handlers. The handler check is one read under handlersMu, the same lock
+// add and remove take, so it sees a consistent set of handlers. *Event
+// handlers force decoding, so Event.Struct is never nil for a registered type
+// when they run.
+func (s *Session) typedEventConsumed(t string) bool {
+	switch t {
+	case readyEventType, voiceStateUpdateEventType, voiceServerUpdateEventType:
+		return true
+	}
+	if s.StateEnabled && s.State != nil && !stateIgnoredEventTypes[t] {
+		return true
+	}
+	s.handlersMu.RLock()
+	defer s.handlersMu.RUnlock()
+	return len(s.handlers[t]) > 0 || len(s.onceHandlers[t]) > 0 ||
+		len(s.handlers[interfaceEventType]) > 0 || len(s.onceHandlers[interfaceEventType]) > 0 ||
+		len(s.handlers[eventEventType]) > 0 || len(s.onceHandlers[eventEventType]) > 0
 }
 
 func redactedGatewayData(data []byte) string {
