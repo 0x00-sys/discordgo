@@ -539,19 +539,25 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 				rl.RetryAfter = retryAfter
 			}
 		}
-		if rl.Global || strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global") {
+		global := rl.Global || strings.EqualFold(resp.Header.Get("X-RateLimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-RateLimit-Scope"), "global")
+		if global {
 			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
 		} else if rl.RetryAfter > 0 {
 			bucket.setRetryReset(time.Now().Add(rl.RetryAfter))
 		}
 		if nonJSON && rl.RetryAfter <= 0 {
 			// The delay is unknown. Keep RetryAfter at 0 so the request is
-			// returned to the caller rather than retried, but hold this
-			// bucket back briefly so callers looping on it do not keep
-			// hitting the edge. setRetryReset never shortens a longer
-			// deadline already recorded.
-			s.log(LogWarning, "%s returned a non-JSON 429 without Retry-After, pausing bucket for %v", redactedURL(urlStr), nonJSONRateLimitCooldown)
-			bucket.setRetryReset(time.Now().Add(nonJSONRateLimitCooldown))
+			// returned to the caller rather than retried, but hold the
+			// limited scope back briefly so callers looping on it do not keep
+			// hitting the edge: every bucket for a global limit, this bucket
+			// otherwise. Neither setter shortens a longer deadline already
+			// recorded.
+			s.log(LogWarning, "%s returned a non-JSON 429 without Retry-After, pausing for %v", redactedURL(urlStr), nonJSONRateLimitCooldown)
+			if global {
+				bucket.setGlobalReset(time.Now().Add(nonJSONRateLimitCooldown))
+			} else {
+				bucket.setRetryReset(time.Now().Add(nonJSONRateLimitCooldown))
+			}
 		}
 
 		rateLimit := &RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}

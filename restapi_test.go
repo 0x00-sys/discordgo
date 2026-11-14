@@ -4348,6 +4348,40 @@ func TestCloudflareBanWithoutRetryAfterReturnsRateLimitError(t *testing.T) {
 	}
 }
 
+// A non-JSON 429 marked global but without Retry-After must hold back every
+// bucket, not only the one that got it.
+func TestRequestNonJSONGlobalRateLimitWithoutRetryAfterPausesOtherBuckets(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+			w.Header().Set("X-RateLimit-Global", "true")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("error code: 1015"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	s, err := New("Bot token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.Request("GET", server.URL+"/channels/1/messages", nil)
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("global edge 429 without Retry-After error = %T %[1]v, want *RateLimitError", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _ = s.Request("GET", server.URL+"/channels/2/messages", nil, WithContext(ctx))
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("requests on another bucket after a global edge 429 = %d, want 1", got)
+	}
+}
+
 // With the default ShouldRetryOnRateLimit the unknown delay must not turn into
 // a sleep and retry: the caller gets the error after one request, and only the
 // affected bucket is cooled down for nonJSONRateLimitCooldown.
