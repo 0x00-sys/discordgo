@@ -93,6 +93,9 @@ type VoiceConnection struct {
 	nonceCounter   uint32
 	sequence       int64
 	sequenceSet    bool
+	// Counts heartbeat ACKs (op 6) received while their websocket was
+	// current, so an ACK on a replaced websocket never vouches for a new one.
+	heartbeatAcks uint64
 
 	daveMu                      sync.Mutex
 	dave                        VoiceDAVESession
@@ -1002,6 +1005,14 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 		// TODO: maybe actually implement this, seems cool
 		return
 
+	case 6: // HEARTBEAT ACK
+		v.Lock()
+		if wsConn != nil && v.wsConn == wsConn && v.close == eventClose {
+			v.heartbeatAcks++
+		}
+		v.Unlock()
+		return
+
 	case 4: // udp encryption secret key
 		op4 := voiceOP4{}
 		if err := json.Unmarshal(e.RawData, &op4); err != nil {
@@ -1291,22 +1302,41 @@ type voiceHeartbeatData struct {
 // wsHeartbeat sends regular heartbeats to voice Discord so it knows the client
 // is still connected.  If you do not send these heartbeats Discord will
 // disconnect the websocket connection after a few seconds.
+// A heartbeat that is not acknowledged (op 6) within one interval closes the
+// websocket so the listener can resume on a fresh one.
 func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struct{}, i time.Duration) {
 
 	if close == nil || wsConn == nil || i <= 0 || i > maxGatewayHeartbeatIntervalMsec {
 		return
 	}
 
+	interval := i * time.Millisecond
 	var err error
-	ticker := time.NewTicker(i * time.Millisecond)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// A dead peer can keep accepting writes into kernel buffers, so only a
+	// missing ACK reveals it. Each written heartbeat gets one full interval,
+	// measured from the end of its write, for an ACK to arrive.
+	ackTimer := time.NewTimer(interval)
+	ackTimer.Stop()
+	defer ackTimer.Stop()
+	var ackDeadline <-chan time.Time
+	var acksBefore uint64
 	for {
 		v.RLock()
 		current := v.wsConn == wsConn && v.close == close
 		endpoint := v.endpoint
+		acks := v.heartbeatAcks
 		v.RUnlock()
 		if !current {
 			return
+		}
+		if ackDeadline != nil && acks > acksBefore {
+			ackTimer.Stop()
+			ackDeadline = nil
+		}
+		if ackDeadline == nil {
+			acksBefore = acks
 		}
 
 		v.log(LogDebug, "sending heartbeat packet")
@@ -1328,12 +1358,32 @@ func (v *VoiceConnection) wsHeartbeat(wsConn *websocket.Conn, close <-chan struc
 			v.log(LogError, "error sending heartbeat to voice endpoint %s, %s", endpoint, err)
 			return
 		}
+		if ackDeadline == nil {
+			// While an earlier heartbeat is still unacknowledged, keep its
+			// deadline so a dead peer is not given extra time.
+			ackTimer.Reset(interval)
+			ackDeadline = ackTimer.C
+		}
 
-		select {
-		case <-ticker.C:
-			// continue loop and send heartbeat
-		case <-close:
-			return
+		for waiting := true; waiting; {
+			select {
+			case <-ticker.C:
+				// continue loop and send heartbeat
+				waiting = false
+			case <-ackDeadline:
+				v.RLock()
+				acks = v.heartbeatAcks
+				v.RUnlock()
+				if acks <= acksBefore {
+					// The listener sees the closed socket and resumes.
+					_ = wsConn.Close()
+					v.log(LogError, "voice endpoint %s did not acknowledge a heartbeat within %v, reconnecting", endpoint, interval)
+					return
+				}
+				ackDeadline = nil
+			case <-close:
+				return
+			}
 		}
 	}
 }
