@@ -777,34 +777,129 @@ func TestVoiceAEADVectors(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			aead, err := newVoiceAEAD(test.mode, key)
+		for _, reuse := range []bool{false, true} {
+			name := test.name
+			var dst []byte
+			if reuse {
+				// A reused sender buffer holds bytes from a larger earlier packet.
+				name += " reused buffer"
+				dst = bytes.Repeat([]byte{0xa5}, 256)
+			}
+			t.Run(name, func(t *testing.T) {
+				aead, err := newVoiceAEAD(test.mode, key)
+				if err != nil {
+					t.Fatalf("newVoiceAEAD() error = %v", err)
+				}
+				nonce := make([]byte, aead.NonceSize())
+				setVoiceNonce(nonce, counter)
+				packet := encryptVoicePacket(dst, aead, nonce, opus, header)
+				if !bytes.Equal(packet[:len(header)], header) {
+					t.Fatalf("RTP header = %x, want %x", packet[:len(header)], header)
+				}
+				payload := packet[len(header):]
+				if !bytes.Equal(payload[len(payload)-4:], []byte{0x01, 0x02, 0x03, 0x04}) {
+					t.Fatalf("nonce suffix = %x, want 01020304", payload[len(payload)-4:])
+				}
+				if got := hex.EncodeToString(payload); got != test.expectedHex {
+					t.Fatalf("encrypted payload = %s, want %s", got, test.expectedHex)
+				}
+
+				counterBytes := payload[len(payload)-4:]
+				decryptNonce := make([]byte, aead.NonceSize())
+				copy(decryptNonce[:4], counterBytes)
+				plain, err := aead.Open(nil, decryptNonce, payload[:len(payload)-4], header)
+				if err != nil {
+					t.Fatalf("Open() error = %v", err)
+				}
+				if !bytes.Equal(plain, opus) {
+					t.Fatalf("decrypted payload = %x, want %x", plain, opus)
+				}
+			})
+		}
+	}
+}
+
+// The sender reuses one packet buffer while frame sizes change. Each packet
+// must match a freshly allocated one byte for byte.
+func TestEncryptVoicePacketReusesBufferAcrossFrameSizes(t *testing.T) {
+	header := []byte{0x80, 0x78, 0, 1, 0, 0, 3, 0, 0, 0, 0, 42}
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		t.Run(mode, func(t *testing.T) {
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
 			if err != nil {
-				t.Fatalf("newVoiceAEAD() error = %v", err)
+				t.Fatal(err)
 			}
 			nonce := make([]byte, aead.NonceSize())
-			setVoiceNonce(nonce, counter)
-			packet := encryptVoicePacket(aead, nonce, opus, header)
-			if !bytes.Equal(packet[:len(header)], header) {
-				t.Fatalf("RTP header = %x, want %x", packet[:len(header)], header)
+			var reused []byte
+			for i, size := range []int{1275, 3, 160, 1275, 0, 900} {
+				opus := bytes.Repeat([]byte{byte(i + 1)}, size)
+				setVoiceNonce(nonce, uint32(i))
+				reused = encryptVoicePacket(reused, aead, nonce, opus, header)
+				fresh := encryptVoicePacket(nil, aead, nonce, opus, header)
+				if !bytes.Equal(reused, fresh) {
+					t.Fatalf("packet %d (%d byte frame) from the reused buffer = %x, want %x", i, size, reused, fresh)
+				}
 			}
-			payload := packet[len(header):]
-			if !bytes.Equal(payload[len(payload)-4:], []byte{0x01, 0x02, 0x03, 0x04}) {
-				t.Fatalf("nonce suffix = %x, want 01020304", payload[len(payload)-4:])
-			}
-			if got := hex.EncodeToString(payload); got != test.expectedHex {
-				t.Fatalf("encrypted payload = %s, want %s", got, test.expectedHex)
-			}
+		})
+	}
+}
 
-			counterBytes := payload[len(payload)-4:]
-			decryptNonce := make([]byte, aead.NonceSize())
-			copy(decryptNonce[:4], counterBytes)
-			plain, err := aead.Open(nil, decryptNonce, payload[:len(payload)-4], header)
+// The opus sender reuses its packet buffer across frames of different sizes;
+// every packet it writes must still decrypt to the frame that was queued.
+func TestVoiceOpusSenderPacketsAcrossFrameSizes(t *testing.T) {
+	for _, mode := range []string{voiceModeAES256GCMRTPSize, voiceModeXChaCha20Poly1305RTPSize} {
+		t.Run(mode, func(t *testing.T) {
+			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			if err != nil {
-				t.Fatalf("Open() error = %v", err)
+				t.Fatal(err)
 			}
-			if !bytes.Equal(plain, opus) {
-				t.Fatalf("decrypted payload = %x, want %x", plain, opus)
+			defer server.Close()
+			client, err := net.DialUDP("udp4", nil, server.LocalAddr().(*net.UDPAddr))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			aead, err := newVoiceAEAD(mode, make([]int, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			closeChan := make(chan struct{})
+			voice := &VoiceConnection{LogLevel: -1, speaking: true, aead: aead, udpConn: client, close: closeChan, op2: voiceOP2{SSRC: 42}}
+
+			sizes := []int{1275, 3, 160, 1275, 1, 900}
+			opus := make(chan []byte, len(sizes))
+			for i, size := range sizes {
+				opus <- bytes.Repeat([]byte{byte(i + 1)}, size)
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				voice.opusSender(client, closeChan, opus, 48000, 960)
+			}()
+			defer func() {
+				close(closeChan)
+				<-done
+			}()
+
+			if err := server.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 2048)
+			for i, size := range sizes {
+				n, err := server.Read(buf)
+				if err != nil {
+					t.Fatalf("reading packet %d: %v", i, err)
+				}
+				packet := buf[:n]
+				nonce := make([]byte, aead.NonceSize())
+				copy(nonce[:4], packet[n-4:])
+				plain, err := aead.Open(nil, nonce, packet[12:n-4], packet[:12])
+				if err != nil {
+					t.Fatalf("packet %d (%d byte frame) does not decrypt: %v", i, size, err)
+				}
+				if want := bytes.Repeat([]byte{byte(i + 1)}, size); !bytes.Equal(plain, want) {
+					t.Fatalf("packet %d decrypted to %d bytes %x..., want %d bytes of %02x", i, len(plain), plain[:min(len(plain), 8)], size, i+1)
+				}
 			}
 		})
 	}
@@ -824,7 +919,7 @@ func BenchmarkEncryptVoicePacket(b *testing.B) {
 
 			b.ReportAllocs()
 			for b.Loop() {
-				voicePacketSink = encryptVoicePacket(aead, nonce, opus, header)
+				voicePacketSink = encryptVoicePacket(voicePacketSink, aead, nonce, opus, header)
 			}
 		})
 	}
