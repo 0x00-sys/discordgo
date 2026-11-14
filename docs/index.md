@@ -1,6 +1,6 @@
 ## DiscordGo
 <hr>
-<img align="right" src="img/discordgo.svg">
+<img align="right" src="img/discordgo.svg" width="200" alt="DiscordGo logo">
 
 [Go](https://golang.org/) (Golang) interface for the [Discord](https://discord.com/) 
 chat service.  Provides both low-level direct bindings to the 

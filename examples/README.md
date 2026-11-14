@@ -1,4 +1,4 @@
-<img align="right" src="../docs/img/discordgo.svg">
+<img align="right" src="../docs/img/discordgo.svg" width="200" alt="DiscordGo logo">
 
 # DiscordGo Examples
 
