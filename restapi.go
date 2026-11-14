@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"context"
 )
@@ -523,26 +524,40 @@ func (s *Session) requestWithLockedBucketAttempt(method, urlStr, contentType str
 		}
 	case http.StatusTooManyRequests:
 		rl := TooManyRequests{}
-		err = Unmarshal(response, &rl)
-		if err != nil {
-			retryAfter, parseErr := retryAfterHeader(resp.Header)
-			if parseErr != nil {
-				s.log(LogError, "rate limit unmarshal error, %s", err)
-				return
+		nonJSON := false
+		if unmarshalErr := Unmarshal(response, &rl); unmarshalErr != nil {
+			// Edge 429s (for example Cloudflare bans) are plain text or
+			// HTML and may carry only Retry-After, or no delay at all.
+			nonJSON = true
+			rl = TooManyRequests{Message: rateLimitMessage(response)}
+			if retryAfter, parseErr := retryAfterHeader(resp.Header); parseErr == nil {
+				rl.RetryAfter = retryAfter
 			}
-			err = nil
-			rl.Message = strings.TrimSpace(string(response))
-			rl.RetryAfter = retryAfter
 		}
 		if rl.RetryAfter <= 0 {
 			if retryAfter, parseErr := retryAfterHeader(resp.Header); parseErr == nil && retryAfter > 0 {
 				rl.RetryAfter = retryAfter
 			}
 		}
-		if rl.Global || strings.EqualFold(resp.Header.Get("X-Ratelimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-Ratelimit-Scope"), "global") {
+		global := rl.Global || strings.EqualFold(resp.Header.Get("X-Ratelimit-Global"), "true") || strings.EqualFold(resp.Header.Get("X-Ratelimit-Scope"), "global")
+		if global {
 			bucket.setGlobalReset(time.Now().Add(rl.RetryAfter))
 		} else if rl.RetryAfter > 0 {
 			bucket.setRetryReset(time.Now().Add(rl.RetryAfter))
+		}
+		if nonJSON && rl.RetryAfter <= 0 {
+			// The delay is unknown. Keep RetryAfter at 0 so the request is
+			// returned to the caller rather than retried, but hold the
+			// limited scope back briefly so callers looping on it do not keep
+			// hitting the edge: every bucket for a global limit, this bucket
+			// otherwise. Neither setter shortens a longer deadline already
+			// recorded.
+			s.log(LogWarning, "%s returned a non-JSON 429 without Retry-After, pausing for %v", redactedURL(urlStr), nonJSONRateLimitCooldown)
+			if global {
+				bucket.setGlobalReset(time.Now().Add(nonJSONRateLimitCooldown))
+			} else {
+				bucket.setRetryReset(time.Now().Add(nonJSONRateLimitCooldown))
+			}
 		}
 
 		rateLimit := &RateLimit{TooManyRequests: &rl, URL: redactedURL(urlStr)}
@@ -596,6 +611,29 @@ func shouldRetryRESTRequest(method, contentType string) bool {
 	default:
 		return false
 	}
+}
+
+const (
+	// nonJSONRateLimitCooldown is how long a bucket is held back after a
+	// non-JSON 429 that gives no Retry-After.
+	nonJSONRateLimitCooldown = 5 * time.Second
+	// maxRateLimitMessageBytes caps the body kept as TooManyRequests.Message
+	// for non-JSON 429s, which can be full HTML error pages.
+	maxRateLimitMessageBytes = 512
+)
+
+// rateLimitMessage returns a non-JSON 429 body as a message, trimmed and cut
+// to at most maxRateLimitMessageBytes without splitting a UTF-8 sequence.
+func rateLimitMessage(body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) > maxRateLimitMessageBytes {
+		cut := maxRateLimitMessageBytes
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
+		body = body[:cut]
+	}
+	return string(body)
 }
 
 func retryAfterHeader(headers http.Header) (time.Duration, error) {
