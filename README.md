@@ -21,7 +21,7 @@ checked: **November 19, 2026**.
 
 | Date | Discord change | Status |
 |---|---|---|
-| Nov 16 | [Channel obfuscation live for all bots](https://docs.discord.com/developers/change-log#channel-obfuscation-is-now-live-for-all-bots) | ✅ No new API surface. `GatewayCapabilityChannelObfuscation` deprecated, mentions of hidden channels stay unresolved. Permission helpers cannot see the real overwrites of a hidden channel |
+| Nov 16 | [Channel obfuscation live for all bots](https://docs.discord.com/developers/change-log#channel-obfuscation-is-now-live-for-all-bots) | ✅ No new API surface. `GatewayCapabilityChannelObfuscation` deprecated, mentions of hidden channels stay unresolved. Permission helpers return `ErrChannelObfuscated` for other members on a hidden channel |
 | Oct 30 | [Member and role permission endpoints](https://docs.discord.com/developers/change-log#new-endpoints-for-getting-member-and-role-permissions-for-guilds-and-channels) | ✅ `GuildMemberPermissions`, `GuildRolePermissions`, `ChannelMemberPermissions`, `ChannelRolePermissions` |
 | Oct 29 | Voice channel status works without `CONNECT` | ✅ Documented on `ChannelVoiceStatusSet` |
 | Oct 29 | Channel and role position audit log events | ✅ `AuditLogActionChannelPositionUpdate`, `AuditLogActionRolePositionUpdate` |

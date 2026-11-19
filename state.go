@@ -36,6 +36,12 @@ var ErrStateInvalidData = errors.New("state cache received invalid data")
 // generate the permissions.
 var ErrMessageIncompletePermissions = errors.New("message incomplete, unable to determine permissions")
 
+// ErrChannelObfuscated is returned when permissions are requested for a
+// channel that has ChannelFlagObfuscated set. Discord hides the permission
+// overwrites of a channel the bot cannot view, so the permissions of other
+// users there cannot be determined.
+var ErrChannelObfuscated = errors.New("channel is obfuscated, unable to determine permissions")
+
 // A State contains the current known state.
 // As discord sends this in a READY blob, it seems reasonable to simply
 // use that struct as the data store.
@@ -3332,9 +3338,10 @@ func presenceChangesMemberUser(cached *User, t *PresenceUpdate) bool {
 // channelID : The ID of the channel to calculate permission for.
 //
 // A channel the bot cannot view arrives with ChannelFlagObfuscated set and
-// without its real permission overwrites. For such a channel the result only
-// tells that the bot itself has no access. It is not reliable for other users,
-// and Discord offers no way to look their permissions up there.
+// without its real permission overwrites. On such a channel, and on its
+// threads, only the bot itself, the guild owner and administrators have a
+// known result. For any other user ErrChannelObfuscated is returned, and
+// Discord offers no way to look their permissions up there.
 func (s *State) UserChannelPermissions(userID, channelID string) (apermissions int64, err error) {
 	if s == nil {
 		return 0, ErrNilState
@@ -3359,13 +3366,17 @@ func (s *State) UserChannelPermissions(userID, channelID string) (apermissions i
 	}
 
 	apermissions = memberPermissions(guild, channel, userID, member.Roles)
+	if obfuscatedPermissionsUnknown(channel, apermissions, userID, s.userID()) {
+		return 0, ErrChannelObfuscated
+	}
 	apermissions = finalizeChannelPermissions(apermissions, member, channel.Type, thread)
 	return
 }
 
 // MessagePermissions returns the permissions of the author of the message
 // in the channel in which it was sent.
-// The result is not reliable when the channel has ChannelFlagObfuscated set.
+// ErrChannelObfuscated is returned when the channel has ChannelFlagObfuscated
+// set and the permissions of the author cannot be known.
 // See UserChannelPermissions.
 func (s *State) MessagePermissions(message *Message) (apermissions int64, err error) {
 	if s == nil {
@@ -3385,8 +3396,29 @@ func (s *State) MessagePermissions(message *Message) (apermissions int64, err er
 	}
 
 	apermissions = memberPermissions(guild, channel, message.Author.ID, message.Member.Roles)
+	if obfuscatedPermissionsUnknown(channel, apermissions, message.Author.ID, s.userID()) {
+		return 0, ErrChannelObfuscated
+	}
 	apermissions = finalizeChannelPermissions(apermissions, message.Member, channel.Type, thread)
 	return
+}
+
+// currentUserID returns the ID of the user the state belongs to, or "" before READY.
+func (s *State) currentUserID() string {
+	if s == nil {
+		return ""
+	}
+	s.RLock()
+	defer s.RUnlock()
+	return s.userID()
+}
+
+// userID requires the state lock.
+func (s *State) userID() string {
+	if s.User == nil {
+		return ""
+	}
+	return s.User.ID
 }
 
 func (s *State) channelPermissionContext(channelID string) (guild *Guild, channel *Channel, thread bool, err error) {

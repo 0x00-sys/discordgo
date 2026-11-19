@@ -9832,3 +9832,48 @@ func TestVoiceStateEditErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestUserChannelPermissionsObfuscatedChannelMemberFromREST(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		roles   string
+		wantErr error
+		want    int64
+	}{
+		{name: "member", roles: `["staff"]`, wantErr: ErrChannelObfuscated},
+		{name: "administrator", roles: `["admin"]`, want: PermissionAll},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.State = newObfuscatedPermissionState(t)
+			requests := 0
+			session.Client.Transport = permissionRoundTripper(func(r *http.Request) (*http.Response, error) {
+				requests++
+				if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/guilds/guild/members/uncached") {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"user":{"id":"uncached"},"roles":` + test.roles + `}`)),
+					Request:    r,
+				}, nil
+			})
+
+			permissions, err := session.UserChannelPermissions("uncached", "hidden")
+			if requests != 1 {
+				t.Fatalf("requests = %d, want 1", requests)
+			}
+			if !errors.Is(err, test.wantErr) || (test.wantErr == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, test.wantErr)
+			}
+			if permissions != test.want {
+				t.Fatalf("permissions = %d, want %d", permissions, test.want)
+			}
+		})
+	}
+}
