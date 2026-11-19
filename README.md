@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/banner.jpg" width="100%" alt="DiscordGo: Keep your bots online. A Discord-style window shows the fork status: DAVE voice encryption supported, Discord API v10, 79 new API methods, 200+ bug fixes, 284 merged pull requests, drop-in replacement.">
+  <img src="docs/img/banner.png" width="100%" alt="DiscordGo, maintained fork: Keep your bots online. A Discord window shows the bot replying to a status command with the fork status: DAVE voice encryption supported, Discord API v10, 450 merged pull requests, drop-in replacement for bwmarrin/discordgo.">
 </p>
 
 # DiscordGo (maintained fork)
