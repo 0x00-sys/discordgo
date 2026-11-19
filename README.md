@@ -17,10 +17,11 @@ Not affiliated with or endorsed by the original DiscordGo authors.
 ## Up to date with Discord
 
 Every Discord API change from 2026 is checked against this library. Last
-checked: **October 31, 2026**.
+checked: **November 19, 2026**.
 
 | Date | Discord change | Status |
 |---|---|---|
+| Nov 16 | [Channel obfuscation live for all bots](https://docs.discord.com/developers/change-log#channel-obfuscation-is-now-live-for-all-bots) | ✅ No new API surface. `GatewayCapabilityChannelObfuscation` deprecated, mentions of hidden channels stay unresolved. Permission helpers cannot see the real overwrites of a hidden channel |
 | Oct 30 | [Member and role permission endpoints](https://docs.discord.com/developers/change-log#new-endpoints-for-getting-member-and-role-permissions-for-guilds-and-channels) | ✅ `GuildMemberPermissions`, `GuildRolePermissions`, `ChannelMemberPermissions`, `ChannelRolePermissions` |
 | Oct 29 | Voice channel status works without `CONNECT` | ✅ Documented on `ChannelVoiceStatusSet` |
 | Oct 29 | Channel and role position audit log events | ✅ `AuditLogActionChannelPositionUpdate`, `AuditLogActionRolePositionUpdate` |
@@ -35,7 +36,7 @@ checked: **October 31, 2026**.
 | Aug 27 | `PRUNE_REQUIRES_ADMIN` guild feature | ✅ `GuildFeaturePruneRequiresAdmin` |
 | Aug 26 | Game stats widgets | ✅ `ApplicationIdentityProfile`, `ApplicationIdentityProfileUpdate` |
 | Aug 14 | Battle.net connections removed from user connections | Nothing to add |
-| Aug 12 | Channel obfuscation | ✅ `ChannelFlagObfuscated`, `GatewayCapabilityChannelObfuscation` |
+| Aug 12 | Channel obfuscation | ✅ `ChannelFlagObfuscated` |
 | Aug 5 | File type filters for uploads and attachment options | ✅ `FileTypes` on file upload components and command options |
 | Aug 5 | Channel `application_id` can be `null` | Nothing to add. Decodes cleanly |
 | Jul 16 | `app_permissions` on resolved interaction channels | ✅ `Channel.AppPermissions` |

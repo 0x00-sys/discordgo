@@ -1382,7 +1382,10 @@ func (s *State) ChannelAdd(channel *Channel) error {
 		if channelCopy.Messages == nil {
 			channelCopy.Messages = c.Messages
 		}
-		if channelCopy.PermissionOverwrites == nil {
+		// An obfuscated channel carries one synthetic overwrite, never the real ones,
+		// so it must not leak into the channel once it is visible again.
+		restored := c.Flags&ChannelFlagObfuscated != 0 && channelCopy.Flags&ChannelFlagObfuscated == 0
+		if channelCopy.PermissionOverwrites == nil && !restored {
 			channelCopy.PermissionOverwrites = c.PermissionOverwrites
 		}
 		if channelCopy.ThreadMetadata == nil && channelCopy.Flags&ChannelFlagObfuscated == 0 {
@@ -3327,6 +3330,11 @@ func presenceChangesMemberUser(cached *User, t *PresenceUpdate) bool {
 // UserChannelPermissions returns the permission of a user in a channel.
 // userID    : The ID of the user to calculate permissions for.
 // channelID : The ID of the channel to calculate permission for.
+//
+// A channel the bot cannot view arrives with ChannelFlagObfuscated set and
+// without its real permission overwrites. For such a channel the result only
+// tells that the bot itself has no access. It is not reliable for other users,
+// and Discord offers no way to look their permissions up there.
 func (s *State) UserChannelPermissions(userID, channelID string) (apermissions int64, err error) {
 	if s == nil {
 		return 0, ErrNilState
@@ -3357,6 +3365,8 @@ func (s *State) UserChannelPermissions(userID, channelID string) (apermissions i
 
 // MessagePermissions returns the permissions of the author of the message
 // in the channel in which it was sent.
+// The result is not reliable when the channel has ChannelFlagObfuscated set.
+// See UserChannelPermissions.
 func (s *State) MessagePermissions(message *Message) (apermissions int64, err error) {
 	if s == nil {
 		return 0, ErrNilState

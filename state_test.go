@@ -8903,6 +8903,44 @@ func TestChannelUpdateObfuscation(t *testing.T) {
 	}
 }
 
+func TestChannelAddDropsObfuscatedPermissionOverwrites(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		cachedFlags   ChannelFlags
+		updateFlags   ChannelFlags
+		wantInherited bool
+	}{
+		{name: "visible channel keeps its overwrites", wantInherited: true},
+		{name: "channel that stays obfuscated keeps the synthetic overwrite", cachedFlags: ChannelFlagObfuscated, updateFlags: ChannelFlagObfuscated, wantInherited: true},
+		{name: "restored channel drops the synthetic overwrite", cachedFlags: ChannelFlagObfuscated},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := NewState()
+			if err := state.GuildAdd(&Guild{ID: "guild"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.ChannelAdd(&Channel{
+				ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText, Flags: test.cachedFlags,
+				PermissionOverwrites: []*PermissionOverwrite{{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionViewChannel}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			// An update that carries no permission overwrites of its own.
+			if err := state.ChannelAdd(&Channel{ID: "channel", GuildID: "guild", Type: ChannelTypeGuildText, Name: "updated", Flags: test.updateFlags}); err != nil {
+				t.Fatal(err)
+			}
+			cached, err := state.Channel("channel")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inherited := len(cached.PermissionOverwrites) == 1; inherited != test.wantInherited {
+				t.Fatalf("permission overwrites = %+v, want inherited = %t", cached.PermissionOverwrites, test.wantInherited)
+			}
+		})
+	}
+}
+
 func TestChannelDeleteEvictsChildThreads(t *testing.T) {
 	for _, trackChannels := range []bool{true, false} {
 		for _, kind := range []ChannelType{ChannelTypeGuildText, ChannelTypeGuildNews, ChannelTypeGuildForum, ChannelTypeGuildMedia} {

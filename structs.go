@@ -582,7 +582,12 @@ const (
 	// NOTE: media channels only.
 	ChannelFlagHideMediaDownloadOptions ChannelFlags = 1 << 15
 	// ChannelFlagObfuscated indicates that channel metadata is hidden because the bot cannot view it.
+	// Only ID, Type, Position and ParentID are real on such a channel. Name is "___hidden___" and
+	// PermissionOverwrites holds a single overwrite denying PermissionViewChannel for @everyone.
+	// Check this flag instead of the name. Discord sends a Channel Update with the full data once
+	// the bot can view the channel.
 	// NOTE: only received over the Gateway, never the HTTP API.
+	// https://docs.discord.com/developers/resources/channel#channel-object-obfuscated-channels
 	ChannelFlagObfuscated ChannelFlags = 1 << 17
 	// ChannelFlagSpoiler requires users to opt in before viewing the channel's contents.
 	// Available on textual guild channels and voice channels, excluding stages, when NSFW is false.
@@ -3700,9 +3705,12 @@ const (
 // GatewayCapability modifies Gateway behavior independently of event intents.
 type GatewayCapability int
 
-// GatewayCapabilityChannelObfuscation opts into obfuscated metadata for channels the bot cannot view.
-// This is a temporary, testing-only opt-in; Discord plans to enable obfuscation for all bots.
-// https://docs.discord.com/developers/events/gateway-events#gateway-capabilities
+// GatewayCapabilityChannelObfuscation was the testing opt-in for obfuscated metadata on channels
+// the bot cannot view.
+//
+// Deprecated: Discord applies channel obfuscation to all bots since November 16, 2026 and no
+// longer documents any capability. Setting it is not needed. See ChannelFlagObfuscated.
+// https://docs.discord.com/developers/events/gateway-events#identify-gateway-capabilities
 const GatewayCapabilityChannelObfuscation GatewayCapability = 1 << 15
 
 // Identify is sent during initial handshake with the discord gateway.

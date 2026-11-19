@@ -44,6 +44,34 @@ func TestContentWithMoreMentionsReplaced(t *testing.T) {
 		t.Error(result)
 	}
 }
+
+func TestContentWithMoreMentionsReplacedObfuscatedChannel(t *testing.T) {
+	s := &Session{StateEnabled: true, State: NewState()}
+	if err := s.State.GuildAdd(&Guild{ID: "guild"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, channel := range []*Channel{
+		{ID: "visible", GuildID: "guild", Name: "general"},
+		{
+			ID: "hidden", GuildID: "guild", Name: "___hidden___", Flags: ChannelFlagObfuscated,
+			PermissionOverwrites: []*PermissionOverwrite{{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionViewChannel}},
+		},
+	} {
+		if err := s.State.ChannelAdd(channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m := &Message{Content: "see <#visible> and <#hidden>", ChannelID: "visible"}
+	got, err := m.ContentWithMoreMentionsReplaced(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "see #general and <#hidden>"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
 func TestGettingEmojisFromMessage(t *testing.T) {
 	msg := "test test <:kitty14:811736565172011058> <:kitty4:811736468812595260>"
 	m := &Message{

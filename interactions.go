@@ -611,6 +611,11 @@ func (o ApplicationCommandInteractionDataOption) BoolValue() bool {
 
 // ChannelValue is a utility function for casting option value to channel object.
 // s : Session object, if not nil, function additionally fetches all channel's data
+//
+// With a session the channel comes from state first. For a channel the bot
+// cannot view, state only holds obfuscated data (see ChannelFlagObfuscated).
+// The resolved channels of the interaction are never obfuscated, so prefer
+// ApplicationCommandInteractionData.Resolved.Channels for those.
 func (o ApplicationCommandInteractionDataOption) ChannelValue(s *Session) *Channel {
 	if o.Type != ApplicationCommandOptionChannel {
 		panic("ChannelValue called on data option of type " + o.Type.String())

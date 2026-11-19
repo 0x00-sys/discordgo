@@ -998,6 +998,9 @@ func (s *Session) UserGuildsWithOptions(query *UserGuildsOptions, options ...Req
 // channelID     : The ID of the channel to calculate permission for.
 // fetchOptions  : Options used to fetch guild, member or channel if they are not present in state.
 //
+// The result is not reliable for other users on a channel that has
+// ChannelFlagObfuscated set. See State.UserChannelPermissions.
+//
 // NOTE: This function is now deprecated and will be removed in the future.
 // Please see the same function inside state.go
 func (s *Session) UserChannelPermissions(userID, channelID string, fetchOptions ...RequestOption) (apermissions int64, err error) {
@@ -1890,8 +1893,10 @@ func (s *Session) GuildMemberRoleRemove(guildID, userID, roleID string, options 
 	return
 }
 
-// GuildChannels returns an array of Channel structures for all channels of a
-// given guild.
+// GuildChannels returns an array of Channel structures for the channels of a
+// given guild that the bot can view. Discord omits a channel when the bot lacks
+// PermissionViewChannel on it and is not connected to it. A category is
+// included when any of its child channels is viewable. Threads are not included.
 // guildID   : The ID of a Guild.
 func (s *Session) GuildChannels(guildID string, options ...RequestOption) (st []*Channel, err error) {
 
