@@ -870,7 +870,8 @@ func (m *Message) ContentWithMoreMentionsReplaced(s *Session) (content string, e
 
 	content = patternChannels.ReplaceAllStringFunc(content, func(mention string) string {
 		channel, err := s.State.Channel(mention[2 : len(mention)-1])
-		if err != nil || channel.Type == ChannelTypeGuildVoice {
+		// An obfuscated channel only has the placeholder name "___hidden___".
+		if err != nil || channel.Type == ChannelTypeGuildVoice || channel.Flags&ChannelFlagObfuscated != 0 {
 			return mention
 		}
 
