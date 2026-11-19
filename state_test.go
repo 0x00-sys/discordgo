@@ -8941,6 +8941,109 @@ func TestChannelAddDropsObfuscatedPermissionOverwrites(t *testing.T) {
 	}
 }
 
+func newObfuscatedPermissionState(t *testing.T) *State {
+	t.Helper()
+	state := NewState()
+	state.User = &User{ID: "bot"}
+	if err := state.GuildAdd(&Guild{
+		ID: "guild", OwnerID: "owner",
+		Roles: []*Role{
+			{ID: "guild", Permissions: PermissionViewChannel | PermissionSendMessages | PermissionKickMembers},
+			{ID: "admin", Permissions: PermissionAdministrator},
+			{ID: "staff", Permissions: PermissionManageMessages},
+		},
+		Members: []*Member{
+			{GuildID: "guild", User: &User{ID: "bot"}},
+			{GuildID: "guild", User: &User{ID: "owner"}},
+			{GuildID: "guild", User: &User{ID: "admin"}, Roles: []string{"admin"}},
+			{GuildID: "guild", User: &User{ID: "staffer"}, Roles: []string{"staff"}},
+		},
+		Channels: []*Channel{
+			{ID: "visible", GuildID: "guild", Type: ChannelTypeGuildText, Name: "general"},
+			// What the bot receives for a staff channel it cannot view.
+			{
+				ID: "hidden", GuildID: "guild", Type: ChannelTypeGuildText, Name: "___hidden___", Flags: ChannelFlagObfuscated,
+				PermissionOverwrites: []*PermissionOverwrite{{ID: "guild", Type: PermissionOverwriteTypeRole, Deny: PermissionViewChannel}},
+			},
+		},
+		Threads: []*Channel{
+			{ID: "hidden-thread", GuildID: "guild", ParentID: "hidden", Type: ChannelTypeGuildPublicThread},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func TestObfuscatedChannelPermissions(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		userID    string
+		roles     []string
+		channelID string
+		noBotUser bool
+		wantErr   error
+		want      func(int64) bool
+	}{
+		{
+			name: "bot has no access", userID: "bot", channelID: "hidden",
+			want: func(p int64) bool { return p&PermissionViewChannel == 0 && p&PermissionKickMembers != 0 },
+		},
+		{name: "owner", userID: "owner", channelID: "hidden", want: func(p int64) bool { return p == PermissionAll }},
+		{name: "administrator", userID: "admin", roles: []string{"admin"}, channelID: "hidden", want: func(p int64) bool { return p == PermissionAll }},
+		{name: "other member", userID: "staffer", roles: []string{"staff"}, channelID: "hidden", wantErr: ErrChannelObfuscated},
+		{name: "other member in a thread of the channel", userID: "staffer", roles: []string{"staff"}, channelID: "hidden-thread", wantErr: ErrChannelObfuscated},
+		{name: "bot user unknown", userID: "bot", channelID: "hidden", noBotUser: true, wantErr: ErrChannelObfuscated},
+		{
+			name: "visible channel is unchanged", userID: "staffer", roles: []string{"staff"}, channelID: "visible",
+			want: func(p int64) bool { return p&PermissionViewChannel != 0 && p&PermissionManageMessages != 0 },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newObfuscatedPermissionState(t)
+			if test.noBotUser {
+				state.User = nil
+			}
+			session, err := New("Bot test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.State = state
+			session.Client.Transport = permissionRoundTripper(func(r *http.Request) (*http.Response, error) {
+				t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				return nil, errors.New("unexpected request")
+			})
+
+			results := []struct {
+				name        string
+				permissions int64
+				err         error
+			}{{name: "State.UserChannelPermissions"}, {name: "State.MessagePermissions"}, {name: "Session.UserChannelPermissions"}}
+			results[0].permissions, results[0].err = state.UserChannelPermissions(test.userID, test.channelID)
+			results[1].permissions, results[1].err = state.MessagePermissions(&Message{
+				ChannelID: test.channelID, Author: &User{ID: test.userID}, Member: &Member{Roles: test.roles},
+			})
+			results[2].permissions, results[2].err = session.UserChannelPermissions(test.userID, test.channelID)
+
+			for _, result := range results {
+				if !errors.Is(result.err, test.wantErr) || (test.wantErr == nil && result.err != nil) {
+					t.Errorf("%s: err = %v, want %v", result.name, result.err, test.wantErr)
+					continue
+				}
+				if test.wantErr != nil {
+					if result.permissions != 0 {
+						t.Errorf("%s: permissions = %d with an error, want 0", result.name, result.permissions)
+					}
+					continue
+				}
+				if !test.want(result.permissions) {
+					t.Errorf("%s: unexpected permissions %d", result.name, result.permissions)
+				}
+			}
+		})
+	}
+}
+
 func TestChannelDeleteEvictsChildThreads(t *testing.T) {
 	for _, trackChannels := range []bool{true, false} {
 		for _, kind := range []ChannelType{ChannelTypeGuildText, ChannelTypeGuildNews, ChannelTypeGuildForum, ChannelTypeGuildMedia} {

@@ -998,7 +998,7 @@ func (s *Session) UserGuildsWithOptions(query *UserGuildsOptions, options ...Req
 // channelID     : The ID of the channel to calculate permission for.
 // fetchOptions  : Options used to fetch guild, member or channel if they are not present in state.
 //
-// The result is not reliable for other users on a channel that has
+// ErrChannelObfuscated is returned for other users on a channel that has
 // ChannelFlagObfuscated set. See State.UserChannelPermissions.
 //
 // NOTE: This function is now deprecated and will be removed in the future.
@@ -1006,7 +1006,7 @@ func (s *Session) UserGuildsWithOptions(query *UserGuildsOptions, options ...Req
 func (s *Session) UserChannelPermissions(userID, channelID string, fetchOptions ...RequestOption) (apermissions int64, err error) {
 	// Try to just get permissions from state.
 	apermissions, err = s.State.UserChannelPermissions(userID, channelID)
-	if err == nil {
+	if err == nil || errors.Is(err, ErrChannelObfuscated) {
 		return
 	}
 
@@ -1058,8 +1058,26 @@ func (s *Session) UserChannelPermissions(userID, channelID string, fetchOptions 
 	}
 
 	apermissions = memberPermissions(guild, permissionsChannel, userID, member.Roles)
+	if obfuscatedPermissionsUnknown(permissionsChannel, apermissions, userID, s.State.currentUserID()) {
+		return 0, ErrChannelObfuscated
+	}
 	apermissions = finalizeChannelPermissions(apermissions, member, permissionsChannel.Type, thread)
 	return
+}
+
+// obfuscatedPermissionsUnknown reports whether permissions computed for userID
+// on channel are a guess. An obfuscated channel carries a synthetic overwrite
+// instead of its real ones, so the result is only known for administrators,
+// which covers the guild owner, and for the bot itself, which has no access.
+// apermissions is the memberPermissions result before it is finalized.
+func obfuscatedPermissionsUnknown(channel *Channel, apermissions int64, userID, botID string) bool {
+	if channel.Flags&ChannelFlagObfuscated == 0 {
+		return false
+	}
+	if apermissions&PermissionAdministrator != 0 {
+		return false
+	}
+	return botID == "" || botID != userID
 }
 
 // Calculates the permissions for a member.
