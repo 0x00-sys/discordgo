@@ -21,7 +21,7 @@ checked: **November 19, 2026**.
 
 | Date | Discord change | Status |
 |---|---|---|
-| Nov 16 | [Channel obfuscation live for all bots](https://docs.discord.com/developers/change-log#channel-obfuscation-is-now-live-for-all-bots) | ✅ No new API surface. `GatewayCapabilityChannelObfuscation` deprecated, mentions of hidden channels stay unresolved. Permission helpers return `ErrChannelObfuscated` for other members on a hidden channel |
+| Nov 16 | [Channel obfuscation live for all bots](https://docs.discord.com/developers/change-log#channel-obfuscation-is-now-live-for-all-bots) | ✅ `ChannelFlagObfuscated`, `ErrChannelObfuscated`. No opt-in needed, `GatewayCapabilityChannelObfuscation` deprecated |
 | Oct 30 | [Member and role permission endpoints](https://docs.discord.com/developers/change-log#new-endpoints-for-getting-member-and-role-permissions-for-guilds-and-channels) | ✅ `GuildMemberPermissions`, `GuildRolePermissions`, `ChannelMemberPermissions`, `ChannelRolePermissions` |
 | Oct 29 | Voice channel status works without `CONNECT` | ✅ Documented on `ChannelVoiceStatusSet` |
 | Oct 29 | Channel and role position audit log events | ✅ `AuditLogActionChannelPositionUpdate`, `AuditLogActionRolePositionUpdate` |
@@ -36,7 +36,7 @@ checked: **November 19, 2026**.
 | Aug 27 | `PRUNE_REQUIRES_ADMIN` guild feature | ✅ `GuildFeaturePruneRequiresAdmin` |
 | Aug 26 | Game stats widgets | ✅ `ApplicationIdentityProfile`, `ApplicationIdentityProfileUpdate` |
 | Aug 14 | Battle.net connections removed from user connections | Nothing to add |
-| Aug 12 | Channel obfuscation | ✅ `ChannelFlagObfuscated` |
+| Aug 12 | Channel obfuscation announced | ✅ `ChannelFlagObfuscated` |
 | Aug 5 | File type filters for uploads and attachment options | ✅ `FileTypes` on file upload components and command options |
 | Aug 5 | Channel `application_id` can be `null` | Nothing to add. Decodes cleanly |
 | Jul 16 | `app_permissions` on resolved interaction channels | ✅ `Channel.AppPermissions` |
@@ -75,6 +75,12 @@ left out because they don't touch the HTTP or gateway API. Full list:
 - **Guild management.** Join requests, bulk bans, stickers, welcome screen,
   vanity URL, widget, home settings, incident actions, editing the bot's own
   member, and computed member and role permissions.
+- **Channel obfuscation.** Since November 16, 2026 Discord hides the name,
+  topic and permission overwrites of channels a bot can't view. This fork
+  marks them with `ChannelFlagObfuscated`, keeps the cache correct when a
+  channel is hidden or shown again, leaves mentions of hidden channels
+  unresolved, and returns `ErrChannelObfuscated` when a member's permissions
+  there can't be known.
 - **Search.** Guild message search and thread search.
 - **Recurring scheduled events.** Recurrence rules, per-occurrence exceptions
   and user counts.
