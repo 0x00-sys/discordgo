@@ -17,10 +17,12 @@ Not affiliated with or endorsed by the original DiscordGo authors.
 ## Up to date with Discord
 
 Every Discord API change from 2026 is checked against this library. Last
-checked: **November 19, 2026**.
+checked: **November 23, 2026**.
 
 | Date | Discord change | Status |
 |---|---|---|
+| Nov 17 | Voice Media Sink Wants (opcode 15) documented | ✅ `VoiceConnection.MediaSinkWants`, kept across new voice sessions |
+| Nov 17 | Error code 50270, invite is expired | ✅ `ErrCodeInviteIsExpired` |
 | Nov 16 | [Channel obfuscation live for all bots](https://docs.discord.com/developers/change-log#channel-obfuscation-is-now-live-for-all-bots) | ✅ `ChannelFlagObfuscated`, `ErrChannelObfuscated`. No opt-in needed, `GatewayCapabilityChannelObfuscation` deprecated |
 | Oct 30 | [Member and role permission endpoints](https://docs.discord.com/developers/change-log#new-endpoints-for-getting-member-and-role-permissions-for-guilds-and-channels) | ✅ `GuildMemberPermissions`, `GuildRolePermissions`, `ChannelMemberPermissions`, `ChannelRolePermissions` |
 | Oct 29 | Voice channel status works without `CONNECT` | ✅ Documented on `ChannelVoiceStatusSet` |
@@ -57,7 +59,8 @@ checked: **November 19, 2026**.
 | Jan 13 | Invites that grant roles or target users | ✅ `Invite.RoleIDs`, `InviteTargetUsers`, `InviteTargetUsersUpdate`, `InviteTargetUsersJobStatus` |
 
 Client-only entries (Social SDK releases, Embedded App SDK, docs updates) are
-left out because they don't touch the HTTP or gateway API. Full list:
+left out because they don't touch the HTTP or gateway API. API additions that
+Discord documented without a change log entry are listed without a link. Full list:
 [Discord change log](https://docs.discord.com/developers/change-log).
 
 ## What upstream is missing
