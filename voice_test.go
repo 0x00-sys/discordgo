@@ -6955,3 +6955,149 @@ func TestVoiceUDPDiscoveryFailureClosesWebsocket(t *testing.T) {
 		t.Errorf("peer read = %v, want socket closure", err)
 	}
 }
+
+// newVoiceMediaSinkWantsTestConn dials a websocket whose server forwards every
+// message it reads.
+func newVoiceMediaSinkWantsTestConn(t *testing.T) (*websocket.Conn, <-chan []byte) {
+	t.Helper()
+	messages := make(chan []byte, 4)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			messages <- message
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn, messages
+}
+
+func readVoiceMediaSinkWantsMessage(t *testing.T, messages <-chan []byte) string {
+	t.Helper()
+	select {
+	case message := <-messages:
+		return string(message)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for media sink wants payload")
+		return ""
+	}
+}
+
+func TestVoiceMediaSinkWantsPayload(t *testing.T) {
+	conn, messages := newVoiceMediaSinkWantsTestConn(t)
+	vc := &VoiceConnection{LogLevel: -1, wsConn: conn}
+
+	ssrcs := map[uint32]int{2: 0, 7: 50}
+	if err := vc.MediaSinkWants(VoiceMediaSinkWants{Any: 100, SSRCs: ssrcs}); err != nil {
+		t.Fatalf("MediaSinkWants returned error: %v", err)
+	}
+	const want = `{"op":15,"d":{"2":0,"7":50,"any":100}}`
+	if got := strings.TrimSpace(readVoiceMediaSinkWantsMessage(t, messages)); got != want {
+		t.Fatalf("payload = %s, want %s", got, want)
+	}
+
+	// The stored value must not follow later changes to the caller's map.
+	ssrcs[2] = 100
+	vc.RLock()
+	stored := vc.mediaSinkWants.SSRCs[2]
+	vc.RUnlock()
+	if stored != 0 {
+		t.Fatalf("stored SSRC 2 = %d after caller changed its map, want 0", stored)
+	}
+}
+
+func TestVoiceMediaSinkWantsEmptyStopsEverything(t *testing.T) {
+	data, err := json.Marshal(VoiceMediaSinkWants{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"any":0}` {
+		t.Fatalf("payload = %s, want {\"any\":0}", data)
+	}
+}
+
+func TestVoiceMediaSinkWantsRejectsOutOfRange(t *testing.T) {
+	for _, wants := range []VoiceMediaSinkWants{
+		{Any: -1},
+		{Any: 101},
+		{Any: 100, SSRCs: map[uint32]int{2: 101}},
+		{Any: 100, SSRCs: map[uint32]int{2: -1}},
+	} {
+		vc := &VoiceConnection{LogLevel: -1}
+		if err := vc.MediaSinkWants(wants); err == nil {
+			t.Errorf("MediaSinkWants(%+v) returned nil error", wants)
+		}
+		if vc.mediaSinkWants != nil {
+			t.Errorf("MediaSinkWants(%+v) stored a rejected value", wants)
+		}
+	}
+}
+
+// Wants set before the websocket exists, or on an earlier session, are sent
+// once a new session's description arrives, because Discord starts each
+// session sending everything.
+func TestVoiceMediaSinkWantsResentOnNewSession(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	voice := newVoiceJoinWaitTestConnection(t, udpConn)
+	defer voice.Close()
+
+	if err := voice.MediaSinkWants(VoiceMediaSinkWants{}); err != nil {
+		t.Fatalf("MediaSinkWants without a websocket returned error: %v", err)
+	}
+
+	conn, messages := newVoiceMediaSinkWantsTestConn(t)
+	voice.Lock()
+	voice.wsConn = conn
+	voice.Unlock()
+
+	voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+		strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `]}}`))
+
+	voice.RLock()
+	ready := voice.Ready
+	voice.RUnlock()
+	if !ready {
+		t.Fatal("session description did not publish Ready")
+	}
+	const want = `{"op":15,"d":{"any":0}}`
+	if got := strings.TrimSpace(readVoiceMediaSinkWantsMessage(t, messages)); got != want {
+		t.Fatalf("payload = %s, want %s", got, want)
+	}
+}
+
+// Without a stored value nothing is sent, so Discord keeps its default.
+func TestVoiceMediaSinkWantsNotSentByDefault(t *testing.T) {
+	udpConn := newVoiceJoinWaitTestUDP(t)
+	voice := newVoiceJoinWaitTestConnection(t, udpConn)
+	defer voice.Close()
+
+	conn, messages := newVoiceMediaSinkWantsTestConn(t)
+	voice.Lock()
+	voice.wsConn = conn
+	voice.Unlock()
+
+	voice.onEvent([]byte(`{"op":4,"d":{"mode":"aead_aes256_gcm_rtpsize","secret_key":[` +
+		strings.TrimSuffix(strings.Repeat("0,", 32), ",") + `]}}`))
+
+	// Speaking is the next write. If wants had been sent, it would arrive first.
+	if err := voice.SpeakingFlags(0); err != nil {
+		t.Fatalf("SpeakingFlags returned error: %v", err)
+	}
+	if got := readVoiceMediaSinkWantsMessage(t, messages); !strings.Contains(got, `"op":5`) {
+		t.Fatalf("first message = %s, want the speaking payload", got)
+	}
+}

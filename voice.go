@@ -113,6 +113,9 @@ type VoiceConnection struct {
 	op4 voiceOP4
 	op2 voiceOP2
 
+	// Last value passed to MediaSinkWants, sent again on each new session.
+	mediaSinkWants *VoiceMediaSinkWants
+
 	voiceSpeakingUpdateHandlers []VoiceSpeakingUpdateHandler
 }
 
@@ -217,6 +220,113 @@ func (v *VoiceConnection) speakingFlags(flags VoiceSpeakingFlags, udpConn *net.U
 	v.speaking = flags != 0
 
 	return
+}
+
+const voiceOpMediaSinkWants = 15
+
+// VoiceMediaSinkWants selects which voice data the voice server sends to a
+// connection over UDP. Each value ranges from 0 (send nothing) to 100 (send
+// everything). Values in between only lower video quality and do nothing for
+// audio.
+//
+// Any applies to every SSRC not listed in SSRCs, and its zero value means
+// nothing is sent. To stop one user's audio and keep everyone else's, use
+// VoiceMediaSinkWants{Any: 100, SSRCs: map[uint32]int{ssrc: 0}}. SSRCs come
+// from VoiceSpeakingUpdate.
+// https://docs.discord.com/developers/topics/voice-connections#media-sink-wants
+type VoiceMediaSinkWants struct {
+	Any   int
+	SSRCs map[uint32]int
+}
+
+// MarshalJSON encodes the wants as the opcode 15 payload, for example
+// {"2":0,"any":100}.
+func (w VoiceMediaSinkWants) MarshalJSON() ([]byte, error) {
+	payload := make(map[string]int, len(w.SSRCs)+1)
+	for ssrc, value := range w.SSRCs {
+		payload[strconv.FormatUint(uint64(ssrc), 10)] = value
+	}
+	payload["any"] = w.Any
+	return json.Marshal(payload)
+}
+
+func (w VoiceMediaSinkWants) validate() error {
+	if w.Any < 0 || w.Any > 100 {
+		return fmt.Errorf("discordgo: media sink wants any = %d, must be between 0 and 100", w.Any)
+	}
+	for ssrc, value := range w.SSRCs {
+		if value < 0 || value > 100 {
+			return fmt.Errorf("discordgo: media sink wants for SSRC %d = %d, must be between 0 and 100", ssrc, value)
+		}
+	}
+	return nil
+}
+
+// MediaSinkWants tells the voice server which voice data to send to this
+// connection (voice opcode 15). Bots that only play audio can pass
+// VoiceMediaSinkWants{} to stop receiving everyone's audio and save bandwidth.
+//
+// Discord sends all voice data until this is called. The last value is kept
+// and sent again whenever the connection starts a new voice session, so it
+// survives reconnects. If there is no voice websocket yet, it is sent once
+// the connection is established.
+func (v *VoiceConnection) MediaSinkWants(wants VoiceMediaSinkWants) error {
+	if err := wants.validate(); err != nil {
+		return err
+	}
+	// Copy the map so later changes by the caller can't alter what is resent.
+	stored := VoiceMediaSinkWants{Any: wants.Any}
+	if len(wants.SSRCs) > 0 {
+		stored.SSRCs = make(map[uint32]int, len(wants.SSRCs))
+		for ssrc, value := range wants.SSRCs {
+			stored.SSRCs[ssrc] = value
+		}
+	}
+
+	// Holding wsMutex across the store and the write keeps a concurrent
+	// resend from overwriting this value with an older one.
+	v.wsMutex.Lock()
+	defer v.wsMutex.Unlock()
+	v.Lock()
+	v.mediaSinkWants = &stored
+	wsConn := v.wsConn
+	v.Unlock()
+	if wsConn == nil {
+		return nil
+	}
+	return writeVoiceMediaSinkWants(wsConn, &stored)
+}
+
+// resendMediaSinkWants sends the stored wants on a new session's websocket.
+func (v *VoiceConnection) resendMediaSinkWants(wsConn *websocket.Conn, closeChan <-chan struct{}) {
+	v.wsMutex.Lock()
+	defer v.wsMutex.Unlock()
+	v.RLock()
+	wants := v.mediaSinkWants
+	current := v.wsConn == wsConn && v.close == closeChan
+	v.RUnlock()
+	if wants == nil || !current {
+		return
+	}
+	if err := writeVoiceMediaSinkWants(wsConn, wants); err != nil {
+		v.log(LogWarning, "error resending media sink wants, %s", err)
+	}
+}
+
+// writeVoiceMediaSinkWants must be called with wsMutex held.
+func writeVoiceMediaSinkWants(wsConn *websocket.Conn, wants *VoiceMediaSinkWants) error {
+	type voiceMediaSinkWantsOp struct {
+		Op   int                  `json:"op"`
+		Data *VoiceMediaSinkWants `json:"d"`
+	}
+	err := wsConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+	if err == nil {
+		err = wsConn.WriteJSON(voiceMediaSinkWantsOp{voiceOpMediaSinkWants, wants})
+	}
+	if err == nil {
+		err = wsConn.SetWriteDeadline(time.Time{})
+	}
+	return err
 }
 
 // ChangeChannel sends Discord a request to change channels within a Guild
@@ -1110,6 +1220,9 @@ func (v *VoiceConnection) onEventForConnection(wsConn *websocket.Conn, eventClos
 			v.Unlock()
 		}
 		if startTransport {
+			// A new session starts with Discord's default of sending
+			// everything, so restore what the caller asked for.
+			v.resendMediaSinkWants(wsConn, eventClose)
 			go v.opusSender(udpConn, closeChan, opusSend, 48000, 960)
 			if receive {
 				go v.opusReceiver(udpConn, closeChan, opusRecv)
