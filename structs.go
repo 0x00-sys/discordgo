@@ -4540,6 +4540,7 @@ const (
 	ErrCodeYouCannotSendVoiceMessagesInThisChannel                        = 50173
 	ErrCodeTheUserAccountMustFirstBeVerified                              = 50178
 	ErrCodeTheProvidedFileDoesNotHaveAValidDuration                       = 50192
+	ErrCodeInviteIsExpired                                                = 50270
 	ErrCodeCannotSendMessagesToThisUserDueToHavingNoMutualGuilds          = 50278
 	ErrCodeYouDoNotHavePermissionToSendThisSticker                        = 50600
 

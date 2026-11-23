@@ -1213,6 +1213,7 @@ func TestDocumentedErrorCodes(t *testing.T) {
 		{"target users file", ErrCodeTargetUsersFileHasNotBeenProcessed, 40115},
 		{"target users limit", ErrCodeTargetUsersLimitForThisGuildReached, 30084},
 		{"poll expired", ErrCodePollExpired, 520001},
+		{"invite expired", ErrCodeInviteIsExpired, 50270},
 		{"harmful links", ErrCodeMessageBlockedByHarmfulLinksFilter, 240000},
 		{"deprecated unknown tag alias", ErrUnknownTag, ErrCodeUnknownTag},
 		{"unknown tag", ErrCodeUnknownTag, 10087},
