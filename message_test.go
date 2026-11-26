@@ -1213,3 +1213,50 @@ func TestMessageInteractionLinksMemberUser(t *testing.T) {
 		t.Fatalf("Interaction.Member.DisplayName() = %q, want Nick", displayName)
 	}
 }
+
+func TestMessageEmbedAudioUnmarshal(t *testing.T) {
+	data := []byte(`{
+		"id": "1",
+		"channel_id": "2",
+		"content": "https://cdn.example.com/track.mp3",
+		"embeds": [{
+			"type": "audio",
+			"url": "https://cdn.example.com/track.mp3",
+			"audio": {
+				"url": "https://cdn.example.com/track.mp3",
+				"proxy_url": "https://media.discordapp.net/external/abc/track.mp3",
+				"content_type": "audio/mpeg",
+				"description": "Track"
+			}
+		}]
+	}`)
+
+	var m Message
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(m.Embeds) != 1 {
+		t.Fatalf("len(m.Embeds) = %d, want 1", len(m.Embeds))
+	}
+	embed := m.Embeds[0]
+	if embed.Type != EmbedTypeAudio {
+		t.Fatalf("embed.Type = %q, want %q", embed.Type, EmbedTypeAudio)
+	}
+	want := MessageEmbedAudio{
+		URL:         "https://cdn.example.com/track.mp3",
+		ProxyURL:    "https://media.discordapp.net/external/abc/track.mp3",
+		ContentType: "audio/mpeg",
+		Description: "Track",
+	}
+	if embed.Audio == nil || *embed.Audio != want {
+		t.Fatalf("embed.Audio = %#v, want %#v", embed.Audio, want)
+	}
+
+	out, err := json.Marshal(&MessageEmbed{Type: EmbedTypeRich, Title: "No audio"})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(out), `"audio"`) {
+		t.Fatalf("embed JSON = %s, want no audio key when unset", out)
+	}
+}
