@@ -617,6 +617,16 @@ type MessageEmbedVideo struct {
 	Height int    `json:"height,omitempty"`
 }
 
+// MessageEmbedAudio is a part of a MessageEmbed struct. Discord fills it on
+// EmbedTypeAudio embeds generated for direct links to audio files.
+// https://docs.discord.com/developers/resources/message#embed-object-embed-audio-structure
+type MessageEmbedAudio struct {
+	URL         string `json:"url,omitempty"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 // MessageEmbedProvider is a part of a MessageEmbed struct.
 type MessageEmbedProvider struct {
 	URL  string `json:"url,omitempty"`
@@ -650,6 +660,7 @@ type MessageEmbed struct {
 	Image       *MessageEmbedImage     `json:"image,omitempty"`
 	Thumbnail   *MessageEmbedThumbnail `json:"thumbnail,omitempty"`
 	Video       *MessageEmbedVideo     `json:"video,omitempty"`
+	Audio       *MessageEmbedAudio     `json:"audio,omitempty"`
 	Provider    *MessageEmbedProvider  `json:"provider,omitempty"`
 	Author      *MessageEmbedAuthor    `json:"author,omitempty"`
 	Fields      []*MessageEmbedField   `json:"fields,omitempty"`
@@ -704,6 +715,7 @@ const (
 	EmbedTypeRich    EmbedType = "rich"
 	EmbedTypeImage   EmbedType = "image"
 	EmbedTypeVideo   EmbedType = "video"
+	EmbedTypeAudio   EmbedType = "audio" // direct audio file links, inline player
 	EmbedTypeGifv    EmbedType = "gifv"
 	EmbedTypeArticle EmbedType = "article"
 	EmbedTypeLink    EmbedType = "link"
