@@ -17,10 +17,11 @@ Not affiliated with or endorsed by the original DiscordGo authors.
 ## Up to date with Discord
 
 Every Discord API change from 2026 is checked against this library. Last
-checked: **November 23, 2026**.
+checked: **November 27, 2026**.
 
 | Date | Discord change | Status |
 |---|---|---|
+| Nov 27 | Missing embed image, thumbnail and video fields found in the docs | ✅ `ContentType`, `Placeholder`, `Description`, `Flags` (`MessageEmbedMediaFlagsIsAnimated`), `MessageEmbedVideo.ProxyURL` |
 | Nov 23 | [Audio link previews](https://docs.discord.com/developers/change-log#audio-link-previews) | ✅ `EmbedTypeAudio`, `MessageEmbed.Audio` |
 | Nov 19 | [Game deauthorization removes game relationships](https://docs.discord.com/developers/change-log#game-deauthorization-removes-game-relationships) | Nothing to add. Social SDK relationships are not part of the bot API |
 | Nov 17 | Voice Media Sink Wants (opcode 15) documented | ✅ `VoiceConnection.MediaSinkWants`, kept across new voice sessions |
