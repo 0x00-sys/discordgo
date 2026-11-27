@@ -595,27 +595,56 @@ type MessageEmbedFooter struct {
 }
 
 // MessageEmbedImage is a part of a MessageEmbed struct.
+// https://docs.discord.com/developers/resources/message#embed-object-embed-image-structure
 type MessageEmbedImage struct {
-	URL      string `json:"url"`
-	ProxyURL string `json:"proxy_url,omitempty"`
-	Width    int    `json:"width,omitempty"`
-	Height   int    `json:"height,omitempty"`
+	URL                string                 `json:"url"`
+	ProxyURL           string                 `json:"proxy_url,omitempty"`
+	Width              int                    `json:"width,omitempty"`
+	Height             int                    `json:"height,omitempty"`
+	ContentType        string                 `json:"content_type,omitempty"`
+	Placeholder        string                 `json:"placeholder,omitempty"`
+	PlaceholderVersion int                    `json:"placeholder_version,omitempty"`
+	Description        string                 `json:"description,omitempty"`
+	Flags              MessageEmbedMediaFlags `json:"flags,omitempty"`
 }
 
 // MessageEmbedThumbnail is a part of a MessageEmbed struct.
+// Discord documents it with the same structure as MessageEmbedImage.
 type MessageEmbedThumbnail struct {
-	URL      string `json:"url"`
-	ProxyURL string `json:"proxy_url,omitempty"`
-	Width    int    `json:"width,omitempty"`
-	Height   int    `json:"height,omitempty"`
+	URL                string                 `json:"url"`
+	ProxyURL           string                 `json:"proxy_url,omitempty"`
+	Width              int                    `json:"width,omitempty"`
+	Height             int                    `json:"height,omitempty"`
+	ContentType        string                 `json:"content_type,omitempty"`
+	Placeholder        string                 `json:"placeholder,omitempty"`
+	PlaceholderVersion int                    `json:"placeholder_version,omitempty"`
+	Description        string                 `json:"description,omitempty"`
+	Flags              MessageEmbedMediaFlags `json:"flags,omitempty"`
 }
 
 // MessageEmbedVideo is a part of a MessageEmbed struct.
+// https://docs.discord.com/developers/resources/message#embed-object-embed-video-structure
 type MessageEmbedVideo struct {
-	URL    string `json:"url,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
+	URL                string                 `json:"url,omitempty"`
+	ProxyURL           string                 `json:"proxy_url,omitempty"`
+	Width              int                    `json:"width,omitempty"`
+	Height             int                    `json:"height,omitempty"`
+	ContentType        string                 `json:"content_type,omitempty"`
+	Placeholder        string                 `json:"placeholder,omitempty"`
+	PlaceholderVersion int                    `json:"placeholder_version,omitempty"`
+	Description        string                 `json:"description,omitempty"`
+	Flags              MessageEmbedMediaFlags `json:"flags,omitempty"`
 }
+
+// MessageEmbedMediaFlags is the flags of an embed image, thumbnail or video.
+// These are separate from MessageEmbedFlags, which apply to the whole embed.
+// https://docs.discord.com/developers/resources/message#embed-object-embed-media-flags
+type MessageEmbedMediaFlags int
+
+// Valid MessageEmbedMediaFlags values.
+const (
+	MessageEmbedMediaFlagsIsAnimated MessageEmbedMediaFlags = 1 << 5
+)
 
 // MessageEmbedAudio is a part of a MessageEmbed struct. Discord fills it on
 // EmbedTypeAudio embeds generated for direct links to audio files.

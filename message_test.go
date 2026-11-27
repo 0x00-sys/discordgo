@@ -1260,3 +1260,111 @@ func TestMessageEmbedAudioUnmarshal(t *testing.T) {
 		t.Fatalf("embed JSON = %s, want no audio key when unset", out)
 	}
 }
+
+func TestMessageEmbedMediaFieldsUnmarshal(t *testing.T) {
+	data := []byte(`{
+		"id": "1",
+		"channel_id": "2",
+		"embeds": [{
+			"type": "gifv",
+			"url": "https://example.com/cat",
+			"image": {
+				"url": "https://example.com/cat.gif",
+				"proxy_url": "https://media.discordapp.net/external/a/cat.gif",
+				"width": 320,
+				"height": 240,
+				"content_type": "image/gif",
+				"placeholder": "3PcNNYSFeXh/k0oABQAAAAAAAAAA",
+				"placeholder_version": 1,
+				"description": "A cat",
+				"flags": 32
+			},
+			"thumbnail": {
+				"url": "https://example.com/cat.png",
+				"proxy_url": "https://media.discordapp.net/external/b/cat.png",
+				"content_type": "image/png",
+				"placeholder": "1QcSHQRnh493V4dIh4eXh1h4kJUI",
+				"placeholder_version": 1,
+				"description": "Cat thumbnail"
+			},
+			"video": {
+				"url": "https://example.com/cat.mp4",
+				"proxy_url": "https://media.discordapp.net/external/c/cat.mp4",
+				"width": 320,
+				"height": 240,
+				"content_type": "video/mp4",
+				"placeholder": "3PcNNYSFeXh/k0oABQAAAAAAAAAA",
+				"placeholder_version": 1,
+				"description": "Cat video",
+				"flags": 32
+			}
+		}]
+	}`)
+
+	var m Message
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(m.Embeds) != 1 {
+		t.Fatalf("len(m.Embeds) = %d, want 1", len(m.Embeds))
+	}
+	embed := m.Embeds[0]
+
+	wantImage := MessageEmbedImage{
+		URL:                "https://example.com/cat.gif",
+		ProxyURL:           "https://media.discordapp.net/external/a/cat.gif",
+		Width:              320,
+		Height:             240,
+		ContentType:        "image/gif",
+		Placeholder:        "3PcNNYSFeXh/k0oABQAAAAAAAAAA",
+		PlaceholderVersion: 1,
+		Description:        "A cat",
+		Flags:              MessageEmbedMediaFlagsIsAnimated,
+	}
+	if embed.Image == nil || *embed.Image != wantImage {
+		t.Fatalf("embed.Image = %#v, want %#v", embed.Image, wantImage)
+	}
+
+	wantThumbnail := MessageEmbedThumbnail{
+		URL:                "https://example.com/cat.png",
+		ProxyURL:           "https://media.discordapp.net/external/b/cat.png",
+		ContentType:        "image/png",
+		Placeholder:        "1QcSHQRnh493V4dIh4eXh1h4kJUI",
+		PlaceholderVersion: 1,
+		Description:        "Cat thumbnail",
+	}
+	if embed.Thumbnail == nil || *embed.Thumbnail != wantThumbnail {
+		t.Fatalf("embed.Thumbnail = %#v, want %#v", embed.Thumbnail, wantThumbnail)
+	}
+
+	wantVideo := MessageEmbedVideo{
+		URL:                "https://example.com/cat.mp4",
+		ProxyURL:           "https://media.discordapp.net/external/c/cat.mp4",
+		Width:              320,
+		Height:             240,
+		ContentType:        "video/mp4",
+		Placeholder:        "3PcNNYSFeXh/k0oABQAAAAAAAAAA",
+		PlaceholderVersion: 1,
+		Description:        "Cat video",
+		Flags:              MessageEmbedMediaFlagsIsAnimated,
+	}
+	if embed.Video == nil || *embed.Video != wantVideo {
+		t.Fatalf("embed.Video = %#v, want %#v", embed.Video, wantVideo)
+	}
+}
+
+func TestMessageEmbedMediaFieldsMarshalOmitEmpty(t *testing.T) {
+	out, err := json.Marshal(&MessageEmbed{
+		Image:     &MessageEmbedImage{URL: "https://example.com/a.png"},
+		Thumbnail: &MessageEmbedThumbnail{URL: "https://example.com/b.png"},
+		Video:     &MessageEmbedVideo{URL: "https://example.com/c.mp4"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	for _, key := range []string{`"content_type"`, `"placeholder"`, `"placeholder_version"`, `"description"`, `"flags"`, `"proxy_url"`} {
+		if strings.Contains(string(out), key) {
+			t.Fatalf("embed JSON = %s, want no %s key when unset", out, key)
+		}
+	}
+}
